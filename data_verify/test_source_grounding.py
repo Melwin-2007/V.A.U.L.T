@@ -1,17 +1,16 @@
+from pathlib import Path
+import sys
 import unittest
 
-try:
-    from data_verify.source_grounding import (
-        build_grounded_field,
-        safe_compute_derived,
-        verify_source_grounding,
-    )
-except ImportError:
-    from source_grounding import (
-        build_grounded_field,
-        safe_compute_derived,
-        verify_source_grounding,
-    )
+_WORKSPACE_ROOT = str(Path(__file__).resolve().parent.parent)
+if _WORKSPACE_ROOT not in sys.path:
+    sys.path.insert(0, _WORKSPACE_ROOT)
+
+from data_verify.source_grounding import (
+    build_grounded_field,
+    safe_compute_derived,
+    verify_source_grounding,
+)
 
 
 class TestSourceGroundingCheck(unittest.TestCase):

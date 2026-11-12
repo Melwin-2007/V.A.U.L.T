@@ -3,14 +3,20 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 import json
+import os
 from pathlib import Path
 import re
-from typing import Any, Callable, Literal
+from typing import Any, Callable, Literal, cast
+
+_WORKSPACE_ROOT = Path(__file__).resolve().parent.parent
+os.environ.setdefault("EDGAR_LOCAL_DATA_DIR", str(_WORKSPACE_ROOT / ".edgar"))
+os.environ.setdefault("EDGAR_CACHE_DIR", str(_WORKSPACE_ROOT / ".edgar_cache"))
 
 from lxml import html as lxml_html
 
-# pyrefly: ignore[missing-import]
-from edgar import Company, get_by_accession_number, set_identity
+from edgar._filings import get_by_accession_number
+from edgar.entity import Company
+from edgar.settings import set_identity
 
 
 RiskLevel = Literal["LOW", "HIGH"]
@@ -206,12 +212,22 @@ def extract_table_rows_from_html(raw_html: str) -> list[str]:
     """Extract normalized table rows from raw SEC HTML for verbatim source-snippet citations."""
     doc = lxml_html.fromstring(raw_html.encode("utf-8"))
     rows: list[str] = []
-    for tr in doc.xpath("//tr"):
-        cells = [normalize_snippet(td.text_content()) for td in tr.xpath("./th|./td")]
+    tr_nodes = cast(list[Any], doc.xpath("//tr"))
+    for tr in tr_nodes:
+        td_nodes = cast(list[Any], tr.xpath("./th|./td"))
+        cells = [normalize_snippet(str(td.text_content())) for td in td_nodes]
         non_empty = [c for c in cells if c]
         if non_empty:
             rows.append(" | ".join(non_empty))
     return rows
+
+
+def _require_millions(metrics: dict[str, Any], key: str) -> int:
+    """Validate a required raw dollar/share metric and convert it to rounded millions."""
+    raw_value = metrics.get(key)
+    if not isinstance(raw_value, (int, float)):
+        raise ValueError(f"Required financial metric '{key}' is missing or non-numeric: {raw_value!r}")
+    return round(float(raw_value) / 1e6)
 
 
 def find_verbatim_row(
@@ -295,7 +311,7 @@ def extract_grounded_walmart_10k(
     if filing is None:
         raise ValueError(f"SEC filing {accession_no} was not found.")
 
-    tenk = filing.obj()
+    tenk: Any = filing.obj()
     if tenk is None or tenk.financials is None:
         raise ValueError(f"Filing {accession_no} did not return TenK financials.")
 
@@ -309,17 +325,17 @@ def extract_grounded_walmart_10k(
 
     # Statement tables in Walmart's 10-K report values in millions.
     specs = [
-        ("total_revenues", "FY2026 (Ended Jan 31, 2026)", round(metrics["revenue"] / 1e6), "USD millions", "Item 8 - Consolidated Statement of Income", ["Total revenues"], "713,163"),
-        ("operating_income", "FY2026 (Ended Jan 31, 2026)", round(metrics["operating_income"] / 1e6), "USD millions", "Item 8 - Consolidated Statement of Income", ["Operating income"], "29,825"),
-        ("net_income_attributable_to_walmart", "FY2026 (Ended Jan 31, 2026)", round(metrics["net_income"] / 1e6), "USD millions", "Item 8 - Consolidated Statement of Income", ["Consolidated net income attributable to Walmart"], "21,893"),
-        ("total_assets", "As of Jan 31, 2026", round(metrics["total_assets"] / 1e6), "USD millions", "Item 8 - Consolidated Balance Sheets", ["Total assets"], "284,668"),
-        ("current_assets", "As of Jan 31, 2026", round(metrics["current_assets"] / 1e6), "USD millions", "Item 8 - Consolidated Balance Sheets", ["Total current assets"], "84,874"),
-        ("current_liabilities", "As of Jan 31, 2026", round(metrics["current_liabilities"] / 1e6), "USD millions", "Item 8 - Consolidated Balance Sheets", ["Total current liabilities"], "107,469"),
-        ("walmart_shareholders_equity", "As of Jan 31, 2026", round(metrics["stockholders_equity"] / 1e6), "USD millions", "Item 8 - Consolidated Balance Sheets", ["Total Walmart shareholders", "equity"], "99,617"),
-        ("operating_cash_flow", "FY2026 (Ended Jan 31, 2026)", round(metrics["operating_cash_flow"] / 1e6), "USD millions", "Item 8 - Consolidated Statement of Cash Flows", ["Net cash provided by operating activities"], "41,565"),
-        ("capital_expenditures", "FY2026 (Ended Jan 31, 2026)", round(metrics["capital_expenditures"] / 1e6), "USD millions", "Item 8 - Consolidated Statement of Cash Flows", ["Payments for property and equipment"], "26,642"),
-        ("weighted_avg_shares_basic", "FY2026 (Ended Jan 31, 2026)", round(metrics["shares_outstanding_basic"] / 1e6), "shares (millions)", "Item 8 - Consolidated Statement of Income", ["Basic"], "7,983"),
-        ("weighted_avg_shares_diluted", "FY2026 (Ended Jan 31, 2026)", round(metrics["shares_outstanding_diluted"] / 1e6), "shares (millions)", "Item 8 - Consolidated Statement of Income", ["Diluted"], "8,022"),
+        ("total_revenues", "FY2026 (Ended Jan 31, 2026)", _require_millions(metrics, "revenue"), "USD millions", "Item 8 - Consolidated Statement of Income", ["Total revenues"], "713,163"),
+        ("operating_income", "FY2026 (Ended Jan 31, 2026)", _require_millions(metrics, "operating_income"), "USD millions", "Item 8 - Consolidated Statement of Income", ["Operating income"], "29,825"),
+        ("net_income_attributable_to_walmart", "FY2026 (Ended Jan 31, 2026)", _require_millions(metrics, "net_income"), "USD millions", "Item 8 - Consolidated Statement of Income", ["Consolidated net income attributable to Walmart"], "21,893"),
+        ("total_assets", "As of Jan 31, 2026", _require_millions(metrics, "total_assets"), "USD millions", "Item 8 - Consolidated Balance Sheets", ["Total assets"], "284,668"),
+        ("current_assets", "As of Jan 31, 2026", _require_millions(metrics, "current_assets"), "USD millions", "Item 8 - Consolidated Balance Sheets", ["Total current assets"], "84,874"),
+        ("current_liabilities", "As of Jan 31, 2026", _require_millions(metrics, "current_liabilities"), "USD millions", "Item 8 - Consolidated Balance Sheets", ["Total current liabilities"], "107,469"),
+        ("walmart_shareholders_equity", "As of Jan 31, 2026", _require_millions(metrics, "stockholders_equity"), "USD millions", "Item 8 - Consolidated Balance Sheets", ["Total Walmart shareholders", "equity"], "99,617"),
+        ("operating_cash_flow", "FY2026 (Ended Jan 31, 2026)", _require_millions(metrics, "operating_cash_flow"), "USD millions", "Item 8 - Consolidated Statement of Cash Flows", ["Net cash provided by operating activities"], "41,565"),
+        ("capital_expenditures", "FY2026 (Ended Jan 31, 2026)", _require_millions(metrics, "capital_expenditures"), "USD millions", "Item 8 - Consolidated Statement of Cash Flows", ["Payments for property and equipment"], "26,642"),
+        ("weighted_avg_shares_basic", "FY2026 (Ended Jan 31, 2026)", _require_millions(metrics, "shares_outstanding_basic"), "shares (millions)", "Item 8 - Consolidated Statement of Income", ["Basic"], "7,983"),
+        ("weighted_avg_shares_diluted", "FY2026 (Ended Jan 31, 2026)", _require_millions(metrics, "shares_outstanding_diluted"), "shares (millions)", "Item 8 - Consolidated Statement of Income", ["Diluted"], "8,022"),
     ]
 
     extracted_fields: dict[str, ExtractedField] = {}
