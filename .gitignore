@@ -30,6 +30,7 @@ ratelimiter.sqlite*
 **/.ipynb_checkpoints/
 output/
 test_output/
+audit_logs/
 *_generated.html
 *.log
 tmp/

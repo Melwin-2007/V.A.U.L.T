@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>YoY Financial Validation Agent — Demo UI</title>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --card: #1e293b;
+      --border: #334155;
+      --text: #f8fafc;
+      --muted: #94a3b8;
+      --accent: #38bdf8;
+      --pass: #22c55e;
+      --warn: #f59e0b;
+      --err: #ef4444;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Inter, system-ui, -apple-system, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      padding: 24px;
+      line-height: 1.5;
+    }
+    .container { max-width: 1080px; margin: 0 auto; display: grid; gap: 20px; }
+    .header h1 { margin: 0 0 6px; font-size: 1.5rem; }
+    .header p { margin: 0; color: var(--muted); font-size: 0.95rem; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+    @media (max-width: 840px) { .grid { grid-template-columns: 1fr; } }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 20px;
+    }
+    .card h2 { margin: 0 0 14px; font-size: 1.1rem; }
+    .presets { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
+    button {
+      cursor: pointer;
+      border: 1px solid var(--border);
+      background: #0f172a;
+      color: var(--text);
+      padding: 7px 12px;
+      border-radius: 6px;
+      font-size: 0.85rem;
+      font-weight: 500;
+    }
+    button:hover { border-color: var(--accent); }
+    button.primary {
+      background: var(--accent);
+      color: #0f172a;
+      border-color: var(--accent);
+      font-weight: 600;
+      width: 100%;
+      padding: 10px;
+      font-size: 0.95rem;
+      margin-top: 8px;
+    }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px; }
+    .row-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; margin-bottom: 10px; }
+    label { display: block; font-size: 0.78rem; color: var(--muted); margin-bottom: 4px; }
+    input {
+      width: 100%;
+      padding: 8px 10px;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: #0f172a;
+      color: var(--text);
+      font-size: 0.9rem;
+    }
+    .badge {
+      display: inline-block;
+      padding: 4px 10px;
+      border-radius: 999px;
+      font-size: 0.8rem;
+      font-weight: 700;
+    }
+    .badge-PASS { background: rgba(34, 197, 94, 0.18); color: var(--pass); }
+    .badge-UNUSUAL { background: rgba(245, 158, 11, 0.18); color: var(--warn); }
+    .badge-CANNOT_VALIDATE { background: rgba(239, 68, 68, 0.18); color: var(--err); }
+    .kv { display: grid; grid-template-columns: 165px 1fr; gap: 6px 12px; font-size: 0.9rem; }
+    .kv .k { color: var(--muted); }
+    .review-box {
+      margin-top: 16px;
+      padding-top: 14px;
+      border-top: 1px solid var(--border);
+    }
+    .review-actions { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+    .btn-approve { background: rgba(34, 197, 94, 0.2); border-color: var(--pass); color: var(--pass); }
+    .btn-correct { background: rgba(56, 189, 248, 0.2); border-color: var(--accent); color: var(--accent); }
+    .btn-reject { background: rgba(239, 68, 68, 0.2); border-color: var(--err); color: var(--err); }
+    table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+    th, td { text-align: left; padding: 8px; border-bottom: 1px solid var(--border); }
+    th { color: var(--muted); font-weight: 600; }
+    .muted { color: var(--muted); font-size: 0.85rem; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h1>Year-on-Year Financial Validation Agent</h1>
+      <p>Deterministic SEC 10-K YoY validation component with unit normalization, configurable threshold, human-in-the-loop review, and audit logging.</p>
+    </div>
+
+    <div class="grid">
+      <div class="card">
+        <h2>Input Financial Data</h2>
+        <div class="presets">
+          <button type="button" onclick="loadPreset('apple')">Apple Revenue (PASS)</button>
+          <button type="button" onclick="loadPreset('unusual_up')">+45% Unusual</button>
+          <button type="button" onclick="loadPreset('unusual_down')">-40% Unusual</button>
+          <button type="button" onclick="loadPreset('mixed_units')">Mixed Units ($500M vs $0.5B)</button>
+          <button type="button" onclick="loadPreset('zero_prev')">Prev = 0 (Cannot Validate)</button>
+        </div>
+
+        <form id="yoy-form" onsubmit="submitValidation(event)">
+          <div class="row">
+            <div>
+              <label for="company">Company</label>
+              <input id="company" value="Apple Inc." />
+            </div>
+            <div>
+              <label for="metric">Metric</label>
+              <input id="metric" value="Revenue" />
+            </div>
+          </div>
+
+          <div class="row-3">
+            <div>
+              <label for="prev-year">Previous Year</label>
+              <input id="prev-year" type="number" value="2024" />
+            </div>
+            <div>
+              <label for="prev-value">Previous Value</label>
+              <input id="prev-value" value="100" />
+            </div>
+            <div>
+              <label for="prev-unit">Previous Unit</label>
+              <input id="prev-unit" value="USD millions" />
+            </div>
+          </div>
+
+          <div class="row-3">
+            <div>
+              <label for="curr-year">Current Year</label>
+              <input id="curr-year" type="number" value="2025" />
+            </div>
+            <div>
+              <label for="curr-value">Current Value</label>
+              <input id="curr-value" value="145" />
+            </div>
+            <div>
+              <label for="curr-unit">Current Unit</label>
+              <input id="curr-unit" value="USD millions" />
+            </div>
+          </div>
+
+          <div class="row">
+            <div>
+              <label for="threshold">Threshold (%)</label>
+              <input id="threshold" value="30" />
+            </div>
+            <div>
+              <label for="confidence">Automated Confidence (0-1)</label>
+              <input id="confidence" value="0.90" />
+            </div>
+          </div>
+
+          <button class="primary" type="submit">Validate YoY Change</button>
+        </form>
+      </div>
+
+      <div class="card">
+        <h2>Validation Result &amp; Human Review</h2>
+        <div id="result-panel" class="muted">Submit values on the left to run validation.</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Audit Trail</h2>
+      <div style="overflow-x: auto;">
+        <table>
+          <thead>
+            <tr>
+              <th>Timestamp</th>
+              <th>Company</th>
+              <th>Metric</th>
+              <th>Prev -> Curr</th>
+              <th>YoY %</th>
+              <th>Threshold</th>
+              <th>Validation</th>
+              <th>Confidence</th>
+              <th>Human Decision</th>
+              <th>Original / Corrected</th>
+              <th>Final Status</th>
+            </tr>
+          </thead>
+          <tbody id="audit-body">
+            <tr><td colspan="11" class="muted">No audit entries yet.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let currentValidationId = null;
+
+    function loadPreset(name) {
+      const presets = {
+        apple: {
+          company: "Apple Inc.", metric: "Revenue",
+          py: 2024, pv: "391035", pu: "USD millions",
+          cy: 2025, cv: "416161", cu: "USD millions",
+          th: "30", conf: "0.95"
+        },
+        unusual_up: {
+          company: "Apple Inc.", metric: "Revenue",
+          py: 2024, pv: "100", pu: "USD millions",
+          cy: 2025, cv: "145", cu: "USD millions",
+          th: "30", conf: "0.90"
+        },
+        unusual_down: {
+          company: "Example Corp.", metric: "Operating Income",
+          py: 2024, pv: "100", pu: "USD millions",
+          cy: 2025, cv: "60", cu: "USD millions",
+          th: "30", conf: "0.88"
+        },
+        mixed_units: {
+          company: "Example Corp.", metric: "Revenue",
+          py: 2024, pv: "0.5", pu: "$ billion",
+          cy: 2025, cv: "500", cu: "$ million",
+          th: "30", conf: "0.92"
+        },
+        zero_prev: {
+          company: "Startup Inc.", metric: "Revenue",
+          py: 2024, pv: "0", pu: "USD millions",
+          cy: 2025, cv: "100", cu: "USD millions",
+          th: "30", conf: "0.85"
+        }
+      };
+      const p = presets[name];
+      document.getElementById("company").value = p.company;
+      document.getElementById("metric").value = p.metric;
+      document.getElementById("prev-year").value = p.py;
+      document.getElementById("prev-value").value = p.pv;
+      document.getElementById("prev-unit").value = p.pu;
+      document.getElementById("curr-year").value = p.cy;
+      document.getElementById("curr-value").value = p.cv;
+      document.getElementById("curr-unit").value = p.cu;
+      document.getElementById("threshold").value = p.th;
+      document.getElementById("confidence").value = p.conf;
+    }
+
+    function numOrNull(val) {
+      const s = val.trim();
+      return s === "" ? null : s;
+    }
+
+    function intOrNull(val) {
+      const s = val.trim();
+      return s === "" ? null : parseInt(s, 10);
+    }
+
+    async function submitValidation(e) {
+      e.preventDefault();
+      const confRaw = document.getElementById("confidence").value.trim();
+      const payload = {
+        company: document.getElementById("company").value.trim() || null,
+        metric: document.getElementById("metric").value.trim() || null,
+        previous_year: {
+          year: intOrNull(document.getElementById("prev-year").value),
+          value: numOrNull(document.getElementById("prev-value").value),
+          unit: document.getElementById("prev-unit").value.trim() || null
+        },
+        current_year: {
+          year: intOrNull(document.getElementById("curr-year").value),
+          value: numOrNull(document.getElementById("curr-value").value),
+          unit: document.getElementById("curr-unit").value.trim() || null
+        },
+        threshold_percent: document.getElementById("threshold").value.trim() || "30",
+        automated_confidence: confRaw === "" ? null : parseFloat(confRaw)
+      };
+
+      const res = await fetch("/api/v1/yoy/validate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        document.getElementById("result-panel").innerHTML =
+          `<div class="badge badge-CANNOT_VALIDATE">ERROR</div><p>${JSON.stringify(data)}</p>`;
+        return;
+      }
+      currentValidationId = data.validation_id;
+      renderResult(data);
+      await refreshAuditTrail();
+    }
+
+    function renderResult(d) {
+      const yoyDisplay = d.yoy_percent === null
+        ? "N/A"
+        : `${d.yoy_percent > 0 ? "+" : ""}${d.yoy_percent}%`;
+
+      const statusLabel = d.validation_result === "UNUSUAL"
+        ? "&#9888;&#65039; UNUSUAL CHANGE"
+        : d.validation_result;
+
+      let reviewHtml = "";
+      if (d.validation_result !== "CANNOT_VALIDATE") {
+        reviewHtml = `
+          <div class="review-box">
+            <strong>Human Review</strong>
+            <div class="row" style="margin-top:8px;">
+              <div>
+                <label for="reviewer-name">Reviewer</label>
+                <input id="reviewer-name" placeholder="Auditor name" />
+              </div>
+              <div>
+                <label for="corrected-val">Corrected Value (for CORRECT)</label>
+                <input id="corrected-val" placeholder="e.g. 140" />
+              </div>
+            </div>
+            <label for="review-notes">Notes</label>
+            <input id="review-notes" placeholder="Optional review note" />
+            <div class="review-actions">
+              <button class="btn-approve" type="button" onclick="sendReview('APPROVE')">APPROVE</button>
+              <button class="btn-correct" type="button" onclick="sendReview('CORRECT')">CORRECT</button>
+              <button class="btn-reject" type="button" onclick="sendReview('REJECT')">REJECT</button>
+            </div>
+          </div>
+        `;
+      }
+
+      document.getElementById("result-panel").innerHTML = `
+        <div class="kv">
+          <div class="k">Company</div><div>${d.company ?? "-"}</div>
+          <div class="k">Metric</div><div>${d.metric ?? "-"}</div>
+          <div class="k">Previous Year</div><div>${d.previous_value ?? "-"} ${d.unit ?? ""} (${d.previous_year ?? "-"})</div>
+          <div class="k">Current Year</div><div>${d.current_value ?? "-"} ${d.unit ?? ""} (${d.current_year ?? "-"})</div>
+          <div class="k">YoY Change</div><div><strong>${yoyDisplay}</strong></div>
+          <div class="k">Configured Threshold</div><div>${d.threshold_percent}%</div>
+          <div class="k">Validation</div><div><span class="badge badge-${d.validation_result}">${statusLabel}</span></div>
+          <div class="k">Human Review Required</div><div>${d.human_review_required ? "Yes" : "No"}</div>
+          <div class="k">Reason</div><div>${d.reason}</div>
+          <div class="k">Automated Confidence</div><div>${d.automated_confidence ?? "-"}</div>
+          <div class="k">Human Decision</div><div>${d.human_decision ?? "Pending / None"}</div>
+          <div class="k">Final Status</div><div><strong>${d.final_status}</strong></div>
+        </div>
+        ${reviewHtml}
+      `;
+    }
+
+    async function sendReview(action) {
+      if (!currentValidationId) return;
+      const correctedRaw = document.getElementById("corrected-val")?.value.trim();
+      const body = {
+        validation_id: currentValidationId,
+        action: action,
+        corrected_value: action === "CORRECT" ? (correctedRaw || null) : null,
+        reviewer: document.getElementById("reviewer-name")?.value.trim() || null,
+        notes: document.getElementById("review-notes")?.value.trim() || null
+      };
+      const res = await fetch("/api/v1/yoy/review", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body)
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        alert(data.detail || "Review failed");
+        return;
+      }
+      renderResult(data);
+      await refreshAuditTrail();
+    }
+
+    async function refreshAuditTrail() {
+      const res = await fetch("/api/v1/yoy/audit-trail");
+      const rows = await res.json();
+      const tbody = document.getElementById("audit-body");
+      if (!rows.length) {
+        tbody.innerHTML = '<tr><td colspan="11" class="muted">No audit entries yet.</td></tr>';
+        return;
+      }
+      tbody.innerHTML = rows.slice().reverse().map(r => `
+        <tr>
+          <td>${new Date(r.timestamp).toLocaleTimeString()}</td>
+          <td>${r.company ?? "-"}</td>
+          <td>${r.metric ?? "-"}</td>
+          <td>${r.previous_value ?? "-"} -> ${r.current_value ?? "-"} ${r.unit ?? ""}</td>
+          <td>${r.yoy_percent === null ? "N/A" : r.yoy_percent + "%"}</td>
+          <td>${r.threshold_percent}%</td>
+          <td><span class="badge badge-${r.validation_result}">${r.validation_result}</span></td>
+          <td>${r.automated_confidence ?? "-"}</td>
+          <td>${r.human_decision ?? "-"}</td>
+          <td>${r.original_value ?? "-"} / ${r.corrected_value ?? "-"}</td>
+          <td>${r.final_status}</td>
+        </tr>
+      `).join("");
+    }
+  </script>
+</body>
+</html>
