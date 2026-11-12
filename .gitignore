@@ -1,0 +1,55 @@
+# Virtual environments
+.venv/
+venv/
+env/
+.python-version
+
+# Python bytecode & build artifacts
+**/__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+wheels/
+.installed.cfg
+
+# Testing, linting & coverage artifacts
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.pyright/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+ratelimiter.sqlite*
+
+# Jupyter, logs & generated outputs
+**/.ipynb_checkpoints/
+output/
+test_output/
+*_generated.html
+*.log
+tmp/
+temp/
+.edgar/
+edgar_data/
+
+# Environment & secrets
+.env
+.env.*
+!.env.example
+.secrets.*
+
+# IDE & OS files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
+
