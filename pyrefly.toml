@@ -1,0 +1,4 @@
+project-includes = ["data_verify"]
+search-path = [".", "edgartools"]
+python-interpreter-path = ".venv/Scripts/python.exe"
+

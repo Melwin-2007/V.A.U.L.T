@@ -1,21 +1,38 @@
-"""Year-on-Year (YoY) financial validation package."""
+"""Deterministic Accounting Equation Validation package."""
 
-from validation.integration import (
-    apply_yoy_to_confidence,
-    to_escalation,
-    yoy_validation_node,
+from __future__ import annotations
+
+from typing import Any
+
+from .adapter import list_available_filings, load_balance_sheet
+from .models import (
+    BalanceSheetInput,
+    BalanceSheetPeriodInput,
+    CheckResult,
+    MetricDecision,
+    ValidationConfig,
+    ValidationReport,
+    load_config,
 )
-from validation.yoy import analyze_company, check_yoy, load_thresholds
-from validation.yoy_explain import explain
-from validation.yoy_multi import check_yoy_multi
 
 __all__ = [
-    "analyze_company",
-    "apply_yoy_to_confidence",
-    "check_yoy",
-    "check_yoy_multi",
-    "explain",
-    "load_thresholds",
-    "to_escalation",
-    "yoy_validation_node",
+    "BalanceSheetInput",
+    "BalanceSheetPeriodInput",
+    "CheckResult",
+    "MetricDecision",
+    "ValidationConfig",
+    "ValidationReport",
+    "list_available_filings",
+    "load_balance_sheet",
+    "load_config",
+    "validate_accounting_equation",
+    "validate_balance_sheet_input",
 ]
+
+
+def __getattr__(name: str) -> Any:
+    if name in ("validate_accounting_equation", "validate_balance_sheet_input"):
+        from . import accounting_equation
+
+        return getattr(accounting_equation, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
