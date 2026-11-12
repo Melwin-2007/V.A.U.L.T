@@ -1,0 +1,53 @@
+# Accounting Equation Validation Engine Configuration
+# All thresholds, deltas, formulas, and hypothesis order live here (nothing hardcoded).
+
+tolerance_multiplier: 2
+
+allowed_scales:
+  - 1
+  - 1000
+  - 1000000
+  - 1000000000
+
+confidence:
+  # Used only when the repo extractor does not emit per-metric confidence
+  default_base_confidence: 0.88
+  escalation_threshold: 0.75
+  pass_delta: 0.05
+  confidence_cap: 1.00
+  confidence_floor: 0.00
+  fail_single_blame_delta: -0.30
+  fail_ambiguous_delta: -0.15
+  cleared_delta: 0.00
+  warn_delta: -0.05
+  derived_delta: -0.05
+  skipped_delta: 0.00
+
+enabled_formulas:
+  - F4
+  - F1
+  - F2
+  - F3
+  - F5
+  - F6
+  - F7
+  - F8
+
+hypothesis_order:
+  - wrong_column
+  - missing_nci_or_te
+  - wrong_row
+  - scale_error
+  - sign_error
+  - digit_transposition
+
+materiality:
+  min_nonzero_dollars: 1
+  significant_gap_dollars: 1000000
+  scale_ratio_expected: 1000
+  scale_ratio_tolerance: 0.05
+
+persistence:
+  mode: "callback_or_memory"
+  default_output_dir: "validation/audit_logs"
+
