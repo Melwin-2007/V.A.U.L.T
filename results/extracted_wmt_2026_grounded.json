@@ -1,0 +1,275 @@
+{
+  "metadata": {
+    "company": "Walmart Inc.",
+    "cik": 104169,
+    "form": "10-K",
+    "filing_date": "2026-03-13",
+    "period_of_report": "2026-01-31",
+    "accession_no": "0000104169-26-000055",
+    "sec_url": "https://www.sec.gov/Archives/edgar/data/104169/000010416926000055/wmt-20260131.htm",
+    "extracted_at_utc": "2026-11-12T16:28:27.597741+00:00",
+    "verification_rule": "Source Grounding Check (verbatim digit match in cited source_snippet before math)"
+  },
+  "summary": {
+    "total_fields_checked": 12,
+    "grounded_passed": 12,
+    "hallucination_flagged": 0,
+    "all_grounded": true
+  },
+  "extracted_fields": [
+    {
+      "metric": "total_revenues",
+      "period": "FY2026 (Ended Jan 31, 2026)",
+      "extracted_value": 713163,
+      "display_value": "713,163",
+      "unit": "USD millions",
+      "source_section": "Item 8 - Consolidated Statement of Income",
+      "source_snippet": "Total revenues | 713,163 | 680,985 | 648,125",
+      "grounding": {
+        "passed": true,
+        "confidence_score": 1.0,
+        "risk_level": "LOW",
+        "hallucination_flag": false,
+        "matched_text": "713,163",
+        "reason": "Verified verbatim match '713,163' in cited source_snippet."
+      }
+    },
+    {
+      "metric": "operating_income",
+      "period": "FY2026 (Ended Jan 31, 2026)",
+      "extracted_value": 29825,
+      "display_value": "29,825",
+      "unit": "USD millions",
+      "source_section": "Item 8 - Consolidated Statement of Income",
+      "source_snippet": "Operating income | $ | 29,825 | $ | 29,348",
+      "grounding": {
+        "passed": true,
+        "confidence_score": 1.0,
+        "risk_level": "LOW",
+        "hallucination_flag": false,
+        "matched_text": "29,825",
+        "reason": "Verified verbatim match '29,825' in cited source_snippet."
+      }
+    },
+    {
+      "metric": "net_income_attributable_to_walmart",
+      "period": "FY2026 (Ended Jan 31, 2026)",
+      "extracted_value": 21893,
+      "display_value": "21,893",
+      "unit": "USD millions",
+      "source_section": "Item 8 - Consolidated Statement of Income",
+      "source_snippet": "Consolidated net income attributable to Walmart | $ | 21,893 | $ | 19,436 | $ | 15,511",
+      "grounding": {
+        "passed": true,
+        "confidence_score": 1.0,
+        "risk_level": "LOW",
+        "hallucination_flag": false,
+        "matched_text": "21,893",
+        "reason": "Verified verbatim match '21,893' in cited source_snippet."
+      }
+    },
+    {
+      "metric": "total_assets",
+      "period": "As of Jan 31, 2026",
+      "extracted_value": 284668,
+      "display_value": "284,668",
+      "unit": "USD millions",
+      "source_section": "Item 8 - Consolidated Balance Sheets",
+      "source_snippet": "Total assets | $ | 284,668 | $ | 260,823 | $ | 252,399",
+      "grounding": {
+        "passed": true,
+        "confidence_score": 1.0,
+        "risk_level": "LOW",
+        "hallucination_flag": false,
+        "matched_text": "284,668",
+        "reason": "Verified verbatim match '284,668' in cited source_snippet."
+      }
+    },
+    {
+      "metric": "current_assets",
+      "period": "As of Jan 31, 2026",
+      "extracted_value": 84874,
+      "display_value": "84,874",
+      "unit": "USD millions",
+      "source_section": "Item 8 - Consolidated Balance Sheets",
+      "source_snippet": "Total current assets | 84,874 | 79,458",
+      "grounding": {
+        "passed": true,
+        "confidence_score": 1.0,
+        "risk_level": "LOW",
+        "hallucination_flag": false,
+        "matched_text": "84,874",
+        "reason": "Verified verbatim match '84,874' in cited source_snippet."
+      }
+    },
+    {
+      "metric": "current_liabilities",
+      "period": "As of Jan 31, 2026",
+      "extracted_value": 107469,
+      "display_value": "107,469",
+      "unit": "USD millions",
+      "source_section": "Item 8 - Consolidated Balance Sheets",
+      "source_snippet": "Total current liabilities | 107,469 | 96,584",
+      "grounding": {
+        "passed": true,
+        "confidence_score": 1.0,
+        "risk_level": "LOW",
+        "hallucination_flag": false,
+        "matched_text": "107,469",
+        "reason": "Verified verbatim match '107,469' in cited source_snippet."
+      }
+    },
+    {
+      "metric": "walmart_shareholders_equity",
+      "period": "As of Jan 31, 2026",
+      "extracted_value": 99617,
+      "display_value": "99,617",
+      "unit": "USD millions",
+      "source_section": "Item 8 - Consolidated Balance Sheets",
+      "source_snippet": "Total Walmart shareholders' equity | 99,617 | 91,013",
+      "grounding": {
+        "passed": true,
+        "confidence_score": 1.0,
+        "risk_level": "LOW",
+        "hallucination_flag": false,
+        "matched_text": "99,617",
+        "reason": "Verified verbatim match '99,617' in cited source_snippet."
+      }
+    },
+    {
+      "metric": "operating_cash_flow",
+      "period": "FY2026 (Ended Jan 31, 2026)",
+      "extracted_value": 41565,
+      "display_value": "41,565",
+      "unit": "USD millions",
+      "source_section": "Item 8 - Consolidated Statement of Cash Flows",
+      "source_snippet": "Net cash provided by operating activities | $ | 41,565 | $ | 36,443 | $ | 35,726",
+      "grounding": {
+        "passed": true,
+        "confidence_score": 1.0,
+        "risk_level": "LOW",
+        "hallucination_flag": false,
+        "matched_text": "41,565",
+        "reason": "Verified verbatim match '41,565' in cited source_snippet."
+      }
+    },
+    {
+      "metric": "capital_expenditures",
+      "period": "FY2026 (Ended Jan 31, 2026)",
+      "extracted_value": 26642,
+      "display_value": "26,642",
+      "unit": "USD millions",
+      "source_section": "Item 8 - Consolidated Statement of Cash Flows",
+      "source_snippet": "Payments for property and equipment | (26,642) | (23,783) | (20,606)",
+      "grounding": {
+        "passed": true,
+        "confidence_score": 1.0,
+        "risk_level": "LOW",
+        "hallucination_flag": false,
+        "matched_text": "26,642",
+        "reason": "Verified verbatim match '26,642' in cited source_snippet."
+      }
+    },
+    {
+      "metric": "weighted_avg_shares_basic",
+      "period": "FY2026 (Ended Jan 31, 2026)",
+      "extracted_value": 7983,
+      "display_value": "7,983",
+      "unit": "shares (millions)",
+      "source_section": "Item 8 - Consolidated Statement of Income",
+      "source_snippet": "Basic | 7,983 | 8,041 | 8,077",
+      "grounding": {
+        "passed": true,
+        "confidence_score": 1.0,
+        "risk_level": "LOW",
+        "hallucination_flag": false,
+        "matched_text": "7,983",
+        "reason": "Verified verbatim match '7,983' in cited source_snippet."
+      }
+    },
+    {
+      "metric": "weighted_avg_shares_diluted",
+      "period": "FY2026 (Ended Jan 31, 2026)",
+      "extracted_value": 8022,
+      "display_value": "8,022",
+      "unit": "shares (millions)",
+      "source_section": "Item 8 - Consolidated Statement of Income",
+      "source_snippet": "Diluted | 8,022 | 8,081 | 8,108",
+      "grounding": {
+        "passed": true,
+        "confidence_score": 1.0,
+        "risk_level": "LOW",
+        "hallucination_flag": false,
+        "matched_text": "8,022",
+        "reason": "Verified verbatim match '8,022' in cited source_snippet."
+      }
+    },
+    {
+      "metric": "item_9b_rule_10b5_1_shares",
+      "period": "Plan dated Dec 24, 2025",
+      "extracted_value": 34800,
+      "display_value": "34,800",
+      "unit": "shares",
+      "source_section": "Item 9B - Other Information (#i6e16e33efce1499a82f13fd9f63b74c6_199)",
+      "source_snippet": "Trading Plans of Directors and Executive Officers On December 24, 2025, Chris Nicholas, Executive Vice President, President and Chief Executive Officer, Walmart International, entered into a stock trading plan designed to comply with Rule 10b5-1 under the Securities Exchange Act of 1934. Under the terms of the plan, Mr. Nicholas will sell an aggregate 34,800 shares of common stock in trades scheduled",
+      "grounding": {
+        "passed": true,
+        "confidence_score": 1.0,
+        "risk_level": "LOW",
+        "hallucination_flag": false,
+        "matched_text": "34,800",
+        "reason": "Verified verbatim match '34,800' in cited source_snippet."
+      }
+    }
+  ],
+  "derived_metrics": [
+    {
+      "metric": "free_cash_flow",
+      "formula": "operating_cash_flow - capital_expenditures",
+      "value": 14923.0,
+      "unit": "USD millions",
+      "blocked": false,
+      "reason": "All inputs verified via Source Grounding Check prior to calculation.",
+      "required_inputs": [
+        "operating_cash_flow",
+        "capital_expenditures"
+      ]
+    },
+    {
+      "metric": "operating_margin_pct",
+      "formula": "(operating_income / total_revenues) * 100",
+      "value": 4.18,
+      "unit": "%",
+      "blocked": false,
+      "reason": "All inputs verified via Source Grounding Check prior to calculation.",
+      "required_inputs": [
+        "operating_income",
+        "total_revenues"
+      ]
+    },
+    {
+      "metric": "net_margin_pct",
+      "formula": "(net_income_attributable_to_walmart / total_revenues) * 100",
+      "value": 3.07,
+      "unit": "%",
+      "blocked": false,
+      "reason": "All inputs verified via Source Grounding Check prior to calculation.",
+      "required_inputs": [
+        "net_income_attributable_to_walmart",
+        "total_revenues"
+      ]
+    },
+    {
+      "metric": "current_ratio",
+      "formula": "current_assets / current_liabilities",
+      "value": 0.7898,
+      "unit": "ratio",
+      "blocked": false,
+      "reason": "All inputs verified via Source Grounding Check prior to calculation.",
+      "required_inputs": [
+        "current_assets",
+        "current_liabilities"
+      ]
+    }
+  ]
+}
