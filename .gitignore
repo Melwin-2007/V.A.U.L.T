@@ -35,6 +35,8 @@ test_output/
 tmp/
 temp/
 .edgar/
+.edgar_cache/
+.edgar_test/
 edgar_data/
 
 # Environment & secrets
