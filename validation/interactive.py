@@ -140,7 +140,6 @@ def _apply_error_simulation(bs: BalanceSheetInput, mode: str) -> Tuple[BalanceSh
 
 def _formula_expr(check_id: str, formula: str) -> str:
     return {
-        "F4": "A = LE",
         "F1": "A = L + E",
         "F2": "A = L + E + NCI",
         "F3": "A = L + TE + E (+ NCI)",

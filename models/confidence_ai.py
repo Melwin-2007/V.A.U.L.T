@@ -53,9 +53,6 @@ FEATURE_NAMES: List[str] = [
     "has_nci",
     "has_mezzanine",
     "liabilities_derived",
-    "f4_available",
-    "f4_pass",
-    "f4_log_tol_ratio",
     "eq_available",
     "eq_pass",
     "eq_log_tol_ratio",
@@ -86,11 +83,10 @@ def extract_features(
     cur: PeriodValidationResult,
     pri: Optional[PeriodValidationResult] = None,
 ) -> np.ndarray:
-    """Convert Step 1-6 validation results into a 26-dim scale-invariant feature vector."""
+    """Convert Step 1-6 validation results into a 23-dim scale-invariant feature vector."""
     inp = cur.normalized_inputs
     checks_by_id = {c.formula_id: c for c in cur.checks}
 
-    f4 = checks_by_id.get("F4")
     eq = (
         checks_by_id.get("F3")
         or checks_by_id.get("F2")
@@ -115,10 +111,9 @@ def extract_features(
             q_pass = 1.0
         elif cur.triangulation.q_passed is False:
             q_pass = 0.0
-    elif f4 is not None and f4.status != CheckStatus.SKIPPED:
-        p_pass = 1.0 if f4.status == CheckStatus.PASS else 0.0
-        if eq is not None and eq.status != CheckStatus.SKIPPED and not cur.liabilities_derived:
-            q_pass = 1.0 if (f4.status == CheckStatus.PASS and eq.status == CheckStatus.PASS) else 0.0
+    elif eq is not None and eq.status != CheckStatus.SKIPPED and not cur.liabilities_derived:
+        p_pass = 1.0 if eq.status == CheckStatus.PASS else 0.5
+        q_pass = 1.0 if eq.status == CheckStatus.PASS else 0.5
 
     prior_avail = 1.0 if pri is not None else 0.0
     if pri is None:
@@ -140,9 +135,6 @@ def extract_features(
         1.0 if (inp.get("nci") is not None and abs(inp["nci"]) > 0) else 0.0,
         1.0 if (inp.get("mezzanine_equity") is not None and abs(inp["mezzanine_equity"]) > 0) else 0.0,
         1.0 if cur.liabilities_derived else 0.0,
-        1.0 if (f4 is not None and f4.status != CheckStatus.SKIPPED) else 0.0,
-        1.0 if (f4 is not None and f4.status == CheckStatus.PASS) else 0.0,
-        _safe_log_tol_ratio(f4.gap if f4 else None, cur.tolerance),
         1.0 if (eq is not None and eq.status != CheckStatus.SKIPPED) else 0.0,
         1.0 if (eq is not None and eq.status == CheckStatus.PASS) else 0.0,
         _safe_log_tol_ratio(eq.gap if eq else None, cur.tolerance),
@@ -487,7 +479,7 @@ class BalanceSheetValidationAI:
             if cur.liabilities_and_equity is not None and (cur.equity is not None or cur.equity_with_nci is not None):
                 c_der = copy.deepcopy(cur)
                 c_der.liabilities = None
-                # Derived check only (when F4 skipped or subtotal off)
+                # Derived check only (subtotal off -> WARN)
                 c_der_only = copy.deepcopy(c_der)
                 c_der_only.current_assets = (cur.assets or 100.0) * 0.4
                 c_der_only.noncurrent_assets = (cur.assets or 100.0) * 0.45  # F7 mismatch -> WARN

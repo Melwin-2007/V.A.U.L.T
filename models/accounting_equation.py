@@ -3,7 +3,7 @@
 
 Implements the complete balance sheet validation workflow:
   Step 1: Normalize numbers to plain dollars & compute tolerance (2 * scale)
-  Step 2: Select & order formulas (F4 -> F1/F2/F3 -> F6 derived -> F7/F8 subtotals)
+  Step 2: Select & order formulas (F1/F2/F3 -> F6 derived -> F7/F8 subtotals)
   Step 3: Check result (PASS / FAIL / WARN / SKIPPED)
   Step 4: Triangulate guilty side using P (Assets = L&E) and Q (L+E = L&E)
   Step 5: Diagnose root cause via 5 ordered hypotheses:
@@ -172,7 +172,7 @@ class BalanceSheetPeriodInput:
 
 @dataclass
 class FormulaCheckResult:
-    formula_id: str  # F1, F2, F3, F4, F6, F7, F8
+    formula_id: str  # F1, F2, F3, F6, F7, F8
     formula_name: str
     expression: str
     status: CheckStatus
@@ -441,60 +441,12 @@ class AccountingEquationEngine:
         )
 
         # ------------------------------------------------------------------
-        # STEP 2 & STEP 3: Select formulas (F4 first, then F6/F1/F2/F3, F7/F8)
+        # STEP 2 & STEP 3: Select formulas (F6 derived if L missing, F1/F2/F3, F7/F8)
         # ------------------------------------------------------------------
         checks: List[FormulaCheckResult] = []
         eff_equity, nci_added, mez_added, eq_formula_id, eq_formula_desc = (
             self._resolve_effective_equity(data)
         )
-
-        # F4: Always run first (Assets = Total L&E line)
-        f4_check: FormulaCheckResult
-        if data.assets is not None and data.liabilities_and_equity is not None:
-            gap_f4 = data.assets - data.liabilities_and_equity
-            f4_pass = abs(gap_f4) <= tolerance
-            f4_status = CheckStatus.PASS if f4_pass else CheckStatus.FAIL
-            f4_reason = (
-                f"Assets ({self._fmt_dollars(data.assets)}) matches Total L&E "
-                f"({self._fmt_dollars(data.liabilities_and_equity)}); gap={self._fmt_dollars(gap_f4)} "
-                f"<= tolerance ({self._fmt_dollars(tolerance)})."
-                if f4_pass
-                else f"Assets ({self._fmt_dollars(data.assets)}) != Total L&E "
-                f"({self._fmt_dollars(data.liabilities_and_equity)}); gap={self._fmt_dollars(gap_f4)} "
-                f"> tolerance ({self._fmt_dollars(tolerance)})."
-            )
-            f4_check = FormulaCheckResult(
-                formula_id="F4",
-                formula_name="Total L&E Check",
-                expression="Assets = Total Liabilities and Equity",
-                status=f4_status,
-                lhs=data.assets,
-                rhs=data.liabilities_and_equity,
-                gap=gap_f4,
-                tolerance=tolerance,
-                reason=f4_reason,
-            )
-        else:
-            missing_f4 = [
-                n
-                for n, v in (
-                    ("Assets", data.assets),
-                    ("Total Liabilities & Equity", data.liabilities_and_equity),
-                )
-                if v is None
-            ]
-            f4_check = FormulaCheckResult(
-                formula_id="F4",
-                formula_name="Total L&E Check",
-                expression="Assets = Total Liabilities and Equity",
-                status=CheckStatus.SKIPPED,
-                lhs=data.assets,
-                rhs=data.liabilities_and_equity,
-                gap=None,
-                tolerance=tolerance,
-                reason=f"Skipped F4: missing {', '.join(missing_f4)}.",
-            )
-        checks.append(f4_check)
 
         # F6: Derive Liabilities if missing (like Amazon / Nike)
         liabilities_derived = False
@@ -515,7 +467,7 @@ class AccountingEquationEngine:
                     reason=(
                         f"Total Liabilities line not printed; derived Liabilities = "
                         f"{self._fmt_dollars(effective_liabilities)} from Total L&E - Equity. "
-                        "Because it is derived, F1/F2/F3 is circular; rely on F4 and F7/F8."
+                        "Because it is derived, F1/F2/F3 is circular; rely on F7/F8."
                     ),
                     derived_fields=["liabilities"],
                 )
@@ -532,7 +484,7 @@ class AccountingEquationEngine:
                 eq_reason = (
                     f"{eq_formula_id} evaluated with derived Liabilities (F6): "
                     f"Assets ({self._fmt_dollars(data.assets)}) vs L+E ({self._fmt_dollars(rhs_eq)}), "
-                    f"gap={self._fmt_dollars(gap_eq)} (circular check; F4 is authoritative)."
+                    f"gap={self._fmt_dollars(gap_eq)} (circular check)."
                 )
                 eq_check = FormulaCheckResult(
                     formula_id=eq_formula_id,
@@ -698,29 +650,20 @@ class AccountingEquationEngine:
             )
 
         # Determine Step 3 overall period status before diagnosis
-        any_primary_fail = f4_check.status == CheckStatus.FAIL or eq_check.status == CheckStatus.FAIL
-        primary_checks_all_skipped = (
-            f4_check.status == CheckStatus.SKIPPED and eq_check.status == CheckStatus.SKIPPED
-        )
-        # If F1/F2/F3 was skipped because Liabilities or Equity is missing AND F4 also couldn't run
-        only_derived_checked = (
-            liabilities_derived and f4_check.status == CheckStatus.SKIPPED
-        )
+        any_primary_fail = eq_check.status == CheckStatus.FAIL
+        primary_checks_all_skipped = eq_check.status == CheckStatus.SKIPPED
+        only_derived_checked = liabilities_derived
         subtotal_warn = any(
             c.formula_id in ("F7", "F8") and c.status == CheckStatus.WARN for c in checks
         )
 
         if any_primary_fail:
             period_status = CheckStatus.FAIL
-        elif primary_checks_all_skipped or (
-            eq_check.status == CheckStatus.SKIPPED and f4_check.status == CheckStatus.SKIPPED
-        ):
+        elif primary_checks_all_skipped:
             period_status = CheckStatus.SKIPPED
         elif only_derived_checked or subtotal_warn or not data.consolidated:
             period_status = CheckStatus.WARN
-        elif f4_check.status == CheckStatus.PASS or eq_check.status == CheckStatus.PASS:
-            # Note: If liabilities_derived is True and F4 passed, F4 proved Assets == Total L&E.
-            # If F4 was skipped and only non-derived eq_check passed, PASS.
+        elif eq_check.status == CheckStatus.PASS:
             period_status = CheckStatus.PASS
         else:
             period_status = CheckStatus.SKIPPED
@@ -730,7 +673,7 @@ class AccountingEquationEngine:
                 step_number=2,
                 step_name="Select & Execute Formulas",
                 status="DONE",
-                summary=f"Executed formulas {[c.formula_id for c in checks]} (F4 first, then {eq_formula_id}, then F7/F8).",
+                summary=f"Executed formulas {[c.formula_id for c in checks]} ({eq_formula_id}, then F7/F8).",
                 details={
                     "formulas_run": [
                         {"id": c.formula_id, "status": c.status.value, "gap": c.gap}
@@ -741,7 +684,7 @@ class AccountingEquationEngine:
             )
         )
 
-        primary_gap = eq_check.gap if eq_check.gap is not None else f4_check.gap
+        primary_gap = eq_check.gap
         steps.append(
             StepTrace(
                 step_number=3,
@@ -925,7 +868,7 @@ class AccountingEquationEngine:
 
             # Guess 2: Missing NCI / mezzanine equity
             # Applies if gap matches a known NCI or mezzanine line item or omitted NCI/mezzanine
-            gap_val = eq_check.gap if eq_check.gap is not None else f4_check.gap
+            gap_val = eq_check.gap
             if gap_val is not None:
                 nci_candidates: List[Tuple[str, float]] = []
                 if data.nci is not None and abs(data.nci) > tolerance:
@@ -1128,16 +1071,7 @@ class AccountingEquationEngine:
             action = "AUTO_APPROVE_ELIGIBLE"
             reason = (
                 f"PASS: Balance sheet balances within tolerance ({self._fmt_dollars(tolerance)}). "
-                + (
-                    f"F4 passed ({self._fmt_dollars(data.assets)} == {self._fmt_dollars(data.liabilities_and_equity)})"
-                    if f4_check.status == CheckStatus.PASS
-                    else f"{eq_formula_id} passed"
-                )
-                + (
-                    "; Liabilities derived via F6."
-                    if liabilities_derived
-                    else f" and {eq_formula_id} passed."
-                )
+                f"{eq_formula_id} passed."
             )
         elif period_status == CheckStatus.FAIL:
             if blamed_metric and not is_ambiguous:

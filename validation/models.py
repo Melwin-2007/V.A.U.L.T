@@ -163,7 +163,7 @@ class ValidationConfig:
     derived_delta: float = -0.05
     skipped_delta: float = 0.00
     enabled_formulas: List[str] = field(
-        default_factory=lambda: ["F4", "F1", "F2", "F3", "F5", "F6", "F7", "F8"]
+        default_factory=lambda: ["F1", "F2", "F3", "F5", "F6", "F7", "F8"]
     )
     hypothesis_order: List[str] = field(
         default_factory=lambda: [
@@ -202,7 +202,7 @@ class ValidationConfig:
             derived_delta=float(conf.get("derived_delta", -0.05)),
             skipped_delta=float(conf.get("skipped_delta", 0.00)),
             enabled_formulas=list(
-                raw.get("enabled_formulas", ["F4", "F1", "F2", "F3", "F5", "F6", "F7", "F8"])
+                raw.get("enabled_formulas", ["F1", "F2", "F3", "F5", "F6", "F7", "F8"])
             ),
             hypothesis_order=list(
                 raw.get(

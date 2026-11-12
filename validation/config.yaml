@@ -24,7 +24,6 @@ confidence:
   skipped_delta: 0.00
 
 enabled_formulas:
-  - F4
   - F1
   - F2
   - F3

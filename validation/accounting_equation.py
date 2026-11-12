@@ -445,7 +445,7 @@ def _validate_single_period(
     cfg: ValidationConfig,
     prior_raw: Optional[BalanceSheetPeriodInput] = None,
 ) -> List[CheckResult]:
-    """Run ordered checks F4 -> F1/F2/F3 -> F5 -> F7 -> F8 (plus F6 derivation if L missing) on one period."""
+    """Run ordered checks F1/F2/F3 -> F5 -> F7 -> F8 (plus F6 derivation if L missing) on one period."""
     period, scale_err = _normalize_period(raw_period, cfg, prior_fallback=prior_raw)
     if scale_err:
         return [
@@ -468,7 +468,7 @@ def _validate_single_period(
             )
         ]
 
-    # Step 5a: F6 derivation when Total Liabilities (L) is omitted (Amazon-style)
+    # Conditional F6 derivation when Total Liabilities (L) is omitted (Amazon-style)
     derived_L = bool(period.derived_L)
     if period.L is None and "F6" in cfg.enabled_formulas and period.LE is not None and period.E is not None:
         etot = _e_total(period)
@@ -484,56 +484,7 @@ def _validate_single_period(
     results: List[CheckResult] = []
     enabled = set(cfg.enabled_formulas)
 
-    # 1) F4: A = LE (always run first)
-    if "F4" in enabled:
-        pm_err = _check_period_consistency(period, ("total_assets", "total_liabilities_and_equity"))
-        if pm_err:
-            results.append(_skipped_result(bs, period, period_role, "total_l_and_e_check", "F4", pm_err, cfg))
-        elif period.A is None or period.LE is None:
-            missing_lbl = "total assets not extracted" if period.A is None else "total liabilities and equity (LE) not printed"
-            results.append(_skipped_result(bs, period, period_role, "total_l_and_e_check", "F4", missing_lbl, cfg))
-        else:
-            gap_f4 = period.A - period.LE
-            st_f4 = "pass" if abs(gap_f4) <= tolerance else "fail"
-            exp_f4 = (
-                f"Assets {_format_scaled_amount(period.A, scale)} matches Total L&E {_format_scaled_amount(period.LE, scale)} (gap {_format_scaled_amount(gap_f4, scale)})."
-                if st_f4 == "pass"
-                else f"Assets {_format_scaled_amount(period.A, scale)} disagrees with Total L&E {_format_scaled_amount(period.LE, scale)} (gap {_format_scaled_amount(gap_f4, scale)})."
-            )
-            results.append(
-                CheckResult(
-                    cik=bs.cik,
-                    company=bs.company,
-                    accession=bs.accession,
-                    period=period.period_end,
-                    period_role=period_role,
-                    check_id="total_l_and_e_check",
-                    formula_used="F4",
-                    status=st_f4,
-                    expected=period.LE,
-                    actual=period.A,
-                    gap=gap_f4,
-                    tolerance=tolerance,
-                    triangulation={"P": st_f4, "Q": "not_run"},
-                    blamed=None if st_f4 == "pass" else "ambiguous",
-                    blame_confidence=None if st_f4 == "pass" else "ambiguous",
-                    hypotheses=[],
-                    suggested_value=period.LE if st_f4 == "fail" else None,
-                    derived=False,
-                    explanation=exp_f4,
-                    metric_decisions=_apply_check_decisions(
-                        period,
-                        cfg,
-                        st_f4,
-                        ("total_assets",),
-                        blamed=None if st_f4 == "pass" else "ambiguous",
-                        candidates=["total_assets"] if st_f4 == "fail" else None,
-                        reason=exp_f4 if st_f4 == "fail" else None,
-                    ),
-                )
-            )
-
-    # 2) Core Accounting Equation: F1 / F2 / F3
+    # 1) Core Accounting Equation: F1 / F2 / F3
     has_nci = (period.NCI is not None and period.NCI != 0) and (not period.e_includes_nci)
     has_te = period.TE is not None and period.TE != 0
     if has_te:
@@ -594,7 +545,7 @@ def _validate_single_period(
                 status_eq = "warn"
                 exp_eq = (
                     f"L derived via F6 ({_format_scaled_amount(period.L, scale)}); "
-                    f"only derived value checked by {chosen_formula} (Rely on F4/F7/F8)."
+                    f"only derived value checked by {chosen_formula} (Rely on F7/F8)."
                 )
             else:
                 status_eq = "pass"

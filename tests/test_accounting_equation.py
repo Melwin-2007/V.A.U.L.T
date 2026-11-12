@@ -84,9 +84,9 @@ def test_apple_fy2023_example_pass():
     assert res.metric_confidences["assets"] == pytest.approx(0.95)
     assert res.metric_confidences["liabilities"] == pytest.approx(0.95)
     assert res.metric_confidences["equity"] == pytest.approx(0.95)
-    # F4, F1, F7, F8 all ran and passed
+    # F1, F7, F8 all ran and passed
     chk_map = {c.formula_id: c for c in res.current_period.checks}
-    assert chk_map["F4"].status == CheckStatus.PASS
+    assert "F4" not in chk_map
     assert chk_map["F1"].status == CheckStatus.PASS
     assert chk_map["F7"].status == CheckStatus.PASS
     assert chk_map["F8"].status == CheckStatus.PASS
@@ -108,9 +108,8 @@ def test_missing_inputs_never_mark_pass():
     assert res.action == "SKIPPED_DEFER_TO_OTHER_CHECKS"
 
 
-def test_f6_derived_liabilities_only_warns_when_f4_missing():
+def test_f6_derived_liabilities_only_warns():
     engine = AccountingEquationEngine()
-    # F4 skipped because Assets & L&E not directly verified? Wait: if L&E is present and Assets missing -> SKIPPED.
     # Subtotal mismatch with derived liabilities -> WARN
     p = BalanceSheetPeriodInput(
         period_label="2026-06-30",
@@ -310,15 +309,15 @@ def test_audit_log_append_only(tmp_path: Path):
 def test_cik_loader_and_ai_real_repo_filings():
     ai = BalanceSheetValidationAI()
 
-    # Apple (CIK 0000320193) - F4 + F1 + F7 + F8
+    # Apple (CIK 0000320193) - F1 + F7 + F8
     rep_aapl = ai.validate_cik(320193)
     assert rep_aapl.verdict == CheckStatus.PASS
     assert rep_aapl.model_confidence >= 0.85
     assert rep_aapl.cik == "0000320193"
 
-    # Amazon (CIK 0001018724) - F6 derived liabilities + F4
+    # Amazon (CIK 0001018724) - F6 derived liabilities -> WARN (no F4)
     rep_amzn = ai.validate_cik("0001018724")
-    assert rep_amzn.verdict == CheckStatus.PASS
+    assert rep_amzn.verdict == CheckStatus.WARN
     assert rep_amzn.validation_result.current_period.liabilities_derived is True
     assert rep_amzn.model_confidence >= 0.80
 
@@ -327,9 +326,9 @@ def test_cik_loader_and_ai_real_repo_filings():
     assert rep_tsla.verdict == CheckStatus.PASS
     assert rep_tsla.validation_result.current_period.effective_equity_formula == "F3"
 
-    # Walt Disney (CIK 0001744489) - F2 (NCI) + F6 (derived liabilities)
+    # Walt Disney (CIK 0001744489) - F2 (NCI) + F6 (derived liabilities -> WARN)
     rep_dis = ai.validate_cik(1744489)
-    assert rep_dis.verdict == CheckStatus.PASS
+    assert rep_dis.verdict == CheckStatus.WARN
     assert rep_dis.validation_result.current_period.effective_equity_formula == "F2"
     assert rep_dis.validation_result.current_period.liabilities_derived is True
 

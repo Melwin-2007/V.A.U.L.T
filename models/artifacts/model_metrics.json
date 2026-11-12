@@ -2,10 +2,10 @@
   "total_samples": 882,
   "unique_ciks": 28,
   "cv_folds": 5,
-  "verdict_cv_accuracy": 0.9909,
-  "verdict_cv_macro_f1": 0.9735,
-  "root_cause_cv_accuracy": 0.932,
-  "root_cause_cv_macro_f1": 0.9043,
+  "verdict_cv_accuracy": 1.0,
+  "verdict_cv_macro_f1": 1.0,
+  "root_cause_cv_accuracy": 0.9342,
+  "root_cause_cv_macro_f1": 0.901,
   "verdict_classes": [
     "FAIL",
     "PASS",
@@ -24,15 +24,15 @@
     "WRONG_ROW"
   ],
   "top_features": {
-    "has_wrong_row": 0.099,
-    "f7_status_code": 0.0986,
-    "has_sign_error": 0.0897,
-    "eq_log_tol_ratio": 0.0895,
-    "has_wrong_column": 0.0869,
-    "has_scale_error": 0.0843,
-    "eq_available": 0.062,
-    "num_hypotheses": 0.0617,
-    "single_blamed_metric": 0.0475,
-    "has_missing_nci": 0.046
+    "eq_log_tol_ratio": 0.1074,
+    "has_wrong_row": 0.0989,
+    "has_wrong_column": 0.0916,
+    "has_sign_error": 0.0883,
+    "has_scale_error": 0.0864,
+    "num_hypotheses": 0.0749,
+    "eq_available": 0.0681,
+    "eq_pass": 0.0518,
+    "single_blamed_metric": 0.0458,
+    "f7_status_code": 0.045
   }
 }

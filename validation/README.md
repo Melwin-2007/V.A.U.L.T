@@ -12,16 +12,15 @@ Deterministic, pure-Python validation engine for SEC 10-K/10-Q balance sheet fil
 Defined in [`validation/config.yaml`](config.yaml) and executed in strict order per period (`current` and `prior`):
 
 1. **F6 (Conditional Derivation)**: If `L` is omitted (Amazon/Disney/Coca-Cola pattern), derive `L = LE - E_total - TE` and mark `L` as `derived = true`.
-2. **F4**: `A = LE` — run first whenever "Total liabilities and equity" (`LE`) is printed.
-3. **F1 / F2 / F3** (`accounting_equation`):
+2. **F1 / F2 / F3** (`accounting_equation`):
    - `F1`: `A = L + E` (neither NCI nor TE)
    - `F2`: `A = L + E + NCI` (noncontrolling interest reported separately)
    - `F3`: `A = L + TE + E (+ NCI)` (temporary/mezzanine equity reported)
    - *Formula variant guard*: if `F1` fails and `gap` matches NCI or TE within tolerance, records `"formula variant mismatch"` and re-runs with `F2`/`F3`.
-   - *Derived-value trap*: when `L` is derived via `F6`, `F1`/`F2`/`F3` and `F5` never return a clean `PASS`; they return `WARN` (`"only derived value checked"`), relying on `F4`, `F7`, `F8`.
-4. **F5**: `L + TE + E_total = LE` — verifies right-side total independently.
-5. **F7**: `A = AC + ANC` — asset current/non-current subtotal check.
-6. **F8**: `L = LC + LNC` — liability current/non-current subtotal check.
+   - *Derived-value trap*: when `L` is derived via `F6`, `F1`/`F2`/`F3` and `F5` never return a clean `PASS`; they return `WARN` (`"only derived value checked"`), relying on `F7` and `F8`.
+3. **F5**: `L + TE + E_total = LE` — verifies right-side total independently.
+4. **F7**: `A = AC + ANC` — asset current/non-current subtotal check.
+5. **F8**: `L = LC + LNC` — liability current/non-current subtotal check.
 
 Tolerance is strictly scale-linked: `tolerance = tolerance_multiplier * scale` (default `2 * scale`, e.g. `$2,000,000` for statements in millions).
 

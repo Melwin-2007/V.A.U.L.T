@@ -203,13 +203,12 @@ def test_example_g_derived_liabilities_amazon_style():
     bs = BalanceSheetInput(cik="0001018724", company="AMAZON COM INC", current=period)
     report = validate_balance_sheet_input(bs)
 
-    cur_f4 = _get_check(report, "F4", "current")
     cur_eq = _get_check(report, "accounting_equation", "current")
     cur_f5 = _get_check(report, "F5", "current")
     cur_f7 = _get_check(report, "F7", "current")
     cur_f8 = _get_check(report, "F8", "current")
 
-    assert cur_f4.status == "pass"
+    assert all(r.formula_used != "F4" for r in report.results)
     assert cur_eq.derived is True
     assert cur_eq.status == "warn"  # NEVER clean PASS when L is derived!
     assert cur_f5.status == "warn"
