@@ -1,0 +1,712 @@
+import json
+import os
+import re
+from enum import Enum
+from functools import lru_cache
+from io import StringIO
+from typing import Any, Dict, List, Optional, Tuple, Union
+
+import pandas as pd
+import pyarrow as pa
+from httpx2 import Timeout
+
+from edgar.core import listify, log
+from edgar.settings import get_edgar_data_directory
+from edgar.exceptions import http_status
+from edgar.httprequests import download_file, download_json, get_once, inspect_response
+from edgar.reference.data.common import read_csv_from_package, read_parquet_from_package
+
+__all__ = ['cusip_ticker_mapping', 'get_ticker_from_cusip', 'get_company_tickers', 'get_icon_from_ticker', 'find_cik',
+           'get_cik_tickers', 'get_company_ticker_name_exchange', 'get_companies_by_exchange', 'popular_us_stocks',
+           'get_mutual_fund_tickers', 'find_mutual_fund_cik', 'list_all_tickers', 'find_ticker', 'find_ticker_safe', 'get_cik_ticker_lookup',
+           'get_company_cik_lookup', 'get_cik_tickers_from_ticker_txt', 'get_cik_tickers', 'get_company_tickers',
+           'Exchange', 'find_retired_ticker_cik'
+           ]
+
+from edgar.urls import build_company_tickers_exchange_url, build_company_tickers_url, build_mutual_fund_tickers_url, build_ticker_url
+
+# The bundled CUSIP->Ticker table (ct.pq) is generated upstream by edgar-storage
+# and merged in by scripts/build_ct_pq.py, and it has arrived with symbols that
+# are not symbols. Three families seen so far:
+#
+#   1. A placeholder concatenated onto a real ticker: 'FERG' + 'XXXX'. The feed
+#      uses a bare 'XXXX' when it does not know the symbol, so a CUSIP observed
+#      under both its real symbol and the placeholder emits 'FERGXXXX'.
+#   2. Corporate-action artifacts: 'Q999SPNOFF', 'T014RTSPYMNT', '3111REG'.
+#   3. Bare CUSIP fragments standing in for a symbol: '9105', 'B354MR'.
+#
+# None of these resolve to anything, and the 13F parsers assign this value
+# straight into a user-facing Ticker column, so leaving them in renders wrong
+# data rather than an empty cell. Strip the placeholder (which recovers a real
+# ticker) and drop whatever still is not shaped like a symbol.
+# See GH #978, upstream edgar-storage#5.
+_PLACEHOLDER_TICKER_SUFFIX = r"XXXX$"
+
+# Deliberately permissive at 7 characters: it keeps the preferred-share
+# convention this feed uses ('MITTPRA' for MITT series A) and class suffixes
+# ('BRK.A', 'BF-B'), while rejecting family 2 and 3 above.
+_VALID_TICKER_PATTERN = r"[A-Z][A-Z0-9.\-]{0,6}"
+
+
+def sanitize_cusip_tickers(df: pd.DataFrame) -> Tuple[pd.DataFrame, Dict[str, int]]:
+    """
+    Drop malformed symbols from a [Cusip, Ticker] frame.
+
+    Internal — used by scripts/build_ct_pq.py when regenerating ct.pq, and by the
+    tests that guard the bundled file. Not part of the public API.
+
+    Returns the cleaned frame alongside a count per rule, so a rebuild can report
+    what it threw away and refuse to ship a file that suddenly rejects far more
+    than usual.
+    """
+    original = df["Ticker"].astype("string").fillna("").str.strip()
+    stripped = original.str.replace(_PLACEHOLDER_TICKER_SUFFIX, "", regex=True)
+    well_formed = stripped.str.fullmatch(_VALID_TICKER_PATTERN).fillna(False)
+
+    stats = {
+        "rows_in": len(df),
+        "placeholder_suffix_stripped": int((stripped != original).sum()),
+        "dropped_empty": int((stripped.str.len() == 0).sum()),
+        "dropped_malformed": int((~well_formed & (stripped.str.len() > 0)).sum()),
+    }
+
+    cleaned = (
+        df.assign(Ticker=stripped.astype(str))
+        .loc[well_formed.to_numpy()]
+        .reset_index(drop=True)
+    )
+    stats["rows_out"] = len(cleaned)
+    return cleaned, stats
+
+
+@lru_cache(maxsize=1)
+def cusip_ticker_mapping(allow_duplicate_cusips: bool = True) -> pd.DataFrame:
+    """
+    Get the Cusip to Ticker mapping as a DataFrame with Cusip as the index.
+
+    Used by 13F parsers for vectorized DataFrame.map() operations.
+
+    CUSIP can be duplicate to get non duplicate Cusips set allow_duplicate_cusips to False.
+    This will return only the first occurrence of the Cusip.
+    The first occurrence of the Cusip will also be most likely to be mapped to a Ticker that is linked to a cik
+    """
+    df = read_parquet_from_package('ct.pq').set_index('Cusip')
+    if not allow_duplicate_cusips:
+        df = df[~df.index.duplicated(keep='first')]
+    return df
+
+
+@lru_cache(maxsize=1)
+def _cusip_ticker_dict() -> dict:
+    """
+    Build a CUSIP -> Ticker dict for fast single-key lookups.
+
+    Deduplicates by keeping the first occurrence (most likely to be
+    mapped to a ticker linked to a CIK). Used by get_ticker_from_cusip().
+    """
+    df = read_parquet_from_package('ct.pq')
+    # Keep first occurrence per CUSIP (same semantics as allow_duplicate_cusips=False)
+    dedup = df[~df['Cusip'].duplicated(keep='first')]
+    return dict(zip(dedup['Cusip'], dedup['Ticker']))
+
+
+def load_company_tickers_from_package() -> Optional[pd.DataFrame]:
+    """
+    Load company tickers from the bundled parquet file.
+
+    This provides instant, offline access to ticker data without network calls.
+    The bundled data is updated with each release.
+
+    Returns:
+        DataFrame with columns [cik, ticker, company, exchange] or None if not available
+        Note: The 'exchange' column is available but optional for backward compatibility
+    """
+    try:
+        df = read_parquet_from_package('company_tickers.parquet')
+
+        # Transform schema from edgar-storage format to edgartools format
+        # edgar-storage schema: [cik (string), ticker, exchange, name]
+        # edgartools schema: [cik (int64), ticker, company, exchange]
+
+        # Rename 'name' to 'company' for backward compatibility
+        if 'name' in df.columns:
+            df = df.rename(columns={'name': 'company'})
+
+        # Convert CIK from zero-padded string to int64
+        # Check if CIK is not already int64 (handles 'object', 'string', etc.)
+        if df['cik'].dtype != 'int64':
+            df['cik'] = df['cik'].astype(str).str.lstrip('0').replace('', '0').astype('int64')
+
+        return df
+    except Exception as e:
+        log.warning(f"Failed to load company_tickers.parquet from package: {e}")
+        return None
+
+
+def load_tickers_from_local() -> Optional[Dict[str, Any]]:
+    """
+    Load tickers from local downloaded data (used with EDGAR_USE_LOCAL_DATA).
+    """
+    reference_dir = get_edgar_data_directory() / "reference"
+    if not reference_dir.exists():
+        return None
+    company_tickers_file = reference_dir / os.path.basename(build_company_tickers_url())
+    if not company_tickers_file.exists():
+        return None
+    return json.loads(company_tickers_file.read_text())
+
+
+def get_company_tickers(
+        as_dataframe: bool = True,
+        clean_name: bool = True,
+        clean_suffix: bool = False
+) -> Union[pd.DataFrame, pa.Table]:
+    """
+    Get company ticker data with CIK mappings.
+
+    Data is loaded in this priority order:
+    1. Bundled parquet file (instant, offline)
+    2. Local downloaded data (if EDGAR_USE_LOCAL_DATA is set)
+    3. Live SEC API (network call)
+
+    Args:
+        as_dataframe (bool): If True, returns pandas DataFrame; if False, returns pyarrow Table
+        clean_name (bool): If True, cleans company names
+        clean_suffix (bool): If True, removes common company suffixes
+
+    Returns:
+        Union[pd.DataFrame, pa.Table]: Processed company data with columns [cik, ticker, company, exchange]
+        Note: exchange column is available when loaded from bundled parquet (may be None for some entries)
+    """
+    # Get raw data (cached internally)
+    df = _get_company_tickers_raw()
+
+    # Only copy if we need to transform (avoids 1.5MB copy for lookup-only paths)
+    needs_transform = clean_name or clean_suffix
+    if needs_transform:
+        df = df.copy()
+        if clean_name:
+            df['company'] = df['company'].apply(clean_company_name)
+        if clean_suffix:
+            df['company'] = df['company'].apply(clean_company_suffix)
+
+    if as_dataframe:
+        return df
+
+    # Convert to pyarrow Table
+    cik_array = pa.array(df['cik'].tolist(), type=pa.int64())
+    ticker_array = pa.array(df['ticker'].tolist(), type=pa.string())
+    company_array = pa.array(df['company'].tolist(), type=pa.string())
+
+    schema = pa.schema([
+        ('cik', pa.int64()),
+        ('ticker', pa.string()),
+        ('company', pa.string())
+    ])
+    return pa.Table.from_arrays(
+        [cik_array, ticker_array, company_array],
+        schema=schema
+    )
+
+
+@lru_cache(maxsize=1)
+def _get_company_tickers_raw() -> pd.DataFrame:
+    """
+    Internal function to get raw company ticker data with caching.
+
+    Tries sources in order:
+    1. Bundled parquet file (instant, offline) - includes exchange column
+    2. Local downloaded data (if EDGAR_USE_LOCAL_DATA is set)
+    3. Live SEC API (network call)
+
+    Returns:
+        pd.DataFrame: Raw company data with columns [cik, ticker, company, exchange]
+        Note: exchange column may not be present for non-parquet sources
+    """
+    # Priority 1: Try bundled parquet data (instant, offline)
+    df = load_company_tickers_from_package()
+    if df is not None:
+        return df
+
+    # Priority 2: Try local downloaded data (if EDGAR_USE_LOCAL_DATA)
+    tickers_json = None
+    if os.getenv("EDGAR_USE_LOCAL_DATA"):
+        tickers_json = load_tickers_from_local()
+
+    # Priority 3: Fetch from SEC API
+    if tickers_json is None:
+        try:
+            tickers_json = download_json(build_company_tickers_url())
+        except Exception as e:
+            log.error(f"Error fetching company tickers from [{build_company_tickers_url()}]: {str(e)}")
+            raise
+
+    # Process JSON data
+    ciks = []
+    tickers = []
+    companies = []
+
+    for item in tickers_json.values():
+        ciks.append(int(item['cik_str']))
+        tickers.append(item['ticker'])
+        companies.append(item['title'])
+
+    return pd.DataFrame({
+        'cik': ciks,
+        'ticker': tickers,
+        'company': companies
+    })
+
+def load_cik_tickers_from_local() -> Optional[str]:
+    """
+    Load tickers.txt from local data.
+
+    Note: ticker.txt is deprecated by SEC (returns 503/apology page as of Dec 2024).
+    This function is kept for backward compatibility with existing local data.
+    """
+    reference_dir = get_edgar_data_directory() / "reference"
+    if not reference_dir.exists():
+        return None
+    tickers_txt_file = reference_dir / os.path.basename(build_ticker_url())
+    if not tickers_txt_file.exists():
+        return None
+    return tickers_txt_file.read_text()
+
+
+def get_cik_tickers_from_ticker_txt():
+    """
+    Get CIK and ticker data from ticker.txt file.
+
+    DEPRECATED: The SEC's ticker.txt endpoint now returns a 503 "apology" page.
+    This function is kept for backward compatibility but will typically return None.
+    Use get_company_tickers() instead, which uses the bundled parquet data.
+    """
+    try:
+        if os.getenv("EDGAR_USE_LOCAL_DATA"):
+            ticker_txt = load_cik_tickers_from_local()
+            if not ticker_txt:
+                # Don't try to fetch from SEC - endpoint is deprecated
+                return None
+        else:
+            # Don't try to fetch from SEC - endpoint is deprecated
+            return None
+
+        source = StringIO(ticker_txt)
+        data = pd.read_csv(source,
+                           sep='\t',
+                           header=None,
+                           names=['ticker', 'cik']).dropna()
+        data['ticker'] = data['ticker'].str.upper()
+        return data
+    except Exception as e:
+        log.debug(f"ticker.txt not available (deprecated): {str(e)}")
+        return None
+
+
+@lru_cache(maxsize=1)
+def get_cik_tickers():
+    """
+    Get ticker to CIK mappings.
+
+    Uses bundled parquet data for instant offline access.
+    Falls back to SEC API only if bundled data is unavailable.
+    """
+    # Primary source: company_tickers.json (via bundled parquet or SEC API)
+    return get_company_tickers(clean_name=False, clean_suffix=False)[['ticker', 'cik']]
+
+@lru_cache(maxsize=1)
+def list_all_tickers():
+    """List all tickers from the merged data"""
+    return get_cik_tickers()['ticker'].tolist()
+
+
+@lru_cache(maxsize=1)
+def get_company_cik_lookup():
+    df = get_cik_tickers()
+
+    lookup = {}
+    for ticker, cik in zip(df['ticker'], df['cik'], strict=False):
+        # Add original ticker
+        lookup[ticker] = cik
+
+        # Add base ticker (part before '-')
+        base_ticker = ticker.split('-')[0]
+        if base_ticker not in lookup:
+            lookup[base_ticker] = cik
+
+    return lookup
+
+
+def _is_derivative_ticker(ticker: str, siblings: list[str]) -> bool:
+    """Preferred/unit/warrant tickers: hyphenated (JPM-PC, KCAC-UN), or a
+    sibling plus only U/W/R (BEATW, ALFUU). Share-class letters (FOXA, GOOGL)
+    are not derivatives."""
+    if '-' in ticker:
+        return True
+    return any(
+        ticker != s and ticker.startswith(s) and set(ticker[len(s):]) <= {'U', 'W', 'R'}
+        for s in siblings
+    )
+
+
+@lru_cache(maxsize=1)
+def get_cik_ticker_lookup():
+    """Create a mapping of CIK to the primary ticker symbol for each CIK.
+
+    SEC lists a CIK's tickers primary-first (GOOGL before GOOG, CMCSA before
+    the CCZ note), so the listed order decides, after demoting OTC tickers and
+    derivative tickers (preferreds, units, warrants). A missing exchange is not
+    demoted: a new SPAC lists its shares before they trade.
+    """
+    df = _get_company_tickers_raw()
+    exchanges = df['exchange'] if 'exchange' in df.columns else [None] * len(df)
+    by_cik: dict[int, list[tuple[str, object]]] = {}
+    for ticker, cik, exchange in zip(df['ticker'], df['cik'], exchanges, strict=True):
+        by_cik.setdefault(cik, []).append((ticker, exchange))
+
+    cik_to_ticker = {}
+    for cik, rows in by_cik.items():
+        siblings = [ticker for ticker, _ in rows]
+        best = min(
+            range(len(rows)),
+            key=lambda i: (rows[i][1] == 'OTC', _is_derivative_ticker(siblings[i], siblings), i),
+        )
+        cik_to_ticker[cik] = siblings[best]
+    return cik_to_ticker
+
+
+@lru_cache(maxsize=128)
+def find_ticker(cik: Union[int, str]) -> str:
+    """Find the ticker symbol for a given CIK.
+    Returns empty string if no ticker is found.
+
+    Args:
+        cik: Central Index Key (CIK) as integer or string
+
+    Returns:
+        str: Ticker symbol or empty string if not found
+    """
+    try:
+        # Ensure cik is an integer
+        cik = int(str(cik).lstrip('0'))
+        return get_cik_ticker_lookup().get(cik, "")
+    except (ValueError, TypeError):
+        return ""
+
+
+def find_ticker_safe(cik: Union[int, str]) -> Optional[str]:
+    """Find the ticker symbol for a given CIK without making network calls.
+    Returns None if data is not already cached and would require a network call.
+    Returns empty string if CIK is found but has no ticker.
+
+    This function is designed for use cases where network calls should be avoided,
+    such as in rich display methods that should be fast and not block on I/O.
+
+    Args:
+        cik: Central Index Key (CIK) as integer or string
+
+    Returns:
+        Optional[str]: Ticker symbol, empty string if no ticker found, or None if network call would be required
+    """
+    try:
+        # Simple approach: check if all required cache functions have data
+        # Only proceed if all the underlying data is already cached
+        if (get_cik_ticker_lookup.cache_info().currsize > 0 and
+            get_company_cik_lookup.cache_info().currsize > 0 and
+            get_cik_tickers.cache_info().currsize > 0):
+
+            # If we have cached data, try to use it
+            cik = int(str(cik).lstrip('0'))
+
+            # This should be fast since data is cached
+            lookup_dict = get_cik_ticker_lookup()
+            return lookup_dict.get(cik, "")
+        else:
+            # Not all required data is cached, return None to avoid network calls
+            return None
+
+    except Exception:
+        # Any error (including potential network errors) returns None
+        # This ensures we never trigger network calls
+        return None
+
+@lru_cache(maxsize=1)
+def get_company_ticker_name_exchange():
+    """
+    Return a DataFrame with columns [cik	name	ticker	exchange]
+    """
+    data = download_json(build_company_tickers_exchange_url())
+    return pd.DataFrame(data['data'], columns=data['fields'])
+
+
+def get_companies_by_exchange(exchange: Union[List[str], str]):
+    """
+    Get companies listed on a specific exchange.
+
+    :param exchange: String, like 'Nasdaq' or 'NYSE'
+    :return: DataFrame with companies listed on the specified exchange
+    with columns [cik	name	ticker	exchange]
+    """
+    df = get_company_ticker_name_exchange()
+    exchanges = [ex.lower() for ex in listify(exchange)]
+    return df[df['exchange'].str.lower().isin(exchanges)].reset_index(drop=True)
+
+
+@lru_cache(maxsize=1)
+def get_mutual_fund_tickers():
+    """
+    Get mutual fund tickers.
+    This returns a dataframe with columns
+        cik    seriesId     classId ticker
+    """
+    data = download_json(build_mutual_fund_tickers_url())
+    return pd.DataFrame(data['data'], columns=['cik', 'seriesId', 'classId', 'ticker'])
+
+
+# The ticker -> CIK dict, memoized against the frame it was built from rather
+# than in its own lru_cache. A second cache layer froze whichever frame
+# get_mutual_fund_tickers() returned first, so a cleared or patched frame left
+# find_mutual_fund_cik() answering from stale data for the rest of the process.
+_mutual_fund_lookup_cache: tuple = (None, None)
+
+
+def get_mutual_fund_lookup():
+    global _mutual_fund_lookup_cache
+    df = get_mutual_fund_tickers()
+    cached_df, lookup = _mutual_fund_lookup_cache
+    if cached_df is not df:
+        lookup = dict(zip(df['ticker'], df['cik'], strict=False))
+        _mutual_fund_lookup_cache = (df, lookup)
+    return lookup
+
+
+def find_mutual_fund_cik(ticker):
+    """
+    Find the CIK for a given mutual fund or ETF ticker.
+
+    :param ticker: String, the ticker symbol to look up
+    :return: Integer, the CIK for the given ticker, or None if not found
+    """
+    lookup = get_mutual_fund_lookup()
+    return lookup.get(ticker.upper())
+
+
+# One short attempt: the bundle answers when SEC can't, so don't wait out retries offline
+LIVE_TICKERS_TIMEOUT = Timeout(10.0, connect=3.0)
+
+
+@lru_cache(maxsize=1)
+def _get_live_company_cik_lookup() -> Optional[dict]:
+    """
+    Fetch the live company_tickers.json from the SEC and build a ticker→CIK dict.
+
+    Fetched once per session; find_company_cik() asks it before the bundled
+    parquet, which goes stale between refreshes. Returns None on network failure.
+    """
+    try:
+        response = get_once(build_company_tickers_url(), timeout=LIVE_TICKERS_TIMEOUT)
+        inspect_response(response)
+        tickers_json = response.json()
+        lookup = {}
+        for item in tickers_json.values():
+            ticker = item['ticker'].upper()
+            cik = int(item['cik_str'])
+            lookup[ticker] = cik
+            base = ticker.split('-')[0]
+            if base not in lookup:
+                lookup[base] = cik
+        return lookup
+    except Exception as e:
+        log.debug(f"Failed to fetch live ticker data from SEC: {e}")
+        return None
+
+
+def find_company_cik(ticker):
+    ticker = ticker.upper().replace('.', '-')
+    if os.getenv("EDGAR_USE_LOCAL_DATA"):
+        lookups = (get_company_cik_lookup, _get_live_company_cik_lookup)
+    else:
+        # SEC's live file first: the bundle is a snapshot, and a ticker that moves
+        # to a new registrant after it is taken keeps answering the old CIK
+        # (GH #1588: XOM is 2115436 since 2026, the bundle still says 34088).
+        # The bundle answers offline, and for tickers SEC no longer lists.
+        lookups = (_get_live_company_cik_lookup, get_company_cik_lookup)
+    for get_lookup in lookups:
+        lookup = get_lookup()
+        if lookup is not None and ticker in lookup:
+            return lookup[ticker]
+    return None
+
+def find_company_ticker(cik: Union[int, str]) -> Union[str, List[str], None]:
+    """
+    Find the ticker for a given CIK.
+
+    :param cik (int or str):        The CIK to look up
+    :return Union[str, List[str]]:  A single ticker string if only one ticker is found,
+                                    a list of ticker strings if multiple tickers are found,
+                                    or an empty list if no tickers are found.
+    """
+    try:
+        # Ensure cik is a string without leading zeros, then convert to int
+        cik = str(cik).lstrip('0')
+        cik = int(cik)
+    except (ValueError, TypeError):
+        return None
+
+    # Get DataFrame of CIK-Ticker mappings
+    df = get_cik_tickers()
+
+    # Ensure 'cik' and 'ticker' columns exist
+    if 'cik' not in df.columns or 'ticker' not in df.columns:
+        return None
+
+    # Filter DataFrame for the given CIK
+    ticker_series = df[df['cik'] == cik]['ticker']
+
+    # If no tickers found, return None
+    if ticker_series.empty:
+        return None
+
+    # Filter out None values from tickers
+    tickers = [ticker for ticker in ticker_series.to_numpy() if ticker is not None]
+
+    # Return a single ticker if only one found
+    if len(tickers) == 1:
+        return tickers[0]
+
+    return tickers
+
+def find_cik(ticker):
+    """
+    Find the CIK for a given ticker, checking company, mutual fund/ETF and retired-ticker data.
+
+    :param ticker: String, the ticker symbol to look up
+    :return: Integer, the CIK for the given ticker, or None if not found
+    """
+    # First, check company CIKs
+    cik = find_company_cik(ticker)
+    if cik is not None:
+        return cik
+
+    # If not found, check mutual fund/ETF CIKs
+    cik = find_mutual_fund_cik(ticker)
+    if cik is not None:
+        return cik
+
+    # Last, a ticker SEC has retired. Current mappings always win, so a reused ticker
+    # resolves to its new owner (GH #1829).
+    return find_retired_ticker_cik(ticker)
+
+
+@lru_cache(maxsize=1)
+def _get_retired_ticker_lookup() -> Dict[str, int]:
+    df = read_csv_from_package('retired_tickers.csv', dtype={'ticker': str, 'cik': int})
+    return {ticker.upper(): int(cik) for ticker, cik in zip(df['ticker'], df['cik'], strict=True)}
+
+
+def find_retired_ticker_cik(ticker: str) -> Optional[int]:
+    """
+    Find the CIK a ticker belonged to before SEC dropped it from its ticker map.
+
+    SEC's company_tickers.json lists current tickers only, so a renamed company's old
+    ticker stops resolving (EQR became VMRK in 2026; CIK 906107 is unchanged). The
+    bundled ``retired_tickers.csv`` keeps those associations. It is reviewed by hand.
+
+    :param ticker: The ticker symbol to look up
+    :return: The CIK, or None if the ticker is not a known retired ticker
+    """
+    if not isinstance(ticker, str):
+        return None
+    return _get_retired_ticker_lookup().get(ticker.upper().replace('.', '-'))
+
+
+def get_ticker_from_cusip(cusip: str) -> Optional[str]:
+    """
+    Get the ticker symbol for a given CUSIP.
+
+    Returns the ticker string or None if not found.
+    Uses a dict lookup internally for O(1) performance.
+    """
+    if not cusip:
+        return None
+    return _cusip_ticker_dict().get(cusip)
+
+
+def clean_company_name(name: str) -> str:
+    # Regular expression to match unwanted patterns at the end of the company name
+    cleaned_name = re.sub(r'[/\\][A-Z]+[/\\]?$', '', name)
+    return cleaned_name.strip()
+
+
+def clean_company_suffix(name: str) -> str:
+    """Remove common suffixes from the company name, taking care of special cases."""
+    # Remove trailing slashes
+    name = name.rstrip('/')
+    # Handle cases like "JPMORGAN CHASE & CO" or "ELI LILLY & Co"
+    name = re.sub(r'\s*&\s*CO\b\.?', '', name, flags=re.IGNORECASE).strip()
+    # Remove other common suffixes, including "PLC", "LTD", "LIMITED", and combinations like "LTD CO"
+    name = re.sub(r'\b(?:Inc\.?|CO|CORP|PLC|LTD|LIMITED|L\.P\.)\b\.?$', '', name, flags=re.IGNORECASE).strip()
+    return name
+
+
+def get_ticker_icon_url(ticker: str) -> str:
+    """
+    Get the URL for the icon of a company with the given ticker.
+    """
+    return f"https://raw.githubusercontent.com/nvstly/icons/main/ticker_icons/{ticker.upper()}.png"
+
+@lru_cache(maxsize=4)
+def get_icon_from_ticker(ticker: str) -> Optional[bytes]:
+    """
+    Download an icon for a given ticker as a PNG image, if available.
+
+    WARNING: This function uses the nvstly/icons repository on GitHub to fetch the icons.
+    The icons are not guaranteed to be available for all tickers.
+    """
+
+    if not isinstance(ticker, str):
+        raise ValueError("The ticker must be a valid string.")
+
+    if not ticker or not all(c.isalpha() or c == '-' for c in ticker):
+        raise ValueError("The ticker must only contain alphabetic characters and hyphens.")
+
+    try:
+        # Strip hyphens from ticker - icon repository uses BRKB.png not BRK-B.png
+        ticker_for_url = ticker.upper().replace('-', '')
+        downloaded = download_file(
+            f"https://raw.githubusercontent.com/nvstly/icons/main/ticker_icons/{ticker_for_url}.png", as_text=False)
+        # download_file with as_text=False returns bytes
+        return downloaded if isinstance(downloaded, bytes) else None
+    except Exception as e:
+        # If the status code is 404, the icon is not available.
+        # Duck-type on the status rather than the exception class: depending on
+        # the installed httpx build the raised type may not be our imported
+        # HTTPStatusError (e.g. CI environments surface it under a different module
+        # identity such as httpx2), so matching on isinstance is fragile. It is
+        # also why this reads the status through http_status() — the
+        # boundary raises a TransportError, which
+        # carries `.status_code` and no `.response` at all, and a check written
+        # against `.response` silently stops recognising the 404 and starts
+        # raising for every ticker without an icon. Anything that isn't a 404 is
+        # re-raised unchanged.
+        if http_status(e) == 404:
+            return None
+        raise
+
+def popular_us_stocks():
+    df = (read_csv_from_package('popular_us_stocks.csv', dtype={'Cik': int})
+          .set_index('Cik')
+          )
+    return df
+
+class Exchange(Enum):
+
+    Nasdaq = "Nasdaq"
+    NYSE = "NYSE"
+    OTC = "OTC"
+    CBOE = "CBOE"
+
+    def __str__(self):
+        return self.value
+
+

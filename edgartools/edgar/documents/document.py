@@ -1,0 +1,1536 @@
+"""
+Document model for parsed HTML.
+"""
+from __future__ import annotations
+
+import logging
+import re
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any, Callable, Dict, Iterator, List, Optional, Tuple, cast
+
+if TYPE_CHECKING:
+    import pandas as pd
+
+from lxml.etree import LxmlError, XMLSyntaxError
+from rich.console import Group
+from rich.table import Table as RichTable
+from rich.text import Text
+
+from edgar.documents.nodes import Node, SectionNode
+from edgar.documents.table_nodes import TableNode
+from edgar.documents.types import SearchResult, XBRLFact
+from edgar.documents.utils.anchor_targets import find_anchor_targets, is_anchor_match
+from edgar.richtools import repr_rich
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class DocumentMetadata:
+    """
+    Document metadata.
+
+    Contains information about the source document and parsing process.
+    """
+    source: Optional[str] = None
+    form: Optional[str] = None
+    company: Optional[str] = None
+    cik: Optional[str] = None
+    accession_number: Optional[str] = None
+    filing_date: Optional[str] = None
+    report_date: Optional[str] = None
+    url: Optional[str] = None
+    size: int = 0
+    parse_time: float = 0.0
+    parser_version: str = "2.0.0"
+    xbrl_data: Optional[List[XBRLFact]] = None
+    # {ix:footnote id: Footnote} -- see Document.xbrl_footnotes
+    xbrl_footnotes: Optional[Dict[str, Any]] = None
+    preserve_whitespace: bool = False
+    original_html: Optional[str] = None  # Store original HTML for anchor analysis
+
+    @property
+    def statistics(self) -> Dict[str, int]:
+        """Return document statistics, computing them on first access."""
+        statistics = self.__dict__.get("_statistics")
+        if statistics is None:
+            loader = self.__dict__.get("_statistics_loader")
+            statistics = loader() if loader is not None else {}
+            self.__dict__["_statistics"] = statistics
+            self.__dict__.pop("_statistics_loader", None)
+        return statistics
+
+    @statistics.setter
+    def statistics(self, value: Dict[str, int]) -> None:
+        """Set precomputed document statistics."""
+        self.__dict__["_statistics"] = value
+        self.__dict__.pop("_statistics_loader", None)
+
+    def _set_statistics_loader(self, loader: Callable[[], Dict[str, int]]) -> None:
+        """Configure deferred statistics calculation for the owning document."""
+        self.__dict__.pop("_statistics", None)
+        self.__dict__["_statistics_loader"] = loader
+
+    def __getstate__(self) -> Dict[str, Any]:
+        """Materialize deferred statistics before serializing metadata."""
+        if "_statistics_loader" in self.__dict__:
+            _ = self.statistics
+        return self.__dict__.copy()
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert metadata to dictionary."""
+        return {
+            'source': self.source,
+            'form': self.form,
+            'company': self.company,
+            'cik': self.cik,
+            'accession_number': self.accession_number,
+            'filing_date': self.filing_date,
+            'report_date': self.report_date,
+            'url': self.url,
+            'size': self.size,
+            'parse_time': self.parse_time,
+            'parser_version': self.parser_version,
+            'xbrl_data': [fact.to_dict() for fact in self.xbrl_data] if self.xbrl_data else None
+        }
+
+
+@dataclass
+class Section:
+    """
+    Document section representation.
+
+    Represents a logical section of the document (e.g., Risk Factors, MD&A).
+
+    Attributes:
+        name: Section identifier (e.g., "item_1", "part_i_item_1", "risk_factors")
+        title: Display title (e.g., "Item 1 - Business")
+        node: Node containing section content
+        start_offset: Character position where section starts
+        end_offset: Character position where section ends
+        confidence: Detection confidence score (0.0-1.0)
+        detection_method: How section was detected ('toc', 'heading', 'pattern')
+        validated: Whether section has been cross-validated
+        part: Optional part identifier for 10-Q filings ("I", "II", or None for 10-K)
+        item: Optional item identifier (e.g., "1", "1A", "2")
+        covered_items: Every item this section holds when the filer combines items
+            under one heading ("Items 1 and 2. Business and Properties" gives
+            ``('1', '2')``); empty for an ordinary one-item section
+        _text_extractor: Optional callback for lazy text extraction (for TOC-based sections)
+        _html_source: Optional HTML source for TOC-based table extraction
+        _section_extractor: Optional section extractor for TOC-based sections
+    """
+    name: str
+    title: str
+    node: SectionNode
+    start_offset: int = 0
+    end_offset: int = 0
+    confidence: float = 1.0  # Detection confidence (0.0-1.0)
+    detection_method: str = 'unknown'  # 'toc', 'heading', 'pattern', or 'unknown'
+    validated: bool = False  # Cross-validated flag
+    part: Optional[str] = None  # Part identifier for 10-Q: "I", "II", or None for 10-K
+    item: Optional[str] = None  # Item identifier: "1", "1A", "2", etc.
+    warnings: list = field(default_factory=list)  # Extraction warnings (e.g. anomalous content size)
+    _text_extractor: Optional[Any] = field(default=None, repr=False)  # Callback for lazy text extraction
+    _html_source: Optional[str] = field(default=None, repr=False)  # HTML source for TOC table extraction
+    _section_extractor: Optional[Any] = field(default=None, repr=False)  # Section extractor for TOC sections
+    covered_items: Tuple[str, ...] = ()  # All items under a combined heading, e.g. ('1', '2')
+
+    @property
+    def kind(self) -> str:
+        """Classify the section: ``'item'`` for a numbered SEC item, else ``'named'``.
+
+        Named sections (e.g. Signatures) carry no Item number. This lets callers
+        iterating ``document.sections`` tell a real Item from a named section
+        without string-matching the key.
+        """
+        return "item" if self.item else "named"
+
+    def text(self, **kwargs) -> str:
+        """Extract text from section."""
+        # If we have a text extractor callback (TOC-based sections), use it
+        if self._text_extractor is not None:
+            text = self._text_extractor(self.name, **kwargs)
+        else:
+            # Otherwise extract from node (heading/pattern-based sections)
+            from edgar.documents.extractors.text_extractor import TextExtractor
+            extractor = TextExtractor(**kwargs)
+            text = extractor.extract_from_node(self.node)
+
+        # Clean up boundary artifacts (page numbers, next section headers)
+        return self._clean_boundary_artifacts(text)
+
+    def markdown(self) -> str:
+        """Render this section to Markdown.
+
+        Mirrors :meth:`text` but preserves syntax for tables (pipe
+        format) and lists (bullet / numbered markers) by routing
+        through the same renderer used by :meth:`Document.to_markdown`.
+
+        For heading/pattern-based sections the cached node tree is
+        rendered directly. For TOC-based sections (whose node has no
+        children — content is fetched lazily from the original HTML)
+        the section's HTML subtree is sliced between its anchors via
+        :mod:`edgar.documents.utils.section_slicer` (which preserves
+        ``<table>``/``<tbody>`` structure and de-duplicates nested
+        tables), re-parsed, and rendered. If that slice yields nothing
+        usable, this falls back to :meth:`text` so callers never get a
+        regression versus the plain-text output.
+        """
+        if self.detection_method == 'toc' and self._text_extractor is not None:
+            rendered = self._markdown_from_toc_section()
+            if rendered:
+                return self._clean_boundary_artifacts(rendered)
+            # Slice produced nothing usable — fall back to plain text so
+            # callers get correct content rather than an empty string.
+            return self.text()
+
+        # Heading/pattern-based sections: render the cached node tree.
+        # Apply the same boundary-artifact cleanup as `text()` so page
+        # numbers and bleed-in next-item headers don't leak into the
+        # markdown output.
+        from edgar.documents.renderers.markdown import MarkdownRenderer
+        renderer = MarkdownRenderer()
+        rendered = renderer.render_node(self.node)
+        return self._clean_boundary_artifacts(rendered)
+
+    def _markdown_from_toc_section(self) -> Optional[str]:
+        """Render a TOC-based section to Markdown by slicing its HTML subtree.
+
+        Slices the section HTML between anchors (preserving table/list
+        structure via :mod:`section_slicer`), re-parses it into a node tree,
+        and renders that tree to Markdown. Returns ``None`` on any failure so
+        :meth:`markdown` can fall back to :meth:`text`.
+        """
+        if self._html_source is None or self._section_extractor is None:
+            return None
+        try:
+            from edgar.documents.config import ParserConfig
+            from edgar.documents.parser import HTMLParser
+            from edgar.documents.renderers.markdown import MarkdownRenderer
+
+            section_html = self._extract_section_html(self._section_extractor, self._html_source)
+            if not section_html:
+                return None
+
+            # Re-parse the section subtree into a node tree (section detection
+            # off — we already know this is one section) and render it.
+            parsed = HTMLParser(ParserConfig(detect_sections=False)).parse(section_html)
+            rendered = MarkdownRenderer().render_node(parsed.root)
+            return rendered or None
+        except Exception as e:  # noqa: BLE001 — markdown is best-effort; text() is the safety net
+            logger.debug(f"TOC markdown render failed for section '{self.name}': {e}")
+            return None
+
+    def _clean_boundary_artifacts(self, text: str) -> str:
+        """
+        Remove common artifacts at section boundaries.
+
+        Cleans up:
+        - Interior page headers (page number + PART + Item appearing mid-document)
+        - Trailing page footer (page number + PART + next section header at end)
+        - Trailing Item headers bleeding into current section
+        - Trailing page numbers
+        """
+        if not text:
+            return text
+
+        # Order matters: clean interior artifacts first, then trailing artifacts
+
+        # 1a. Remove interior page headers for 10-K/10-Q (PART + Item format)
+        # Pattern: page number followed by PART header followed by Item number
+        # e.g., "\n\n  16\n\n  PART I\n\nItem 1A\n\n" (this is a page break artifact)
+        text = re.sub(
+            r'\n\s*\d{1,3}\s*\n\s*(?:#{1,6}\s+|\*\*\s*)?PART\s+[IVX]+(?:\s*\*\*)?\s*\n\s*(?:#{1,6}\s+|\*\*\s*)?Item\s+\d+[A-Za-z]?(?:\\?\.)?(?:,\s*\d+[A-Za-z]?(?:\\?\.)?)?(?:\s*\*\*)?\s*\n',
+            '\n\n',
+            text,
+            flags=re.IGNORECASE,
+        )
+
+        # 1b. Remove interior page headers for 20-F (Table of Contents format)
+        # Pattern: page number followed by "Table of Contents"
+        # e.g., "\n\n  1\n\n  Table of Contents\n\n" (this is a page break artifact)
+        text = re.sub(
+            r'\n\s*\d{1,3}\s*\n\s*Table of Contents\s*\n',
+            '\n\n',
+            text,
+            flags=re.IGNORECASE
+        )
+
+        # 2a. Remove trailing page footer for 10-K/10-Q (PART + Item at end)
+        # Pattern: page number + PART + Item header at end (next section bleeding in)
+        # e.g., "\n\n  29\n\n  PART I\n\nItem 1B, 1C" at end. Optional
+        # markdown decorations (``#``, ``**``) and backslash-escaped
+        # periods accommodate ``MarkdownRenderer`` output where each
+        # of PART or Item may have been rendered as a heading or bold.
+        text = re.sub(
+            r'\n\s*\d{1,3}\s*\n\s*(?:#{1,6}\s+|\*\*\s*)?PART\s+[IVX]+(?:\s*\*\*)?\s*\n\s*(?:#{1,6}\s+|\*\*\s*)?Item\s+\d+[A-Za-z]?(?:\\?\.)?(?:,\s*\d+[A-Za-z]?(?:\\?\.)?)?(?:\s*\*\*)?\s*$',
+            '',
+            text,
+            flags=re.IGNORECASE,
+        )
+
+        # 2b. Remove trailing page footer for 20-F (Table of Contents at end)
+        text = re.sub(
+            r'\n\s*\d{1,3}\s*\n\s*Table of Contents\s*$',
+            '',
+            text,
+            flags=re.IGNORECASE
+        )
+
+        # 2c. Remove a trailing "PART II ... OTHER INFORMATION" heading that
+        # bled into Part I's last item (Item 4, Controls and Procedures) in a
+        # 10-Q. Rules 2a/2b only fire when an ``Item N`` token follows the PART
+        # line, so this titled heading with no item number leaks through
+        # (GH #883). Constraints keep the strip precise:
+        #   - Literal ``PART II`` (not ``[IVXLC]+``): "PART II — OTHER
+        #     INFORMATION" is 10-Q/10-K-specific, so this never touches a
+        #     legitimate ``PART C — OTHER INFORMATION`` heading in S-1 / N-1A /
+        #     N-2 filings (the cleaner runs for every form).
+        #   - ``\W*?`` between the numeral and the title admits only non-word
+        #     separators (a real space, an em-dash, none at all, a mojibake
+        #     byte, or a line break for a two-line render — ``\W`` includes
+        #     ``\n``) but cannot cross body words, so prose such as "Part II
+        #     contains other information" is left intact.
+        #   - ``\b.*$`` absorbs trailing punctuation/qualifiers on the heading
+        #     line ("OTHER INFORMATION.", "(UNAUDITED)", a page ref, markdown
+        #     ``**``). ``.`` never crosses ``\n`` (no DOTALL).
+        # A letter-only mojibake separator (e.g. a mis-decoded em-dash that
+        # yields a Unicode letter) is deliberately not matched — the heading
+        # survives rather than risk deleting real content.
+        text = re.sub(
+            r'\n\s*(?:#{1,6}\s+|\*\*\s*)?PART\s+II\W*?OTHER\s+INFORMATION\b.*$',
+            '',
+            text,
+            flags=re.IGNORECASE,
+        )
+
+        # 3. Remove trailing Item headers if they appear at the very end
+        # (without preceding PART header). Matches:
+        #   - "Item 15", "ITEM 15."  (plain text)
+        #   - "Item 15\."            (markdown-escaped period)
+        #   - "# Item 15", "## Item 15"  (markdown heading)
+        #   - "**Item 15**", "**Item 15.**"  (markdown bold)
+        # The ``MarkdownRenderer`` can produce any of these depending on
+        # how the next-item bleed-in was structured in the HTML.
+        text = re.sub(
+            r'\n\s*#{1,6}\s*Item\s+\d+[A-Za-z]?(?:\\?\.)?\s*$',
+            '',
+            text,
+            flags=re.IGNORECASE,
+        )
+        text = re.sub(
+            r'\n\s*\*\*\s*Item\s+\d+[A-Za-z]?(?:\\?\.)?\s*\*\*\s*$',
+            '',
+            text,
+            flags=re.IGNORECASE,
+        )
+        text = re.sub(
+            r'\n\s*Item\s+\d+[A-Za-z]?(?:\\?\.)?\s*$',
+            '',
+            text,
+            flags=re.IGNORECASE,
+        )
+
+        # 4. Remove trailing page numbers: whitespace followed by 1-3 digits at end
+        # e.g., "\n\n  100" or "\n  92"
+        text = re.sub(r'\n\s*\d{1,3}\s*$', '', text)
+
+        return text.rstrip()
+
+    def tables(self) -> List[TableNode]:
+        """Get all tables in section."""
+        # For TOC-based sections, node.children is empty so we need special handling
+        if self.detection_method == 'toc' and self._text_extractor is not None:
+            return self._get_tables_from_toc_section()
+
+        # For heading/pattern-based sections, use node tree search
+        return cast(List[TableNode], self.node.find(lambda n: isinstance(n, TableNode)))
+
+    def _get_tables_from_toc_section(self) -> List[TableNode]:
+        """
+        Extract tables from TOC-based section.
+
+        TOC sections have empty node children, so we extract tables
+        by parsing the section HTML directly.
+        """
+        try:
+            # Import here to avoid circular dependency
+            from edgar.documents.strategies.table_processing import TableProcessor
+            from edgar.documents.config import ParserConfig
+            import lxml.html as lxml_html
+
+            # Check if we have HTML source and extractor (passed from TOC detector)
+            if self._html_source is None or self._section_extractor is None:
+                return []
+
+            # Use the stored extractor (already initialized with HTML)
+            extractor = self._section_extractor
+
+            # Get section HTML by extracting elements between boundaries
+            section_html = self._extract_section_html(extractor, self._html_source)
+
+            if not section_html:
+                return []
+
+            # Parse section HTML and extract tables
+            tree = lxml_html.fromstring(section_html)
+            table_elements = tree.xpath('.//table')
+
+            # Process each table element
+            config = ParserConfig()
+            table_processor = TableProcessor(config)
+            tables = []
+
+            for table_elem in table_elements:
+                try:
+                    table_node = table_processor.process(table_elem)
+                    tables.append(table_node)
+                except (LxmlError, XMLSyntaxError, ValueError, TypeError, AttributeError) as e:
+                    logger.debug(f"Failed to process table in section '{self.name}': {e}")
+                    continue
+
+            return tables
+
+        except (LxmlError, XMLSyntaxError, ValueError, TypeError) as e:
+            logger.debug(f"TOC table extraction failed for section '{self.name}': {e}")
+            return []
+
+    def _extract_section_html(self, extractor, html_source: str) -> str:
+        """Extract HTML content for this section from full document HTML.
+
+        Delegates to the centralized anchor-to-anchor slicing primitive
+        (:mod:`edgar.documents.utils.section_slicer`), which handles the
+        top-level-only serialization that prevents nested-table duplication
+        (issue #826) and repairs orphaned table-row fragments so they survive
+        a round-trip through the parser. Reuses the extractor's cached lxml
+        tree when available.
+        """
+        try:
+            import lxml.html as lxml_html
+            from edgar.documents.utils.section_slicer import extract_section_html
+
+            # Get section boundary info
+            if self.name not in extractor.section_boundaries:
+                return ""
+            boundary = extractor.section_boundaries[self.name]
+
+            # Reuse the extractor's cached tree; fall back to parsing.
+            tree = getattr(extractor, '_tree', None)
+            if tree is None:
+                if html_source.startswith('<?xml'):
+                    html_source = re.sub(r'<\?xml[^>]*\?>', '', html_source, count=1)
+                tree = lxml_html.fromstring(html_source)
+
+            return extract_section_html(tree, boundary.anchor_id, boundary.end_element_id,
+                                        start_element=getattr(boundary, 'start_element', None),
+                                        end_element=getattr(boundary, 'end_element', None))
+
+        except (LxmlError, XMLSyntaxError, ValueError) as e:
+            logger.debug(f"HTML extraction failed for section '{self.name}': {e}")
+            return ""
+
+    def search(self, query: str) -> List[SearchResult]:
+        """Search within section."""
+        # Implementation would use semantic search
+        results = []
+        # Simple text search for now
+        text = self.text().lower()
+        query_lower = query.lower()
+
+        if query_lower in text:
+            # Find snippet around match
+            index = text.find(query_lower)
+            start = max(0, index - 50)
+            end = min(len(text), index + len(query) + 50)
+            snippet = text[start:end]
+
+            results.append(SearchResult(
+                node=self.node,
+                score=1.0,
+                snippet=snippet,
+                section=self.name
+            ))
+
+        return results
+
+    @staticmethod
+    def parse_section_name(section_name: str) -> tuple[Optional[str], Optional[str]]:
+        """
+        Parse section name to extract part and item identifiers.
+
+        Handles both internal underscore names and display-style TOC names.
+
+        Args:
+            section_name: Section identifier (e.g., "part_i_item_1", "item_1a", "Item 1A", "Part II Item 9A")
+
+        Returns:
+            Tuple of (part, item) where:
+            - part: "I", "II", or None for 10-K sections
+            - item: "1", "1A", "2", etc. or None if not an item section
+
+        Examples:
+            >>> Section.parse_section_name("part_i_item_1")
+            ("I", "1")
+            >>> Section.parse_section_name("part_ii_item_1a")
+            ("II", "1A")
+            >>> Section.parse_section_name("item_7")
+            (None, "7")
+            >>> Section.parse_section_name("Item 7A")
+            (None, "7A")
+            >>> Section.parse_section_name("Part II Item 9A")
+            ("II", "9A")
+            >>> Section.parse_section_name("risk_factors")
+            (None, None)
+        """
+        import re
+
+        section_lower = section_name.lower().strip()
+
+        # Match part-aware formats:
+        # - "part_i_item_1", "part_ii_item_1a"
+        # - "Part I Item 1", "Part II Item 9A"
+        part_item_match = re.match(r'part[\s_]+([ivx]+)[\s_]+item[\s_]+(\d+[a-z]?)\b', section_lower)
+        if part_item_match:
+            part_roman = part_item_match.group(1).upper()
+            item_num = part_item_match.group(2).upper()
+            return (part_roman, item_num)
+
+        # Match item-only formats:
+        # - "item_1", "item_1a", "item_7"
+        # - "Item 1", "Item 1A", "Item 7A"
+        item_match = re.match(r'item[\s_]+(\d+[a-z]?)\b', section_lower)
+        if item_match:
+            item_num = item_match.group(1).upper()
+            return (None, item_num)
+
+        # Not a structured item section
+        return (None, None)
+
+
+class Sections(Dict[str, Section]):
+    """
+    Dictionary wrapper for sections with rich display support.
+
+    Behaves like a normal dict but provides beautiful terminal display
+    via __rich__() method when printed in rich-enabled environments.
+    """
+
+    # Friendly name -> item number for this document's form (10-K only), so
+    # ``sections['risk_factors']`` resolves whether the section was keyed by
+    # the pattern extractor (``risk_factors``) or the TOC (``part_i_item_1a``).
+    _friendly_items: Dict[str, str] = {}
+
+    def _get_friendly(self, key: str) -> Optional[Section]:
+        item = self._friendly_items.get(key)
+        return self.get_item(item) if item else None
+
+    def __rich__(self):
+        """Return rich representation for display."""
+        if not self:
+            return Text("No sections detected", style="dim")
+
+        # Create summary table
+        table = RichTable(title="Document Sections", show_header=True, header_style="bold magenta")
+        table.add_column("Section", style="cyan", no_wrap=True)
+        table.add_column("Title", style="white")
+        table.add_column("Confidence", justify="right", style="green")
+        table.add_column("Method", style="yellow")
+        table.add_column("Part/Item", style="blue")
+
+        # Sort sections by part (roman numeral) and item number
+        def sort_key(item):
+            name, section = item
+            # Convert roman numerals to integers for sorting
+            roman_to_int = {'i': 1, 'ii': 2, 'iii': 3, 'iv': 4, 'v': 5}
+
+            part = section.part.lower() if section.part else ''
+            item_str = section.item if section.item else ''
+
+            # Extract part number
+            part_num = roman_to_int.get(part, 0)
+
+            # Extract item number and letter
+            import re
+            if item_str:
+                match = re.match(r'(\d+)([a-z]?)', item_str.lower())
+                if match:
+                    item_num = int(match.group(1))
+                    item_letter = match.group(2) or ''
+                    return (part_num, item_num, item_letter)
+
+            # Fallback to name sorting
+            return (part_num, 999, name)
+
+        sorted_sections = sorted(self.items(), key=sort_key)
+
+        # Add rows for each section
+        for name, section in sorted_sections:
+            # Format confidence as percentage
+            confidence = f"{section.confidence:.1%}"
+
+            # Format part/item info
+            part_item = ""
+            if section.part and section.item:
+                part_item = f"Part {section.part}, Item {section.item}"
+            elif section.item:
+                part_item = f"Item {section.item}"
+            elif section.part:
+                part_item = f"Part {section.part}"
+
+            # Truncate title if too long
+            title = section.title
+            if len(title) > 50:
+                title = title[:47] + "..."
+
+            table.add_row(
+                name,
+                title,
+                confidence,
+                section.detection_method,
+                part_item
+            )
+
+        # Create summary stats
+        total = len(self)
+        high_conf = sum(1 for s in self.values() if s.confidence >= 0.8)
+        methods = {}
+        for section in self.values():
+            methods[section.detection_method] = methods.get(section.detection_method, 0) + 1
+
+        summary = Text()
+        summary.append(f"\nTotal: {total} sections | ", style="dim")
+        summary.append(f"High confidence (≥80%): {high_conf} | ", style="dim")
+        summary.append(f"Methods: {', '.join(f'{m}={c}' for m, c in methods.items())}", style="dim")
+
+        return Group(table, summary)
+
+    def __repr__(self):
+        return repr_rich(self.__rich__())
+
+    def get_item(self, item: str, part: Optional[str] = None) -> Optional[Section]:
+        """
+        Get section by item number with optional part specification.
+
+        Args:
+            item: Item identifier (e.g., "1", "1A", "7", "Item 1", "Item 7A")
+            part: Optional part specification (e.g., "I", "II", "Part I", "Part II")
+                  If not specified and multiple parts contain the item, returns first match.
+
+        Returns:
+            Section object if found, None otherwise
+
+        Examples:
+            >>> sections.get_item("1")           # Returns first Item 1 (any part)
+            >>> sections.get_item("1", "I")      # Returns Part I, Item 1
+            >>> sections.get_item("Item 1A")     # Returns first Item 1A
+            >>> sections.get_item("7A", "II")    # Returns Part II, Item 7A
+        """
+        # Normalize item string - remove "Item " prefix if present
+        item_clean = item.replace("Item ", "").replace("item ", "").strip().upper()
+
+        # Normalize part string if provided
+        part_clean = None
+        if part:
+            part_clean = part.replace("Part ", "").replace("part ", "").replace("PART ", "").strip().upper()
+
+        # Search through sections
+        for name, section in self.items():
+            if section.item and section.item.upper() == item_clean:
+                if part_clean is None:
+                    # No part specified - return first match
+                    return section
+                elif section.part and section.part.upper() == part_clean:
+                    # Part matches
+                    return section
+
+        return None
+
+    def named(self, name: str) -> Optional[Section]:
+        """Get a non-item *named* section (e.g. "Signatures") by name.
+
+        The companion to :meth:`get_item` for sections that carry no SEC Item
+        number. Matches the name token case-insensitively, ignoring any
+        ``part_<roman>_`` prefix, so ``named("signatures")`` resolves
+        ``part_iv_signatures`` (or a bare ``signatures`` key). Returns ``None``
+        if no named section matches.
+
+        Examples:
+            >>> sections.named("signatures")          # the Signatures Section
+            >>> sections.named("Signatures").text()   # the signature block text
+        """
+        target = name.strip().lower().replace(" ", "_")
+        for key, section in self.items():
+            if section.kind != "named":
+                continue
+            token = re.sub(r'^part_[ivxlcdm]+_', '', key.lower())
+            if token == target:
+                return section
+        return None
+
+    def get_part(self, part: str) -> Dict[str, Section]:
+        """
+        Get all sections in a specific part.
+
+        Args:
+            part: Part identifier (e.g., "I", "II", "Part I", "Part II")
+
+        Returns:
+            Dictionary of sections in that part
+
+        Examples:
+            >>> sections.get_part("I")        # All Part I sections
+            >>> sections.get_part("Part II")  # All Part II sections
+        """
+        # Normalize part string
+        part_clean = part.replace("Part ", "").replace("part ", "").replace("PART ", "").strip().upper()
+
+        result = {}
+        for name, section in self.items():
+            if section.part and section.part.upper() == part_clean:
+                result[name] = section
+
+        return result
+
+    def get(self, key, default=None):
+        """
+        Enhanced get method that supports flexible key formats.
+
+        Supports:
+        - Standard dict key: "part_i_item_1"
+        - Item number: "Item 1", "1", "1A"
+        - Part+Item: ("I", "1"), ("Part II", "7A")
+
+        Args:
+            key: Section key (string or tuple)
+            default: Default value if not found
+
+        Returns:
+            Section object or default value
+        """
+        # Try standard dict lookup first
+        if isinstance(key, str):
+            result = super().get(key, None)
+            if result is not None:
+                return result
+
+            # Try as item number
+            result = self.get_item(key)
+            if result is not None:
+                return result
+
+            result = self._get_friendly(key)
+            if result is not None:
+                return result
+
+        # Try as (part, item) tuple
+        elif isinstance(key, tuple) and len(key) == 2:
+            part, item = key
+            result = self.get_item(item, part)
+            if result is not None:
+                return result
+
+        return default
+
+    def __getitem__(self, key):
+        """
+        Enhanced __getitem__ that supports flexible key formats.
+
+        Supports:
+        - Standard dict key: sections["part_i_item_1"]
+        - Item number: sections["Item 1"], sections["1A"]
+        - Part+Item tuple: sections[("I", "1")], sections[("II", "7A")]
+
+        Raises KeyError if not found (standard dict behavior).
+        """
+        # Try standard dict lookup first
+        if isinstance(key, str):
+            try:
+                return super().__getitem__(key)
+            except KeyError:
+                # Try as item number
+                result = self.get_item(key) or self._get_friendly(key)
+                if result is not None:
+                    return result
+
+        # Try as (part, item) tuple
+        elif isinstance(key, tuple) and len(key) == 2:
+            part, item = key
+            result = self.get_item(item, part)
+            if result is not None:
+                return result
+
+        # Not found - raise KeyError
+        raise KeyError(key)
+
+    def __contains__(self, key) -> bool:
+        """Membership mirrors __getitem__'s flexible resolution.
+
+        A bare ``"Item 1"`` / ``"1A"`` or a ``(part, item)`` tuple counts as
+        present whenever the corresponding section exists, even though the stored
+        key is the canonical ``"part_i_item_1"`` form. This keeps
+        ``"Item 1" in sections`` working after item keys gained canonical part
+        prefixes (edgartools-3usf).
+        """
+        if isinstance(key, str):
+            if super().__contains__(key):
+                return True
+            return (self.get_item(key) or self._get_friendly(key)) is not None
+        if isinstance(key, tuple) and len(key) == 2:
+            part, item = key
+            return self.get_item(item, part) is not None
+        return super().__contains__(key)
+
+
+def _flatten_column_name(col) -> str:
+    """Render one column key as a single string.
+
+    A MultiIndex key arrives as a tuple of header-row texts, and the levels
+    repeat constantly — a header spanning two rows gives ``('Revenue',
+    'Revenue')`` and an unlabelled second row gives ``('Revenue', '')``. Blanks
+    are dropped and consecutive repeats collapsed, so both become ``'Revenue'``
+    rather than ``'Revenue Revenue'`` or ``'Revenue '``.
+    """
+    parts = col if isinstance(col, tuple) else (col,)
+    out = []
+    for part in parts:
+        text = '' if part is None else ' '.join(str(part).split())
+        if text and (not out or out[-1] != text):
+            out.append(text)
+    return ' '.join(out)
+
+
+# Columns Document.to_dataframe adds to every table's frame.
+_TABLE_METADATA_COLUMNS = ('_table_index', '_table_type', '_table_caption')
+
+
+def _flatten_table_frame(df: 'pd.DataFrame') -> 'pd.DataFrame':
+    """Give one table's frame flat, unique, string column names and a clean index.
+
+    Three things make per-table frames unstackable, and all three are handled
+    here rather than at the concat, where pandas can only report them as an
+    alignment failure deep inside its own internals.
+    """
+    import pandas as pd
+
+    df = df.copy()
+
+    # A table with row headers has its label column moved into the index by
+    # TableNode.to_dataframe. Concatenating with ignore_index=True would throw
+    # those labels away silently, so the column comes back as data.
+    #
+    # allow_duplicates because the label's name legitimately collides: a table
+    # captioned 'In millions of dollars' often carries that same text as a
+    # column header too, and Citigroup's and Morgan Stanley's 10-Ks both do.
+    # The rename pass below makes it unique; refusing the insert would lose the
+    # row labels entirely.
+    if not isinstance(df.index, pd.RangeIndex):
+        label = _flatten_column_name(df.index.name) or 'row_label'
+        # A multi-level row index yields tuples, which pandas cannot store as a
+        # single column ('Index data must be 1-dimensional' — Tesla's 10-K).
+        # Flatten them the same way column keys are flattened.
+        if df.index.nlevels > 1:
+            values = [_flatten_column_name(key) for key in df.index]
+        else:
+            values = list(df.index)
+        df.insert(0, label, values, allow_duplicates=True)
+    df = df.reset_index(drop=True)
+
+    # Flat, string, and unique. Duplicate header texts are ordinary in filings
+    # ('' repeated across spacer columns), and duplicate names would make the
+    # concatenated frame ambiguous to index into.
+    #
+    # A suffix must not land on a name some other column already carries:
+    # headers 'Revenue, Revenue, Revenue.1' used to give 'Revenue.1' twice, and
+    # the concat then raised InvalidIndexError (GH #1734). So every literal
+    # name is reserved before any suffix is chosen, along with the metadata
+    # columns Document.to_dataframe adds, and a duplicate takes the lowest free
+    # suffix. Where nothing collides this is the same .1, .2, ... as before.
+    base_names = [_flatten_column_name(col) or f'column_{position}'
+                  for position, col in enumerate(df.columns)]
+    reserved = set(base_names)
+    used = set(_TABLE_METADATA_COLUMNS)
+    next_suffix: Dict[str, int] = {}
+    names = []
+    for name in base_names:
+        if name in used:
+            suffix = next_suffix.get(name, 1)
+            while f'{name}.{suffix}' in used or f'{name}.{suffix}' in reserved:
+                suffix += 1
+            next_suffix[name] = suffix + 1
+            name = f'{name}.{suffix}'
+        used.add(name)
+        names.append(name)
+    df.columns = pd.Index(names, dtype=object)
+    return df
+
+
+@dataclass
+class Document:
+    """
+    Main document class.
+
+    Represents a parsed HTML document with methods for content extraction,
+    search, and transformation.
+    """
+
+    # Core properties
+    root: Node
+    metadata: DocumentMetadata = field(default_factory=DocumentMetadata)
+
+    # Cached extractions
+    _sections: Optional[Sections] = field(default=None, init=False, repr=False)
+    _tables: Optional[List[TableNode]] = field(default=None, init=False, repr=False)
+    _headings: Optional[List[Node]] = field(default=None, init=False, repr=False)
+    _xbrl_facts: Optional[List[XBRLFact]] = field(default=None, init=False, repr=False)
+    _text_cache: Optional[str] = field(default=None, init=False, repr=False)
+    _config: Optional[Any] = field(default=None, init=False, repr=False)  # ParserConfig reference
+    _section_extractor: Optional[Any] = field(default=None, init=False, repr=False)  # cached SECSectionExtractor
+    _nav_patterns: Optional[frozenset] = field(default=None, init=False, repr=False)  # cached navigation patterns
+
+    def _get_navigation_patterns(self) -> frozenset:
+        """Navigation link texts to filter out of extracted text, resolved once.
+
+        Resolution is keyed by an md5 of the entire filing, so it costs an
+        encode plus a hash of every byte — 340ms per call on a 9.8MB 10-K. The
+        section extractor filters once per section, which re-derived that key
+        ~25 times per document to prove it had not changed; against a sections
+        stage that is now ~1.1s on the same filing, that was its single largest
+        remaining item (edgartools-llmp.9).
+
+        Cached on the document rather than inside the pattern cache because the
+        HTML is a plain ``str``, which supports neither weak references nor
+        attributes, so there is nowhere on the key itself to hang a memo. The
+        document owns the HTML and dies with it, which is the same lifetime and
+        the same invalidation story as the anchor index.
+        """
+        if self._nav_patterns is None:
+            from edgar.documents.utils.anchor_cache import resolve_navigation_patterns
+            html = getattr(self.metadata, 'original_html', None)
+            # frozenset() is falsy but not None, so a document that genuinely
+            # has no repeated navigation links is cached, not re-resolved.
+            self._nav_patterns = frozenset(resolve_navigation_patterns(html))
+        return self._nav_patterns
+
+    def __getstate__(self) -> Dict[str, Any]:
+        """Materialize lazy metadata before serializing a stable document state."""
+        if "_statistics_loader" in self.metadata.__dict__:
+            _ = self.metadata.statistics
+        return self.__dict__.copy()
+
+    @property
+    def sections(self) -> Sections:
+        """
+        Get document sections using hybrid multi-strategy detection.
+
+        Tries detection methods in order of reliability:
+        1. TOC-based (0.95 confidence)
+        2. Cross Reference Index (0.85 confidence) — 10-K filers who map items to
+           printed page ranges instead of labelling them in the body (Citigroup)
+        3. Heading-based (0.7-0.9 confidence)
+        4. Pattern-based (0.6 confidence)
+
+        Returns a Sections dictionary wrapper that provides rich terminal display
+        via __rich__() method. Each section includes confidence score and detection method.
+        """
+        if self._sections is None:
+            # Get form type from config or metadata
+            form = None
+            if self._config and hasattr(self._config, 'form'):
+                form = self._config.form
+            elif self.metadata and self.metadata.form:
+                form = self.metadata.form
+
+            # Only detect sections for supported form types (including amendments)
+            # Normalize form type by removing /A suffix for amendments
+            base_form = form.replace('/A', '') if form else None
+
+            # Route through the anchor-first hybrid detector for Item-based forms
+            # AND for anchored title-based forms (424B prospectuses, flagged by the
+            # schema). The hybrid is TOC-first with heading+pattern as a universal
+            # fallback, so a prospectus with a real TOC gets clean anchor-bounded
+            # sections (dissolving the GH #871 pattern-extractor content-bleed),
+            # while a flat prospectus falls through to the same pattern output as
+            # before. Item-form routing is unchanged (edgartools-llmp.3).
+            from edgar.documents.form_schema import get_form_schema
+            use_hybrid = bool(base_form) and (
+                base_form in ['10-K', '10-Q', '8-K', '20-F']
+                or get_form_schema(base_form).title_based
+            )
+            if use_hybrid:
+                from edgar.documents.extractors.hybrid_section_detector import HybridSectionDetector
+                # Pass thresholds from config if available
+                thresholds = self._config.detection_thresholds if self._config else None
+                # Use base form type for detection (10-K/A → 10-K)
+                detector = HybridSectionDetector(self, base_form, thresholds)
+                detected_sections = detector.detect_sections()
+            else:
+                # Fallback to pattern-based for other types or unknown
+                from edgar.documents.extractors.pattern_section_extractor import SectionExtractor
+                extractor = SectionExtractor(form) if form else SectionExtractor()
+                detected_sections = extractor.extract(self)
+
+            # Wrap detected sections in Sections class for rich display
+            self._sections = Sections(detected_sections)
+            if base_form == '10-K':
+                from edgar.documents.form_schema import TEN_K_FRIENDLY_ITEMS
+                self._sections._friendly_items = TEN_K_FRIENDLY_ITEMS
+
+        return self._sections
+
+    @property
+    def tables(self) -> Optional[List[TableNode]]:
+        """Get all tables in document."""
+        if self._tables is None:
+            self._tables = self.root.find(lambda n: isinstance(n, TableNode))
+        return self._tables
+
+    @property
+    def headings(self) -> List[Node]:
+        """Get all headings in document."""
+        if self._headings is None:
+            from edgar.documents.nodes import HeadingNode
+            self._headings = self.root.find(lambda n: isinstance(n, HeadingNode))
+        return self._headings
+
+    @property
+    def xbrl_facts(self) -> List[XBRLFact]:
+        """Get all XBRL facts in document."""
+        if self._xbrl_facts is None:
+            self._xbrl_facts = self._extract_xbrl_facts()
+        return self._xbrl_facts
+
+    @property
+    def xbrl_footnotes(self) -> Dict[str, Any]:
+        """
+        The inline XBRL footnotes, keyed by ix:footnote id.
+
+        Each value is an ``edgar.xbrl.models.Footnote`` (text, lang, role,
+        related_fact_ids), the same lookup ``XBRL.footnotes`` gives. A fact's
+        ``footnotes`` lists the ids it is linked to by a fact-footnote
+        ix:relationship::
+
+            for fact in doc.xbrl_facts:
+                notes = [doc.xbrl_footnotes[fid].text for fid in fact.footnotes]
+        """
+        return self.metadata.xbrl_footnotes or {}
+
+    def text(self,
+             clean: bool = True,
+             include_tables: bool = True,
+             include_metadata: bool = False,
+             max_length: Optional[int] = None,
+             table_max_col_width: Optional[int] = None,
+             include_images: bool = False) -> str:
+        """
+        Extract text from document.
+
+        Args:
+            clean: Clean and normalize text
+            include_tables: Include table content in text
+            include_metadata: Include metadata annotations
+            max_length: Maximum text length
+            table_max_col_width: Maximum column width for table rendering (default: 200).
+                                Set higher (e.g., 500) to avoid truncating long table labels,
+                                or None for unlimited width. Useful for AI/LLM processing.
+            include_images: Emit an ``[Image: <alt or filename>]`` placeholder for
+                            each image (GH #886). Off by default so clean text stays
+                            image-free for sections, search and embedding.
+
+        Returns:
+            Extracted text
+        """
+        # Use cache if available and parameters match
+        if (self._text_cache is not None and
+            clean and not include_tables and not include_metadata
+                and max_length is None and not include_images):
+            return self._text_cache
+
+        # If whitespace was preserved during parsing and clean is default (True),
+        # respect the preserve_whitespace setting
+        if self.metadata.preserve_whitespace and clean:
+            clean = False
+
+        from edgar.documents.extractors.text_extractor import TextExtractor
+        extractor = TextExtractor(
+            clean=clean,
+            include_tables=include_tables,
+            include_metadata=include_metadata,
+            max_length=max_length,
+            table_max_col_width=table_max_col_width,
+            include_images=include_images
+        )
+        text = extractor.extract(self)
+
+        # Apply navigation link filtering when cleaning
+        if clean:
+            # Use cached/integrated navigation filtering (optimized approach)
+            try:
+                from edgar.documents.utils.anchor_cache import filter_navigation_lines
+                # Use minimal cached approach (no memory overhead)
+                text = filter_navigation_lines(text, self._get_navigation_patterns())
+            except Exception:
+                # Fallback to pattern-based filtering
+                from edgar.documents.utils.toc_filter import filter_toc_links
+                text = filter_toc_links(text)
+
+        # Cache if using default parameters
+        if (clean and not include_tables and not include_metadata
+                and max_length is None and not include_images):
+            self._text_cache = text
+
+        return text
+
+    def search(self, query: str, top_k: int = 10):
+        """
+        Search document for query.
+
+        Args:
+            query: Search query
+            top_k: Maximum results to return
+
+        Returns:
+            List of search results
+        """
+        from edgar.documents.search import DocumentSearch
+        searcher = DocumentSearch(self)
+        return searcher.search(query, limit=top_k)
+
+    def get_section(self, section_name: str, part: Optional[str] = None) -> Optional[Section]:
+        """
+        Get section by name with optional part specification for 10-Q filings.
+
+        Args:
+            section_name: Section identifier (e.g., "item_1", "part_i_item_1")
+            part: Optional part specification for 10-Q ("I", "II", "i", "ii")
+                  If provided, searches for "part_{part}_{section_name}"
+
+        Returns:
+            Section object if found, None otherwise
+
+        Examples:
+            # 10-K usage (unchanged)
+            >>> doc.get_section("item_1")  # Returns Item 1
+
+            # 10-Q usage with explicit part
+            >>> doc.get_section("item_1", part="I")  # Returns Part I Item 1
+            >>> doc.get_section("item_1", part="II")  # Returns Part II Item 1
+
+            # 10-Q usage with full name
+            >>> doc.get_section("part_i_item_1")  # Returns Part I Item 1
+        """
+        # If part is specified, construct part-aware name
+        if part:
+            part_normalized = part.upper()
+            # Remove "item_" prefix if present in section_name
+            item_name = section_name.replace("item_", "") if section_name.startswith("item_") else section_name
+            full_name = f"part_{part_normalized.lower()}_item_{item_name.lower()}"
+            return self.sections.get(full_name)
+
+        # Direct lookup (works for both 10-K "item_1" and 10-Q "part_i_item_1")
+        section = self.sections.get(section_name)
+        if section:
+            return section
+
+        # If not found and looks like an item without part, check if we have multiple parts
+        # In that case, raise a helpful error.
+        if section_name.startswith("item_") or section_name.replace("_", "").startswith("item"):
+            matching_sections = [name for name in self.sections.keys()
+                               if section_name in name and "part_" in name]
+            if matching_sections:
+                parts = sorted(set(s.split("_")[1] for s in matching_sections if s.startswith("part_")))
+                raise ValueError(
+                    f"Ambiguous section '{section_name}'. "
+                    f"Found in parts: {parts}. "
+                    f"Please specify part: get_section('{section_name}', part='I') or part='II'"
+                )
+
+        return None
+
+    def extract_section_text(self, section_name: str) -> Optional[str]:
+        """Extract text from specific section."""
+        section = self.get_section(section_name)
+        if section:
+            return section.text()
+        return None
+
+    def _resolve_form(self) -> Optional[str]:
+        """Resolve the filing form (config first, then metadata), /A-stripped.
+
+        Mirrors the resolution in the ``sections`` property so every section
+        consumer agrees on the form passed to the extractor.
+        """
+        form = None
+        if self._config and hasattr(self._config, 'form'):
+            form = self._config.form
+        elif self.metadata and self.metadata.form:
+            form = self.metadata.form
+        return form.replace('/A', '') if form else None
+
+    def _get_section_extractor(self, agent: Optional[str] = None,
+                               form: Optional[str] = None):
+        """Return the document's single cached ``SECSectionExtractor``.
+
+        Both the TOC detector (via ``document.sections``) and the
+        ``get_sec_section*`` API share one extractor per document, so the HTML
+        is parsed and the TOC analyzed exactly once. The first caller seeds it;
+        later callers reuse it regardless of their arguments. ``agent`` and
+        ``form`` are resolved here when not supplied — agent auto-detection and
+        form resolution match the hybrid detection path, so the shared instance
+        is identical to the one the hybrid path used to build itself.
+        """
+        if self._section_extractor is None:
+            from edgar.documents.extractors.toc_section_extractor import SECSectionExtractor
+            if form is None:
+                form = self._resolve_form()
+            if agent is None:
+                html = getattr(self.metadata, 'original_html', None) if self.metadata else None
+                if html:
+                    try:
+                        from edgar.documents.agents import detect_filing_agent
+                        agent = detect_filing_agent(html)
+                    except Exception:
+                        agent = None
+            self._section_extractor = SECSectionExtractor(self, agent=agent, form=form)
+        return self._section_extractor
+
+    def get_sec_section(self, section_name: str, clean: bool = True,
+                       include_subsections: bool = True) -> Optional[str]:
+        """
+        Extract content from a specific SEC filing section using anchor analysis.
+
+        Args:
+            section_name: Section name (e.g., "Item 1", "Item 1A", "Part I")
+            clean: Whether to apply text cleaning and navigation filtering
+            include_subsections: Whether to include subsections
+
+        Returns:
+            Section text content or None if section not found
+
+        Examples:
+            >>> doc.get_sec_section("Item 1")  # Business description
+            >>> doc.get_sec_section("Item 1A") # Risk factors
+            >>> doc.get_sec_section("Item 7")  # MD&A
+        """
+        return self._get_section_extractor().get_section_text(
+            section_name, include_subsections, clean
+        )
+
+    def get_available_sec_sections(self) -> List[str]:
+        """
+        Get list of SEC sections available for extraction.
+
+        Returns:
+            List of section names that can be passed to get_sec_section()
+
+        Example:
+            >>> sections = doc.get_available_sec_sections()
+            >>> print(sections)
+            ['Part I', 'Item 1', 'Item 1A', 'Item 1B', 'Item 2', ...]
+        """
+        return self._get_section_extractor().get_available_sections()
+
+    def get_sec_section_info(self, section_name: str) -> Optional[Dict]:
+        """
+        Get detailed information about an SEC section.
+
+        Args:
+            section_name: Section name to look up
+
+        Returns:
+            Dict with section metadata including anchor info
+        """
+        return self._get_section_extractor().get_section_info(section_name)
+
+    def to_markdown(self) -> str:
+        """Convert document to Markdown."""
+        from edgar.documents.renderers.markdown import MarkdownRenderer
+        renderer = MarkdownRenderer()
+        return renderer.render(self)
+
+    def to_json(self, include_content: bool = True) -> Dict[str, Any]:
+        """
+        Convert document to JSON.
+
+        Args:
+            include_content: Include full content or just structure
+
+        Returns:
+            JSON-serializable dictionary
+        """
+        result = {
+            'metadata': self.metadata.to_dict(),
+            'sections': list(self.sections.keys()),
+            'table_count': len(self.tables),
+            'xbrl_fact_count': len(self.xbrl_facts)
+        }
+
+        if include_content:
+            result['sections_detail'] = {
+                name: {
+                    'title': section.title,
+                    'text_length': len(section.text()),
+                    'table_count': len(section.tables())
+                }
+                for name, section in self.sections.items()
+            }
+
+            result['tables'] = [
+                {
+                    'type': table.table_type.name,
+                    'rows': len(table.rows),
+                    'columns': len(table.headers[0]) if table.headers else 0,
+                    'caption': table.caption
+                }
+                for table in self.tables
+            ]
+
+        return result
+
+    def to_dataframe(self) -> 'pd.DataFrame':
+        """
+        Convert document tables to a single DataFrame, one row per table row.
+
+        Every table in the document is flattened to string column names and
+        stacked, with ``_table_index``, ``_table_type`` and ``_table_caption``
+        recording where each row came from. Columns that only some tables have
+        are null elsewhere, as in any concatenation of differently-shaped frames.
+
+        This is a *document*-level export and is deliberately lossier than
+        :meth:`TableNode.to_dataframe`, which keeps a table's real header
+        structure. A 10-K's tables do not share a schema — Meta's FY2024 10-K
+        has 71 tables whose column indexes are 1, 2, 3, 4, 10 and 17 levels deep
+        — and pandas cannot align a flat Index with a MultiIndex, or two
+        MultiIndexes of different depths. Concatenating them unflattened raised
+        from inside pandas/numpy (``cannot join with no overlapping index
+        names``, ``Cannot cast array data ... according to the rule 'safe'``,
+        ``Index data must be 1-dimensional``) on every real filing tried
+        (bead edgartools-y9it). Reach for ``document.tables[i].to_dataframe()``
+        when a single table's header structure matters.
+        """
+        import pandas as pd
+
+        if not self.tables:
+            return pd.DataFrame()
+
+        dfs = []
+        for i, table in enumerate(self.tables):
+            df = _flatten_table_frame(table.to_dataframe())
+            df['_table_index'] = i
+            df['_table_type'] = table.table_type.name
+            df['_table_caption'] = table.caption if table.caption else None
+            dfs.append(df)
+
+        # Frames with no rows carry no data but do contribute their columns, and
+        # a 0-row frame's dtypes are all object, which would coerce a real
+        # numeric column to object in the result.
+        non_empty = [df for df in dfs if len(df)]
+        if not non_empty:
+            return pd.DataFrame(columns=['_table_index', '_table_type', '_table_caption'])
+        return pd.concat(non_empty, ignore_index=True)
+
+    def chunks(self, chunk_size: int = 512, overlap: int = 128) -> Iterator['DocumentChunk']:
+        """
+        Generate document chunks for processing.
+
+        Args:
+            chunk_size: Target chunk size in tokens
+            overlap: Overlap between chunks
+
+        Yields:
+            Document chunks
+        """
+        from edgar.documents.extractors.chunk_extractor import ChunkExtractor
+        extractor = ChunkExtractor(chunk_size=chunk_size, overlap=overlap)
+        return extractor.extract(self)
+
+    def prepare_for_llm(self,
+                       max_tokens: int = 4000,
+                       preserve_structure: bool = True,
+                       focus_sections: Optional[List[str]] = None) -> 'LLMDocument':
+        """
+        Prepare document for LLM processing.
+
+        Args:
+            max_tokens: Maximum tokens
+            preserve_structure: Preserve document structure
+            focus_sections: Sections to focus on
+
+        Returns:
+            LLM-optimized document
+        """
+        from edgar.documents.ai.llm_optimizer import LLMOptimizer
+        optimizer = LLMOptimizer()
+        return optimizer.optimize(
+            self,
+            max_tokens=max_tokens,
+            preserve_structure=preserve_structure,
+            focus_sections=focus_sections
+        )
+
+    def extract_key_information(self) -> Dict[str, Any]:
+        """Extract key information from document."""
+        return {
+            'company': self.metadata.company,
+            'form': self.metadata.form,
+            'filing_date': self.metadata.filing_date,
+            'sections': list(self.sections.keys()),
+            'financial_tables': sum(1 for t in self.tables if t.is_financial_table),
+            'total_tables': len(self.tables),
+            'xbrl_facts': len(self.xbrl_facts),
+            'document_length': len(self.text())
+        }
+
+    def _extract_xbrl_facts(self) -> List[XBRLFact]:
+        """
+        Extract XBRL facts from document.
+
+        The inline pre-process pass (HTMLParser._extract_xbrl_pre_process) runs
+        before preprocessing strips ix:hidden and stores its facts on
+        metadata.xbrl_data. That is the pass that resolves contexts, units,
+        continuations and transformations, so it is the source of truth here.
+
+        This used to scan the built node tree for ix_tag node metadata that the
+        inline pass never sets, so the two pipelines were unconnected: a filing
+        with thousands of extracted facts reported has_xbrl False, which reads
+        as an absent feature rather than a broken one. The node scan is kept as
+        a fallback for documents built without that pass.
+        """
+        if self.metadata.xbrl_data:
+            return list(self.metadata.xbrl_data)
+
+        facts = []
+
+        # Find all nodes with XBRL metadata
+        xbrl_nodes = self.root.find(
+            lambda n: n.get_metadata('ix_tag') is not None
+        )
+
+        for node in xbrl_nodes:
+            fact = XBRLFact(
+                concept=node.get_metadata('ix_tag'),
+                value=node.text(),
+                context_ref=node.get_metadata('ix_context'),
+                unit_ref=node.get_metadata('ix_unit'),
+                decimals=node.get_metadata('ix_decimals'),
+                scale=node.get_metadata('ix_scale')
+            )
+            facts.append(fact)
+
+        return facts
+
+    def __len__(self) -> int:
+        """Get number of top-level nodes."""
+        return len(self.root.children)
+
+    def __iter__(self) -> Iterator[Node]:
+        """Iterate over top-level nodes."""
+        return iter(self.root.children)
+
+    def __repr__(self) -> str:
+        return self.text(table_max_col_width=200)  # Terminal-friendly width
+
+    def walk(self) -> Iterator[Node]:
+        """Walk entire document tree."""
+        return self.root.walk()
+
+    def find_nodes(self, predicate) -> List[Node]:
+        """Find all nodes matching predicate."""
+        return self.root.find(predicate)
+
+    def find_first_node(self, predicate) -> Optional[Node]:
+        """Find first node matching predicate."""
+        return self.root.find_first(predicate)
+
+    @property
+    def is_empty(self) -> bool:
+        """Check if document is empty."""
+        return len(self.root.children) == 0
+
+    @property
+    def has_tables(self) -> bool:
+        """Check if document has tables."""
+        return len(self.tables) > 0
+
+    @property
+    def has_xbrl(self) -> bool:
+        """Check if document has XBRL data."""
+        return len(self.xbrl_facts) > 0
+
+    def validate(self) -> List[str]:
+        """
+        Validate document structure.
+
+        Returns list of validation issues.
+        """
+        issues = []
+
+        # Check for empty document
+        if self.is_empty:
+            issues.append("Document is empty")
+
+        # Check for sections
+        if not self.sections:
+            issues.append("No sections detected")
+
+        # Check for common sections in filings
+        if self.metadata.form in ['10-K', '10-Q']:
+            expected_sections = ['business', 'risk_factors', 'mda']
+            missing = [s for s in expected_sections if s not in self.sections]
+            if missing:
+                issues.append(f"Missing expected sections: {', '.join(missing)}")
+
+        # Check for orphaned nodes
+        orphaned = self.root.find(lambda n: n.parent is None and n != self.root)
+        if orphaned:
+            issues.append(f"Found {len(orphaned)} orphaned nodes")
+
+        return issues
+
+
+@dataclass
+class DocumentChunk:
+    """Represents a chunk of document for processing."""
+    content: str
+    start_node: Node
+    end_node: Node
+    section: Optional[str] = None
+    token_count: int = 0
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert chunk to dictionary."""
+        return {
+            'content': self.content,
+            'section': self.section,
+            'token_count': self.token_count,
+            'start_path': self.start_node.path,
+            'end_path': self.end_node.path
+        }
+
+
+@dataclass
+class LLMDocument:
+    """Document optimized for LLM processing."""
+    content: str
+    metadata: Dict[str, Any]
+    token_count: int
+    sections: List[str]
+    truncated: bool = False
+
+    def to_prompt(self) -> str:
+        """Convert to LLM prompt."""
+        parts = []
+
+        # Add metadata context
+        parts.append(f"Document: {self.metadata.get('form', 'Unknown')}")
+        parts.append(f"Company: {self.metadata.get('company', 'Unknown')}")
+        parts.append(f"Date: {self.metadata.get('filing_date', 'Unknown')}")
+        parts.append("")
+
+        # Add content
+        parts.append(self.content)
+
+        if self.truncated:
+            parts.append("\n[Content truncated due to length]")
+
+        return '\n'.join(parts)

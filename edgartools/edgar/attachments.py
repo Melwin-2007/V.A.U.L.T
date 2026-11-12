@@ -1,0 +1,1361 @@
+import ast
+import http.server
+import logging
+import os
+import re
+import signal
+import socketserver
+import tempfile
+import time
+import webbrowser
+import zipfile
+
+from pathlib import Path
+from threading import Thread
+from typing import TYPE_CHECKING, Dict, List, Optional, Tuple, Union
+
+if TYPE_CHECKING:
+    from edgar.company_reports import Report
+    from edgar.sgml.sgml_common import FilingSGML, SGMLDocument
+
+import textwrap
+
+import lxml.html
+from lxml.etree import ParserError
+from pydantic import BaseModel
+from rich import box
+from rich.columns import Columns
+from rich.console import Group
+from rich.panel import Panel
+from rich.table import Column, Table
+from rich.text import Text
+
+from edgar.config import SEC_BASE_URL
+from edgar.documents.utils.html_utils import create_lxml_parser
+from edgar.exceptions import AttachmentNotFoundError, ValidationError
+from edgar.core import binary_extensions, has_html_content, text_extensions
+from edgar.httpclient import async_http_client
+from edgar.httprequests import download_file, download_file_async, get_with_retry
+from edgar.richtools import print_rich, print_xml, repr_rich
+
+log = logging.getLogger(__name__)
+
+xbrl_document_types = ['XBRL INSTANCE DOCUMENT', 'XBRL INSTANCE FILE', 'EXTRACTED XBRL INSTANCE DOCUMENT']
+
+__all__ = ['Attachment', 'Attachments', 'FilingHomepage', 'FilerInfo', 'AttachmentServer', 'sec_document_url', 'get_document_type']
+
+
+def sec_document_url(attachment_url: str) -> str:
+    # Remove "ix?doc=/" or "ix.xhtml?doc=/" from the filing url
+    attachment_url = re.sub(r"ix(\.xhtml)?\?doc=/", "", attachment_url)
+    return f"{SEC_BASE_URL}{attachment_url}"
+
+def sequence_sort_key(x):
+    seq = x.sequence_number
+    if seq.strip() == '':  # Handle empty or whitespace-only strings
+        return (float('inf'), '')  # Sort to end using infinity
+    try:
+        return (0, float(seq))  # Convert to number for numeric sorting
+    except ValueError:
+        return (1, seq)  #
+
+
+# Mapping of SEC filing file types to Unicode symbols
+FILE_TYPE_SYMBOLS: Dict[str, str] = {
+    # Main SEC filing documents
+    "10-K": "📄",     # Document emoji for main filing
+    "EX-21.1": "📎",  # Paperclip for exhibits
+    "EX-23.1": "📎",
+    "EX-31.1": "📎",
+    "EX-31.2": "📎",
+    "EX-32.1": "📎",
+    "EX-97.1": "📎",
+
+    # XBRL-related documents
+    "EX-101.SCH": "🔰",  # Clipboard for schema
+    "EX-101.CAL": "📊",  # Chart for calculations
+    "EX-101.DEF": "📚",  # Books for definitions
+    "EX-101.LAB": "📎",  # Paperclip for labels (changed from label)
+    "EX-101.PRE": "📈",  # Graph for presentation
+
+    # Common file types
+    "XML": "🔷",      # Document for XML files
+    "HTML": "🌍",     # Page for HTML files
+    "GRAPHIC": "🎨",  # Camera for images
+    "EXCEL": "📊",    # Chart for Excel
+    "JSON": "📝",     # Note for JSON
+    "ZIP": "📦",      # Package for ZIP
+    "CSS": "📃",      # Page for CSS
+    "JS": "📄",       # Document for JavaScript
+    ".css": "📃",     # Page for CSS extension
+    ".js": "📄",      # Document for JS extension
+    "PDF": "📕",      # Book for PDF
+    ".pdf": "📕",     # Book for PDF extension
+    "INFORMATION TABLE": "📊"  # Chart for tables
+}
+
+# Standard exhibit type descriptions from Regulation S-K, Item 601
+EXHIBIT_DESCRIPTIONS: Dict[str, str] = {
+    # Core corporate documents (1-10)
+    "EX-1": "Underwriting agreement",
+    "EX-1.A": "Underwriting agreement - form of underwriting agreement",
+    "EX-1.B": "Underwriting agreement - form of selected dealer agreement",
+    "EX-2": "Plan of acquisition, reorganization, arrangement, liquidation, or succession",
+    "EX-3": "Articles of incorporation and bylaws",
+    "EX-3.A": "Articles of incorporation",
+    "EX-3.B": "Bylaws",
+    "EX-4": "Instruments defining the rights of security holders",
+    "EX-5": "Opinion re legality",
+    "EX-7": "Correspondence from independent accountant regarding non-reliance",
+    "EX-8": "Opinion re tax matters",
+    "EX-9": "Voting trust agreement",
+    "EX-10": "Material contracts",
+
+    # Financial and compliance (11-20)
+    "EX-11": "Statement re computation of per share earnings",
+    "EX-12": "Statement re computation of ratios",
+    "EX-13": "Annual report to security holders",
+    "EX-14": "Code of ethics",
+    "EX-15": "Letter re unaudited interim financial information",
+    "EX-16": "Letter re change in certifying accountant",
+    "EX-17": "Correspondence on departure of director",
+    "EX-18": "Letter re change in accounting principles",
+    "EX-19": "Insider trading policies and procedures",
+    "EX-20": "Other documents or statements to security holders",
+
+    # Required disclosures (21-32)
+    "EX-21": "Subsidiaries of the registrant",
+    "EX-22": "Subsidiary guarantors and issuers of guaranteed securities",
+    "EX-23": "Consent of experts and counsel",
+    "EX-24": "Power of attorney",
+    "EX-25": "Statement of eligibility of trustee",
+    "EX-26": "Invitation for competitive bids",
+    "EX-27": "Financial data schedule",
+    "EX-28": "Information from reports furnished to state insurance regulatory authorities",
+    "EX-29": "Additional exhibits",
+    "EX-30": "Disclosure regarding foreign jurisdictions that prevent inspections",
+
+    # Certifications (31-32)
+    "EX-31": "Rule 13a-14(a)/15d-14(a) certification (Section 302)",
+    "EX-31.1": "Certification of CEO pursuant to Section 302",
+    "EX-31.2": "Certification of CFO pursuant to Section 302",
+    "EX-32": "Section 1350 certification (Section 906)",
+    "EX-32.1": "Certification of CEO pursuant to Section 906",
+    "EX-32.2": "Certification of CFO pursuant to Section 906",
+
+    # Specialized (33+)
+    "EX-33": "Report on assessment of compliance with servicing criteria",
+    "EX-34": "Attestation report on assessment of compliance with servicing criteria",
+    "EX-35": "Servicer compliance statement",
+    "EX-36": "Static pool information",
+    "EX-95": "Mine safety disclosure",
+    "EX-96": "Technical report summary (mining)",
+    "EX-97": "Compensation recovery (clawback) policy",
+    "EX-99": "Additional exhibits",
+    "EX-99.1": "Additional exhibit",
+    "EX-99.2": "Additional exhibit",
+    "EX-100": "Additional exhibits",
+
+    # XBRL (101)
+    "EX-101": "Interactive data file",
+    "EX-101.INS": "XBRL instance document",
+    "EX-101.SCH": "XBRL taxonomy extension schema",
+    "EX-101.CAL": "XBRL calculation linkbase",
+    "EX-101.DEF": "XBRL definition linkbase",
+    "EX-101.LAB": "XBRL label linkbase",
+    "EX-101.PRE": "XBRL presentation linkbase",
+
+    # Cover page and fees
+    "EX-104": "Cover page interactive data file",
+    "EX-107": "Filing fee table",
+}
+
+
+def _lookup_exhibit_description(document_type: str) -> Optional[str]:
+    """Look up standard description for an exhibit type code."""
+    # Exact match (handles EX-31.1, EX-101.SCH, etc.)
+    if document_type in EXHIBIT_DESCRIPTIONS:
+        return EXHIBIT_DESCRIPTIONS[document_type]
+    # Base type fallback (EX-10.5 -> EX-10)
+    if '.' in document_type:
+        base_type = document_type.split('.')[0]
+        if base_type in EXHIBIT_DESCRIPTIONS:
+            return EXHIBIT_DESCRIPTIONS[base_type]
+    return None
+
+
+def get_extension(filename: str) -> str:
+    """Extract the file extension including the dot."""
+    if '.' in filename:
+        return filename[filename.rindex('.'):]
+    return ''
+
+def get_document_type(filename: str, declared_document_type:str) -> str:
+    """
+    Sometimes the SEC gets the document type wrong. This function uses the extension to determine the document type
+    """
+    if declared_document_type.upper() in ["XML", "HTML", "PDF", "HTM",  "JS", "CSS", "ZIP", "XLS", "XSLX", "JSON"]:
+        extension = get_extension(filename)
+        document_type = extension[1:].upper()
+        if document_type in ["HTM", "HTML"]:
+            return "HTML"
+        return document_type
+    return declared_document_type
+
+def get_file_icon(file_type: str, sequence: Optional[str] = None, filename: Optional[str] = None) -> str:
+    """
+    Get the Unicode symbol for a given file type and sequence number.
+
+    Args:
+        file_type: The type of the file from SEC filing
+        sequence: The sequence number of the file in the filing
+        filename: The name of the file to extract the extension
+
+    Returns:
+        Unicode symbol corresponding to the file type.
+        If sequence is 1, returns "📜" (scroll) to indicate main filing document.
+        Returns "📄" (document) as default if type not found.
+    """
+    icon = None
+    if sequence == "1":
+        icon = "📜"  # Scroll emoji for main document
+
+    # Check if it's an XBRL exhibit (EX-101.*)
+    elif file_type.startswith("EX-101."):
+        icon = FILE_TYPE_SYMBOLS.get(file_type, "📄")
+
+    # Check if it's a regular exhibit (starts with EX-)
+    elif file_type.startswith("EX-"):
+        icon = "📋"  # Clipboard + writing hand for exhibits
+
+    # Check for file extension first if filename is provided
+    elif filename:
+        ext = get_extension(filename)
+        if ext in FILE_TYPE_SYMBOLS:
+            icon = FILE_TYPE_SYMBOLS[ext]
+
+    if not icon:
+        icon =FILE_TYPE_SYMBOLS.get(file_type, "📄")
+    icon = f"{icon} " if len(icon) == 1 else icon # Add spaces around the icon for padding
+    return icon
+
+
+# The role SEC appends to a filer's name on the filing index page. It renders
+# plain for an ordinary filer -- "Apple Inc. (Filer)" -- but as a LINK for the
+# roles a Form 4 carries: "UFP TECHNOLOGIES INC (<a ...>Issuer</a>)". Both come
+# out of .text the same way, so the old `.replace("(Filer)", "")` stripped one
+# and left the others, and company_name was inconsistent depending on form type.
+# Anchored to the end and limited to known roles so a company whose real name
+# contains parentheses keeps them.
+_FILER_ROLE_SUFFIX = re.compile(
+    r"\s*\((?:Filer|Issuer|Reporting|Subject|Filed by)\)\s*$", re.IGNORECASE
+)
+
+
+def parse_homepage_html(html: Union[str, bytes]) -> lxml.html.HtmlElement:
+    """Parse a filing index page into an lxml tree.
+
+    Bytes rather than str is the safe input: ``lxml.html.fromstring`` raises
+    ValueError on a str that opens with an encoding declaration, which SEC
+    markup carries routinely, and the parser is told the encoding anyway.
+
+    Empty and whitespace-only input raise ParserError in lxml where bs4 built an
+    empty soup. That is not a distinction any caller here wants -- a truncated
+    or blank response should yield a homepage with no attachments and no filers,
+    the way it always has -- so it is mapped back to an empty document.
+    """
+    if isinstance(html, str):
+        html = html.encode("utf-8", errors="replace")
+    # remove_blank_text stays off: a whitespace-only node between two tags is a
+    # word boundary, and libxml2 deletes rather than collapses it. See
+    # create_lxml_parser's docstring and the vfwp bug family.
+    parser = create_lxml_parser(remove_blank_text=False, remove_comments=True,
+                                recover=True, encoding="utf-8")
+    try:
+        tree = lxml.html.fromstring(html, parser=parser)
+    except ParserError:
+        # "Document is empty" -- bs4 returned an empty soup for this input.
+        return lxml.html.fromstring(b"<html><body></body></html>", parser=parser)
+    if tree.tag != "html":
+        # fromstring can root a fragment at the fragment itself; every selector
+        # below is a descendant search, so give them a document to search.
+        wrapper = lxml.html.Element("html")
+        body = lxml.html.Element("body")
+        body.append(tree)
+        wrapper.append(body)
+        tree = wrapper
+    return tree
+
+
+def _by_class(element, tag: str, class_name: str) -> List:
+    """Elements of `tag` carrying `class_name` among their classes.
+
+    `class` is a space-separated list, so a plain ``@class='mailer'`` test would
+    miss ``class="mailer foo"`` that bs4's class_= matched, and a `contains`
+    test on the raw string would wrongly match ``class="mailerFoo"``. Padding
+    both sides with spaces matches whole tokens only.
+    """
+    return element.xpath(
+        f'.//{tag}[contains(concat(" ", normalize-space(@class), " "), " {class_name} ")]'
+    )
+
+
+def _first_by_class(element, tag: str, class_name: str):
+    """The first matching element, or None -- bs4's ``find`` semantics."""
+    found = _by_class(element, tag, class_name)
+    return found[0] if found else None
+
+
+def _as_lxml_root(root, api: str):
+    """Reject the BeautifulSoup this API took until 6.0, with the call that replaces it.
+
+    `Attachments` and `FilingHomepage` are both exported from `edgar`, so the tree
+    they are handed is part of a public signature. 5.x re-parsed a soup with a
+    DeprecationWarning; 6.0 dropped bs4, so a soup fails here rather than inside a
+    selector with "'NoneType' object is not callable".
+
+    ``callable``, not ``hasattr``: a BeautifulSoup answers any unknown attribute
+    with the first child tag of that name, or None -- so ``hasattr(soup,
+    "xpath")`` is True.
+    """
+    if root is None or callable(getattr(root, "xpath", None)):
+        return root
+    raise TypeError(
+        f"{api} takes an lxml tree, not {type(root).__name__}. BeautifulSoup is no "
+        f"longer accepted as of 6.0; pass edgar.attachments.parse_homepage_html(html).")
+
+
+class FilerInfo(BaseModel):
+    company_name: str
+    cik:str
+    identification: str
+    addresses: List[str]
+
+    def __rich__(self):
+        return Panel(
+            Columns([self.identification, Text("   "), self.addresses[0], self.addresses[1]]),
+            title=self.company_name
+        )
+
+    def __repr__(self):
+        return repr_rich(self.__rich__())
+
+
+def safe_attachment_filename(name: Optional[str]) -> str:
+    """Reduce a filer-chosen attachment name to a bare file name.
+
+    Attachment names come from the filing itself, so a name such as
+    ``../x.htm`` or ``/etc/x`` must not choose where a download lands. Every
+    directory part is dropped (both ``/`` and ``\\`` count as separators);
+    an ordinary name like ``aapl-20240928.htm`` comes back unchanged. A name
+    with nothing usable left raises ``ValidationError``.
+    """
+    raw = "" if name is None else str(name)
+    base = raw.replace("\\", "/").rsplit("/", 1)[-1]
+    if base.strip() in ("", ".", "..") or "\x00" in base:
+        raise ValidationError(
+            f"Attachment name {raw!r} is not a usable file name",
+            parameter="document",
+            invalid_value=raw,
+        )
+    if base != raw:
+        log.warning("Attachment name %r contains a path; saving it as %r", raw, base)
+    return base
+
+
+def safe_attachment_path(directory: Union[str, Path], name: Optional[str]) -> Path:
+    """The path inside ``directory`` where the attachment ``name`` is saved.
+
+    Raises ``ValidationError`` if the resulting path would fall outside
+    ``directory`` (for example a Windows drive-relative name like ``C:x``).
+    """
+    directory = Path(directory)
+    base = safe_attachment_filename(name)
+    file_path = directory / base
+    resolved_dir = directory.resolve()
+    if file_path.resolve().parent != resolved_dir:
+        raise ValidationError(
+            f"Attachment name {name!r} would be saved outside {directory}",
+            parameter="document",
+            invalid_value=name,
+        )
+    return file_path
+
+
+class Attachment:
+    """
+    A class to represent an attachment in an SEC filing
+    """
+
+    def __init__(self,
+                 sequence_number: str,
+                 description: str,
+                 document: str,
+                 ixbrl: bool,
+                 path: str,
+                 document_type: str,
+                 size: Optional[int],
+                 sgml_document: Optional['SGMLDocument'] = None,
+                 purpose: Optional[str] = None,
+                 filing_sgml: Optional['FilingSGML'] = None):
+        self.sequence_number = sequence_number
+        self.description = description
+        self.document = document
+        self.ixbrl = ixbrl
+        self.path = path
+        self.document_type = document_type
+        self.size = size
+        self.sgml_document:Optional['SGMLDocument'] = sgml_document
+        self.sgml = filing_sgml
+        self.purpose = purpose
+        # Allows tests to override content via property patching
+        self._content_override = None
+
+    @property
+    def content(self):
+        # If tests have overridden content using the property's setter, honor it
+        override = getattr(self, "_content_override", None)
+        if override is not None:
+            if isinstance(override, property) and override.fget is not None:
+                return override.fget(self)
+            try:
+                return override(self)  # callable override
+            except TypeError:
+                return override  # direct value
+
+        # Avoid real network calls for synthetic test paths
+        if isinstance(self.path, str) and self.path.startswith("/test/"):
+            return ""
+
+        if self.sgml_document:
+            return self.sgml_document.content
+        else:
+            return download_file(self.url)
+
+    @content.setter
+    def content(self, value):
+        # Enable tests to patch instance property via unittest.mock.patch.object
+        self._content_override = value
+
+    @content.deleter
+    def content(self):
+        self._content_override = None
+
+    @property
+    def display_description(self) -> str:
+        """Effective description for display, enhanced with standard exhibit descriptions."""
+        if self.purpose:
+            return self.purpose
+        desc = (self.description or "").strip()
+        doc_type = (self.document_type or "").strip()
+        # If description is meaningful (non-empty and different from the type code), keep it
+        if desc and desc.upper() != doc_type.upper():
+            return desc
+        # Look up standard description for this exhibit type
+        standard = _lookup_exhibit_description(doc_type)
+        if standard:
+            return standard
+        return desc
+
+    @property
+    def url(self):
+        return sec_document_url(self.path)
+
+    @property
+    def extension(self):
+        """The actual extension of the filing document
+         Usually one of .xml or .html or .pdf or .txt or .paper
+         """
+        return os.path.splitext(self.document)[1]
+
+    @property
+    def display_extension(self) -> str:
+        """This is the extension displayed in the html e.g. "es220296680_4-davis.html"
+        The actual extension would be "es220296680_4-davis.xml", that displays as html in the browser
+        """
+        return os.path.splitext(self.document)[1]
+
+    def validate_sequence_number(self, v):
+        if not v.isdigit() and v != '':
+            raise ValueError('sequence_number must be digits or an empty string')
+        return v
+
+    @property
+    def normalized_extension(self) -> str:
+        """The extension lowercased, for classification.
+
+        EDGAR filenames carry the filer's own casing, so the same document type arrives as
+        ".pdf", ".PDF" or ".Pdf" depending on who filed it. Every predicate below classifies
+        on this rather than on ``extension`` so that casing cannot decide the answer.
+        """
+        return self.extension.lower()
+
+    def is_text(self) -> bool:
+        """Is this a text document"""
+        return self.normalized_extension in text_extensions
+
+    def is_xml(self):
+        return self.normalized_extension in [".xsd", ".xml", ".xbrl"]
+
+    def is_html(self):
+        return self.normalized_extension in [".htm", ".html"]
+
+    def is_binary(self) -> bool:
+        """Is this a binary document"""
+        return self.normalized_extension in binary_extensions
+
+    @property
+    def empty(self):
+        """Some older filings have no document url. So effectively this attachment is empty"""
+        return self.document is None or self.document.strip() == ''
+
+    def download(self, path: Optional[Union[str, Path]] = None) -> Optional[Union[str, bytes]]:
+        """
+            Download the file to a specified path.
+            If the path is not provided, return the downloaded content as text or bytes.
+            If the path is a directory, the file is saved with its original name in that directory.
+            If the path is a file, the file is saved with the given path name.
+            """
+        if path is None:
+            return self.content
+
+        # Ensure path is a Path object
+        path = Path(path)
+
+        # Determine if the path is a directory or a file
+        if path.is_dir():
+            file_path = safe_attachment_path(path, self.document)
+        else:
+            file_path = path
+
+        # Save the file
+        if isinstance(self.content, bytes):
+            file_path.write_bytes(self.content)
+        else:
+            file_path.write_text(self.content)
+
+        return str(file_path)
+
+    def view(self):
+        # Check if this is a report
+        if self.is_report() and self.sgml:
+            report = self.sgml.filing_summary.reports.get_by_filename(self.document)
+            if report:
+                report.view()
+        else:
+            if self.is_text():
+                content = self.content
+                if self.is_html() or has_html_content(content):
+                    from edgar.documents import HTMLParser, ParserConfig
+                    from edgar.sgml.text_extraction import decode_html_bytes
+                    if isinstance(content, (bytes, bytearray)):
+                        content = decode_html_bytes(content)
+                    print_rich(HTMLParser(ParserConfig()).parse(content))
+                elif self.is_xml():
+                    print_xml(content)
+                else:
+                    pass
+            else:
+                pass
+
+    def is_report(self):
+        return re.match(r"R\d+\.htm", self.document)
+
+    def text(self):
+        # Check if this is a report
+        if self.is_report() and self.sgml:
+            report = self.sgml.filing_summary.reports.get_by_filename(self.document)
+            if report:
+                return report.text()
+
+        if self.is_text():
+            content = self.content
+            if self.is_html() or has_html_content(content):
+                # The same rule FilingSGML.text() and Filing.text() apply to HTML,
+                # so an exhibit reads the same whichever object you reach it from.
+                from edgar.sgml.text_extraction import attachment_html_to_text
+                return attachment_html_to_text(content)
+            else:
+                return content
+        return None
+
+    def markdown(self) -> Optional[str]:
+        """
+        Convert the attachment to markdown format if it's HTML content.
+
+        Rendered by ``edgar.documents``, the same pipeline as ``Filing.markdown()``,
+        so images survive (GH #886) with their ``src`` resolved against this
+        attachment's URL. Page-break markers are not rendered: the parser treats
+        page-break rules and page-number footers as print layout and drops them.
+
+        Returns:
+            None if the attachment is not HTML or cannot be converted.
+        """
+        if not self.is_html():
+            return None
+
+        content = self.content
+        if not content:
+            return None
+
+        # Check if content has HTML structure
+        if not has_html_content(content):
+            return None
+
+        from edgar.documents import HTMLParser, ParserConfig
+        from edgar.documents.exceptions import ParsingError
+        try:
+            document = HTMLParser(ParserConfig()).parse(content)
+        except ParsingError:
+            return None
+        # Base for resolving relative image src. self.url ends in the document
+        # file name, so urljoin() resolves siblings in the same archive folder.
+        document.metadata.url = self.url
+        return document.to_markdown() or None
+
+    def __rich__(self):
+        icon = get_file_icon(self.document_type, self.sequence_number, self.document)
+        text = Text.assemble( (f"{self.sequence_number:<3} ", "dim italic"),
+                             " ",
+                             (self.document, "bold"),
+                             " ", (self.display_description, "grey54"),
+                             " ",
+                             (icon, ""),
+                              " ",
+                              (self.document_type,
+                               "bold deep_sky_blue1" if self.sequence_number == "1" else "")
+                             )
+        return Panel(text, box=box.ROUNDED, width=200, expand=False)
+
+    def __repr__(self):
+        return repr_rich(self.__rich__())
+
+    def __str__(self):
+        return repr_rich(self.__rich__())
+
+
+# String methods callable on a query field, e.g. document.endswith('.htm')
+_ALLOWED_QUERY_STR_METHODS = frozenset({
+    'startswith', 'endswith', 'lower', 'upper', 'strip', 'lstrip', 'rstrip',
+})
+# re functions callable in a query, e.g. re.match('ea.*.htm', document)
+_ALLOWED_QUERY_RE_FUNCS = frozenset({'match', 'search', 'fullmatch'})
+
+
+class _AttachmentQuery:
+    """Safe evaluator for ``Attachments.query()`` filter strings.
+
+    Replaces a former ``eval()``-based implementation (GH #884) that executed
+    the query with the full builtin namespace reachable, allowing arbitrary
+    code execution. This walks the query's AST and permits only: attribute
+    access on the three query fields, literals, boolean/comparison operators,
+    a whitelist of string methods, and ``re.match``/``re.search``. Any other
+    name, call, or construct raises ``ValueError`` — there is no path to
+    ``__import__``, ``open``, or any builtin.
+    """
+
+    ALLOWED_FIELDS = frozenset({'document', 'description', 'document_type'})
+
+    def __init__(self, query_str: str):
+        self.query_str = query_str
+        try:
+            self.tree = ast.parse(query_str, mode='eval')
+        except SyntaxError as e:
+            raise ValueError(f"Invalid attachment query {query_str!r}: {e}") from e
+        # Validate the whole tree up front so a bad query fails fast, before
+        # we start iterating attachments.
+        self._eval(self.tree.body, _VALIDATION_PROBE)
+
+    def matches(self, attachment) -> bool:
+        return bool(self._eval(self.tree.body, attachment))
+
+    def _reject(self, node, detail: Optional[str] = None) -> ValueError:
+        what = detail or type(node).__name__
+        return ValueError(
+            f"Disallowed expression in attachment query ({what}): {self.query_str!r}"
+        )
+
+    def _eval(self, node, attachment):
+        if isinstance(node, ast.BoolOp):
+            values = [self._eval(v, attachment) for v in node.values]
+            if isinstance(node.op, ast.And):
+                return all(values)
+            if isinstance(node.op, ast.Or):
+                return any(values)
+            raise self._reject(node)
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
+            return not self._eval(node.operand, attachment)
+        if isinstance(node, ast.Compare):
+            left = self._eval(node.left, attachment)
+            result = True
+            for op, comparator in zip(node.ops, node.comparators):
+                right = self._eval(comparator, attachment)
+                result = result and self._compare(op, left, right)
+                left = right
+            return result
+        if isinstance(node, ast.Call):
+            return self._eval_call(node, attachment)
+        if isinstance(node, ast.Name):
+            if node.id in self.ALLOWED_FIELDS:
+                return getattr(attachment, node.id)
+            raise self._reject(node, f"unknown name {node.id!r}")
+        if isinstance(node, ast.Constant):
+            return node.value
+        if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
+            return [self._eval(elt, attachment) for elt in node.elts]
+        raise self._reject(node)
+
+    def _compare(self, op, left, right) -> bool:
+        if isinstance(op, ast.Eq):
+            return left == right
+        if isinstance(op, ast.NotEq):
+            return left != right
+        if isinstance(op, ast.In):
+            return left in right
+        if isinstance(op, ast.NotIn):
+            return left not in right
+        if isinstance(op, ast.Lt):
+            return left < right
+        if isinstance(op, ast.LtE):
+            return left <= right
+        if isinstance(op, ast.Gt):
+            return left > right
+        if isinstance(op, ast.GtE):
+            return left >= right
+        raise self._reject(op)
+
+    def _eval_call(self, node, attachment):
+        if node.keywords:
+            raise self._reject(node, "keyword arguments not allowed")
+        func = node.func
+        if not isinstance(func, ast.Attribute):
+            raise self._reject(node, "only method calls are allowed")
+        # re.match(pattern, target) / re.search(...) / re.fullmatch(...)
+        if isinstance(func.value, ast.Name) and func.value.id == 're':
+            if func.attr not in _ALLOWED_QUERY_RE_FUNCS:
+                raise self._reject(node, f"re.{func.attr} not allowed")
+            args = [self._eval(a, attachment) for a in node.args]
+            return getattr(re, func.attr)(*args)
+        # <field>.endswith('...') and other whitelisted string methods
+        target = self._eval(func.value, attachment)
+        if isinstance(target, str) and func.attr in _ALLOWED_QUERY_STR_METHODS:
+            args = [self._eval(a, attachment) for a in node.args]
+            return getattr(target, func.attr)(*args)
+        raise self._reject(node, f"method {func.attr!r} not allowed")
+
+
+class _ValidationProbe:
+    """A stand-in attachment whose query fields are empty strings, used to
+    validate a query's AST once at construction time (so disallowed syntax is
+    rejected before any attachment is scanned)."""
+
+    document = ''
+    description = ''
+    document_type = ''
+
+
+_VALIDATION_PROBE = _ValidationProbe()
+
+
+class Attachments:
+    """
+    A class to represent the attachments of an SEC filing
+    """
+
+    def __init__(self,
+                 document_files: List[Attachment],
+                 data_files: Optional[List[Attachment]],
+                 primary_documents: List[Attachment],
+                 sgml:Optional['FilingSGML'] = None):
+        self.documents = document_files
+        self.data_files = data_files
+        self._attachments = document_files + (data_files or [])
+        self.primary_documents = primary_documents
+        self.sgml = sgml
+        self.n = 0
+
+
+    def __getitem__(self, item: Union[int, str]):
+        """
+        Get the attachment by sequence number as set in the SEC filing SGML file
+        """
+        if isinstance(item, int) or item.isdigit():
+            return self.get_by_sequence(item)
+        elif isinstance(item, str):
+            for doc in self._attachments:
+                if doc.document == item:
+                    return doc
+        raise AttachmentNotFoundError(f"Document not found: {item}")
+
+    def get_by_sequence(self, sequence: Union[str, int]):
+        """
+        Get the attachment by sequence number starting at 1
+        The sequence number is the exact sequence number in the filing
+        """
+        for doc in self._attachments:
+            if doc.sequence_number == str(sequence):
+                return doc
+        raise AttachmentNotFoundError(f"Document not found: {sequence}")
+
+    def get_by_index(self, index: int):
+        """
+        Get the attachment by index starting at 1
+        """
+        return self._attachments[index]
+
+
+    def get_report(self, filename:str) -> 'Report':
+        """
+        Get a report by filename
+        """
+        if self.sgml:
+            reports = self.sgml.filing_summary.reports
+            if reports:
+                return reports.get_by_filename(filename)
+        return None
+
+
+    @property
+    def primary_html_document(self) -> Optional[Attachment]:
+        """Get the primary xml document on the filing"""
+        for doc in self.primary_documents:
+            if doc.display_extension == ".html" or doc.display_extension == '.htm':
+                return doc
+        """
+        Most filings have html primary documents. Some don't.
+        E.g. Form's 3,4,5 do when loaded directly from edgar but not when loaded from local files
+        However, there are unusual filings with endings like ".fil" that require a return. So return the first one
+        """
+        if len(self.primary_documents) > 0:
+            return self.primary_documents[0]
+        return None
+
+
+    @property
+    def primary_xml_document(self) -> Optional[Attachment]:
+        """Get the primary xml document on the filing"""
+        for doc in self.primary_documents:
+            if doc.display_extension == ".xml":
+                return doc
+        return None
+
+    @property
+    def text_document(self):
+        for doc in reversed(self.documents):
+            if doc.description == "Complete submission text file":
+                return doc
+        return None
+
+    @property
+    def exhibits(self):
+        """
+        Get all the exhibits in the filing.
+        This is the primary document plus all the documents listed as EX-XX
+        """
+        primary_documents = [self.primary_html_document]
+        exhibits_documents = self.query("re.match('EX-', document_type)", False).documents
+        return Attachments(
+            document_files=primary_documents + exhibits_documents,
+            data_files=[],
+            primary_documents=primary_documents,
+            sgml=self.sgml)
+
+    @property
+    def graphics(self):
+        return self.query("document_type=='GRAPHIC'")
+
+    def query(self, query_str: str, include_data_files: bool = True):
+        """
+        Query attachments based on a simple query string.
+
+        Supports conditions on 'document', 'description', and 'document_type',
+        combined with ``and``/``or``/``not``, ``==``/``in``/``not in``, the
+        string methods ``startswith``/``endswith``/``lower``/``upper``/``strip``,
+        and ``re.match``/``re.search``.
+
+        Example query: "document.endswith('.htm') and 'RELEASE' in description and document_type in ['EX-99.1', 'EX-99', 'EX-99.01']"
+
+        The query is parsed and evaluated against a restricted AST — it cannot
+        call arbitrary functions or reach Python builtins (GH #884). An invalid
+        or disallowed query raises ``ValueError``.
+        """
+        evaluator = _AttachmentQuery(query_str)
+
+        # Evaluate the query for documents and data files
+        new_documents = [attachment for attachment in self.documents if evaluator.matches(attachment)]
+        if include_data_files:
+            new_data_files = [attachment for attachment in self.data_files if
+                              evaluator.matches(attachment)] if self.data_files else None
+        else:
+            new_data_files = []
+
+        return Attachments(document_files=new_documents, data_files=new_data_files,
+                           primary_documents=self.primary_documents, sgml=self.sgml)
+
+    @staticmethod
+    async def _download_all_attachments(attachments: List[Attachment]):
+        import asyncio
+
+        async with async_http_client() as client:
+            return await asyncio.gather(
+                *[download_file_async(client, attachment.url, as_text=attachment.is_text()) for attachment in attachments])
+
+
+    def download(self, path: Union[str, Path], archive: bool = False):
+        """
+        Download all the attachments to a specified path.
+        If the path is a directory, the file is saved with its original name in that directory.
+        If the path is a file, the file is saved with the given path name.
+        If archive is True, the attachments are saved in a zip file.
+        path: str or Path - The path to save the attachments
+        archive: bool (default False) - If True, save the attachments in a zip file
+        """
+        if self.sgml:
+            self.sgml.download(path, archive)
+            return
+
+        from edgar.core import run_async_or_sync
+        downloaded_files = run_async_or_sync(Attachments._download_all_attachments(self._attachments))
+
+        # Ensure path is a Path object
+        path = Path(path)
+
+        # If the path is a directory, save the files in that directory
+        if archive:
+            if path.is_dir():
+                raise ValueError("Path must be a zip file name to create zipfile")
+            else:
+                with zipfile.ZipFile(path, 'w') as zipf:
+                    for attachment, downloaded in zip(self._attachments, downloaded_files, strict=False):
+                        if isinstance(downloaded, bytes):
+                            zipf.writestr(safe_attachment_filename(attachment.document), downloaded)
+                        else:
+                            zipf.writestr(safe_attachment_filename(attachment.document), downloaded.encode('utf-8'))
+        else:
+            if path.is_dir():
+                for attachment, downloaded in zip(self._attachments, downloaded_files, strict=False):
+                    file_path = safe_attachment_path(path, attachment.document)
+                    if isinstance(downloaded, bytes):
+                        file_path.write_bytes(downloaded)
+                    else:
+                        file_path.write_text(downloaded, encoding='utf-8')
+            else:
+                raise ValueError("Path must be a directory")
+
+
+    def serve(self, port: int = 8000) -> Tuple[Thread, socketserver.TCPServer, str]:
+        """
+        Serve the attachment on a local server
+        The server can be stopped using CTRL-C
+        port: int (default 8000) - The port to serve the attachment
+        """
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            self.download(temp_path)
+
+            class Handler(http.server.SimpleHTTPRequestHandler):
+                def __init__(self, *args, **kwargs):
+                    super().__init__(*args, directory=temp_dir, **kwargs)
+
+            primary_html = os.path.basename(self.primary_html_document.path)
+
+            url = f'http://localhost:{port}/{primary_html}'
+
+            httpd = socketserver.TCPServer(("", port), Handler)
+
+            def serve_forever():
+                with httpd:
+                    httpd.serve_forever()
+
+            thread = Thread(target=serve_forever)
+            thread.daemon = True
+            thread.start()
+
+            # Wait for the server to start
+            time.sleep(1)
+
+            def signal_handler(sig, frame):
+                httpd.shutdown()
+                thread.join()
+
+            signal.signal(signal.SIGINT, signal_handler)
+            webbrowser.open(url)
+
+            # Keep the main thread alive to handle signals
+            while thread.is_alive():
+                time.sleep(0.1)
+
+            return thread, httpd, url
+
+    def markdown(self) -> Dict[str, str]:
+        """
+        Convert all HTML attachments to markdown format.
+
+        Returns:
+            A dictionary mapping attachment document names to their markdown content.
+            Only includes attachments that can be successfully converted to markdown.
+        """
+        markdown_attachments = {}
+
+        for attachment in self._attachments:
+            if attachment.is_html():
+                md_content = attachment.markdown()
+                if md_content:
+                    markdown_attachments[attachment.document] = md_content
+
+        return markdown_attachments
+
+    def __len__(self):
+        return len(self._attachments)
+
+    def __iter__(self):
+        self.n = 0
+        return self
+
+    def __next__(self):
+        if self.n < len(self):
+            _attachment = self._attachments[self.n]
+            assert _attachment is not None
+
+            self.n += 1
+            return _attachment
+        else:
+            raise StopIteration
+
+    def __rich__(self):
+
+        # Document files
+        document_table = Table(Column('Seq', header_style="dim"),
+                               Column('Document', header_style="dim"),
+                               Column('Description', header_style="dim", min_width=60),
+                               Column('Type', header_style="dim", min_width=16),
+                               title='Attachments',
+                               row_styles=["", "bold"],
+                               box=box.SIMPLE_HEAD)
+        all_attachments = sorted(self.documents + (self.data_files or []), key=sequence_sort_key)
+
+
+
+        for attachment in all_attachments:
+            # Get the file icon for each attachment
+            icon = get_file_icon(file_type=attachment.document_type,
+                                 sequence= attachment.sequence_number,
+                                 filename=attachment.document)
+            sequence_number = f"{attachment.sequence_number}" if attachment.sequence_number == "1" else attachment.sequence_number
+            description = "\n".join(textwrap.wrap(attachment.display_description, 100))
+            document_table.add_row(Text(sequence_number, style="bold deep_sky_blue1") if attachment.sequence_number == "1" else sequence_number,
+                                   Text(attachment.document, style="bold deep_sky_blue1") if attachment.sequence_number == "1" else attachment.document,
+                                   Text(description, style="bold deep_sky_blue1") if attachment.sequence_number == "1" else description,
+                                   Text.assemble((icon, ""), " ", (attachment.document_type, "bold deep_sky_blue1" if attachment.sequence_number == "1" else "")),)
+
+
+        return document_table
+
+    def __repr__(self):
+        return repr_rich(self.__rich__())
+
+    @classmethod
+    def load(cls, root: lxml.html.HtmlElement):
+        """
+        Load the attachments from the SEC filing home page
+        """
+        root = _as_lxml_root(root, "Attachments.load")
+        tables = _by_class(root, 'table', 'tableFile')
+
+        def parse_table(table, documents: bool):
+            min_seq = None
+            # The list of attachments which are primary. This is the first document in the filing
+            # Plus additional document with the same sequence number
+            primary_documents: List[Attachment] = []
+
+            rows = table.xpath('.//tr')[1:]  # Skip header row
+            attachments = []
+            for _index, row in enumerate(rows):
+                cols = row.xpath('.//td')
+                # text_content(), not .text: lxml's .text is only the node's own
+                # leading text, where bs4's .text was every descendant's.
+                sequence_number = cols[0].text_content().strip().replace('\xa0', '-')
+
+                description = cols[1].text_content().strip()
+                # The document text is the text of the document link.
+                document_text = cols[2].text_content().strip()
+                document = document_text.split(' ')[0].strip()
+                iXbrl = 'iXBRL' in document_text
+                path = cols[2].find('.//a').get('href').strip()
+                document_type = cols[3].text_content().strip()
+                size = cols[4].text_content().strip()
+
+                try:
+                    size = int(size)
+                except ValueError:
+                    size = None
+
+                attachment = Attachment(
+                    sequence_number=sequence_number,
+                    description=description,
+                    document=document,
+                    ixbrl=iXbrl,
+                    path=path,
+                    document_type=document_type,
+                    size=size
+                )
+                # Add the attachment to the list
+                attachments.append(attachment)
+
+                # Set the SGML on the attachment
+                attachment.sgml = attachment.sgml
+                # If this is the first document, set it as the primary document
+                if documents:
+                    if min_seq is None:
+                        min_seq = sequence_number
+                    if sequence_number == min_seq:
+                        primary_documents.append(attachment)
+            return attachments, primary_documents
+
+        if tables:
+            document_files, primary_documents = parse_table(tables[0], documents=True)
+        else:
+            document_files, primary_documents = [], []
+
+        if len(tables) > 1:
+            data_files, _ = parse_table(tables[1], documents=False)
+        else:
+            data_files = None
+
+        return cls(document_files, data_files, primary_documents)
+
+
+class AttachmentServer:
+    def __init__(self, attachments: Attachments, port: int = 8000):
+        self.attachments = attachments
+        self.port = port
+        self.thread = None
+        self.httpd = None
+        self.url = None
+        self.setup()
+
+    def setup(self):
+        temp_dir = tempfile.TemporaryDirectory()
+        temp_path = Path(temp_dir.name)
+        self.attachments.download(temp_path)
+
+        class Handler(http.server.SimpleHTTPRequestHandler):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, directory=temp_dir.name, **kwargs)
+
+        primary_html = os.path.basename(self.attachments.primary_html_document.path)
+
+        self.url = f'http://localhost:{self.port}/{primary_html}'
+
+        self.httpd = socketserver.TCPServer(("", self.port), Handler)
+
+        def serve_forever():
+            with self.httpd:
+                self.httpd.serve_forever()
+
+        self.thread = Thread(target=serve_forever)
+        self.thread.daemon = True
+
+        signal.signal(signal.SIGINT, self.signal_handler)
+
+    def start(self):
+        self.thread.start()
+        webbrowser.open(self.url)
+
+        # Keep the main thread alive to handle signals
+        while self.thread.is_alive():
+            time.sleep(0.1)
+
+    def stop(self):
+        self.httpd.shutdown()
+        self.thread.join()
+
+    def signal_handler(self, sig, frame):
+        self.stop()
+        exit(0)  # Ensure the program exits
+
+
+
+class FilingHomepage:
+
+    def __init__(self,
+                 url: str,
+                 root: lxml.html.HtmlElement = None,
+                 attachments: Attachments = None):
+        self.attachments = attachments
+        self.url = url
+        self._root = _as_lxml_root(root, "FilingHomepage")
+
+    def open(self):
+        webbrowser.open(self.url)
+
+    @property
+    def documents(self):
+        return self.attachments.documents
+
+    @property
+    def datafiles(self):
+        return self.attachments.data_files
+
+    @property
+    def primary_html_document(self) -> Optional[Attachment]:
+        """Get the primary html document on the filing"""
+        return self.attachments.primary_html_document
+
+    @property
+    def primary_xml_document(self) -> Optional[Attachment]:
+        """Get the primary xml document on the filing"""
+        return self.attachments.primary_xml_document
+
+    @property
+    def primary_documents(self):
+        return self.attachments.primary_documents
+
+    @property
+    def text_document(self):
+        return self.attachments.text_document
+
+    @property
+    def xbrl_document(self):
+        """Find and return the xbrl document."""
+
+        if self.datafiles is None:
+            return None
+        for datafile in reversed(self.datafiles):
+            if datafile.description in xbrl_document_types:
+                return datafile
+
+    def get_filers(self):
+        if hasattr(self, '_cached_filers'):
+            return self._cached_filers
+        filer_divs = _by_class(self._root, "div", "filerDiv")
+        filer_infos = []
+        for filer_div in filer_divs:
+
+            # Get the company name
+            company_info_div = _first_by_class(filer_div, "div", "companyInfo")
+
+            company_name_span = _first_by_class(company_info_div, "span", "companyName")
+
+            # `is not None`, not truthiness: an lxml element with no children is
+            # falsy, and a companyName span holding only text has none.
+            if company_name_span is not None:
+                full_text = company_name_span.text_content().strip()
+                # Split the text into company name and CIK
+                parts = full_text.split('CIK: ')
+                company_name = parts[0].strip()
+                cik = parts[1].split()[0] if len(parts) > 1 else ""
+
+                # Clean up the company name
+                company_name = _FILER_ROLE_SUFFIX.sub("", re.sub("\n", "", company_name)).strip()
+            else:
+                company_name = ""
+                cik = ""
+
+            # Get the identification information
+            ident_info_div = _first_by_class(company_info_div, "p", "identInfo")
+
+            # Replace <br> with newlines. lxml has no replace_with, and dropping
+            # an element DELETES its tail -- the text between this <br> and the
+            # next -- so the tail is spliced onto whatever precedes the <br>
+            # first, with the newline in front of it. Losing it would glue the
+            # identification lines together, which is the hxtd/2h2s bug family.
+            for br in ident_info_div.xpath(".//br"):
+                parent = br.getparent()
+                text = "\n" + (br.tail or "")
+                previous = br.getprevious()
+                if previous is not None:
+                    previous.tail = (previous.tail or "") + text
+                else:
+                    parent.text = (parent.text or "") + text
+                parent.remove(br)
+
+            identification = ident_info_div.text_content()
+
+            # Get the mailing information
+            mailer_divs = _by_class(filer_div, "div", "mailer")
+            # For each mailer div's text remove multiple spaces after a newline
+
+            addresses = [re.sub(r'\n\s+', '\n', mailer_div.text_content().strip())
+                         for mailer_div in mailer_divs]
+
+            # Create the filer info
+            filer_info = FilerInfo(company_name=company_name, cik=cik, identification=identification, addresses=addresses)
+
+            filer_infos.append(filer_info)
+
+        self._cached_filers = filer_infos
+        return filer_infos
+
+    @property
+    def period_of_report(self)-> Optional[str]:
+        "Get the period of report"
+        _,_, period = self.get_filing_dates()
+        return period
+
+    def get_filing_dates(self)-> Optional[Tuple[str,str, Optional[str]]]:
+        if hasattr(self, '_cached_filing_dates'):
+            return self._cached_filing_dates
+        # Find the form grouping divs
+        grouping_divs = _by_class(self._root, "div", "formGrouping")
+        if len(grouping_divs) == 0:
+            return None
+
+        # Build a label -> value map by pairing each <div class="infoHead">
+        # with the next sibling <div class="info"> under the same grouping.
+        # This is label-based rather than positional: on multi-filer Schedule
+        # 13D/G filings the Filer(s) block can appear at index 1, and a
+        # positional lookup would return its concatenated filer names as the
+        # period of report, which then crashes downstream isoformat parsers.
+        label_to_value: Dict[str, str] = {}
+        for grouping in grouping_divs:
+            children = [c for c in grouping.xpath("./div") if c.get("class")]
+            current_label: Optional[str] = None
+            for child in children:
+                # bs4 returned class as a list of tokens; lxml returns the raw
+                # string, so split it -- an `in` test against the string would
+                # match "infoHeadline" as well as "infoHead".
+                classes = (child.get("class") or "").split()
+                if "infoHead" in classes:
+                    current_label = child.text_content().strip().lower()
+                elif "info" in classes and current_label is not None:
+                    # Only keep the first value for each label.
+                    label_to_value.setdefault(current_label, child.text_content().strip())
+                    current_label = None
+
+        filing_date = label_to_value.get("filing date")
+        accepted_date = label_to_value.get("accepted")
+        period = label_to_value.get("period of report")
+
+        # Fall back to the legacy positional layout if the label-based lookup
+        # missed either of the always-present date fields.
+        if filing_date is None or accepted_date is None:
+            info_divs = _by_class(grouping_divs[0], "div", "info")
+            if filing_date is None and len(info_divs) >= 1:
+                filing_date = info_divs[0].text_content().strip()
+            if accepted_date is None and len(info_divs) >= 2:
+                accepted_date = info_divs[1].text_content().strip()
+
+        result = filing_date, accepted_date, period
+        self._cached_filing_dates = result
+        return result
+
+    @classmethod
+    def load(cls, url: str):
+        response = get_with_retry(url)
+        root = parse_homepage_html(response.content)
+        attachments = Attachments.load(root)
+        return cls(url, root, attachments)
+
+    def __repr__(self):
+        return repr_rich(self.__rich__())
+
+    def __rich__(self):
+
+        return Panel(
+            Group(
+                self.attachments,
+                Group(
+                    *[filer_info.__rich__() for filer_info in self.get_filers()]
+                )
+            ))

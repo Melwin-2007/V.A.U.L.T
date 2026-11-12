@@ -1,0 +1,375 @@
+"""
+Anchor-to-anchor HTML slicing for TOC-detected sections.
+
+TOC-detected sections carry no node tree — their content lives in the
+original filing HTML, bounded by a *start anchor* (the section's own TOC
+target) and an *end anchor* (the next section's target). Turning that
+anchor pair into a clean, well-formed HTML subtree is the single
+primitive that three features depend on:
+
+  - ``Section.tables()``     — needs each ``<table>`` exactly once (issue #826)
+  - ``Section.markdown()``   — needs a parseable subtree to render structure
+                               (edgartools-4j6f; currently falls back to text)
+  - 40-F section extraction  — same slicing need (edgartools-8zqq)
+
+Before this module each feature re-derived a partial slice and hit a
+different subset of the known edge cases. This centralizes the algorithm.
+
+Algorithm
+---------
+1. Resolve the start element (and end element, if any) via id/name anchor.
+2. Walk the tree in document order. Turn collection ON at the start anchor,
+   OFF at the end anchor. Collect every element seen while ON.
+3. Reduce to *top-level* collected elements — those whose parent is not
+   itself collected. ``lxml.tostring`` already emits an element's full
+   subtree, so serializing a nested descendant in addition to its ancestor
+   would emit the descendant (and any ``<table>`` under it) more than once.
+   This is the issue #826 fix.
+4. Repair orphaned table fragments. When the start/end anchors sit inside a
+   table, the top-level collected elements can be bare ``<tr>``/``<td>``/
+   ``<tbody>`` fragments. ``lxml.html.fromstring`` silently drops a bare
+   ``<tr>`` (it isn't valid outside a table), losing the row's content and
+   any tables inside it. We wrap each run of consecutive table-internal
+   fragments in a minimal ``<table><tbody>…`` so the content survives a
+   round-trip through the parser.
+5. Wrap the (repaired) top-level elements in a single synthetic ``<div>``
+   so callers get one well-formed root to parse or render.
+
+Edge cases (from the design sprint, Tension 3)
+----------------------------------------------
+Fully handled here:
+  (6) table-row-bounded anchors losing ``<table>``/``<tbody>`` wrappers
+      → step 4 reconstructs the wrappers.
+  (7) nested-table re-serialization → step 3 (top-level-only).
+  (1) next-section heading leak via nested anchors, (2) shared-wrapper
+      LCA, (5) last-section-in-wrapper leak → when the end anchor (or hard
+      end element) sits inside an element already collected, that element
+      is replaced by a copy truncated at the end (``_truncate_at``), so the
+      HTML stops where ``text()`` stops. Before this, the container was
+      serialized whole and the next section's heading and body leaked into
+      ``markdown()`` (GH #1345).
+
+Mitigated (no worse than ``text()``, the prior behaviour):
+  (4) inline anchor wrappers.
+
+Not applicable:
+  (3) same-anchor boundaries (start == end) → callers must not pass an end
+      anchor equal to the start anchor; ``SECSectionExtractor`` orders
+      sections so the next section's anchor differs. Guarded defensively.
+"""
+
+from __future__ import annotations
+
+import copy
+from typing import List, Optional
+
+import lxml.html as lxml_html
+from lxml import etree
+
+from edgar.documents.utils.anchor_targets import find_anchor_targets, is_anchor_match
+
+# Tags that are only valid *inside* a <table>. A bare one of these is an
+# orphaned fragment that lxml.html.fromstring would drop.
+_TABLE_INTERNAL_TAGS = {
+    'tr', 'td', 'th', 'tbody', 'thead', 'tfoot', 'caption', 'col', 'colgroup',
+}
+
+# Tags that only style text. An anchor nested in these is still inside its
+# heading, so heading_block climbs through them to the block that holds it.
+_INLINE_TAGS = {
+    'a', 'b', 'big', 'em', 'font', 'i', 'small', 'span', 'strong',
+    'sub', 'sup', 'tt', 'u',
+}
+
+
+def collect_range_elements(tree, start_anchor: str, end_anchor: Optional[str],
+                           start_element=None, end_element=None) -> List:
+    """Collect elements in document order between the start and end anchors.
+
+    Collection turns on *after* the start anchor element and off *at* the
+    end anchor element (the end anchor's content is excluded). When the start
+    anchor sits inside the heading it marks, collection turns on *at* the
+    enclosing block instead, so the section keeps its own heading, and an end
+    anchor inside its heading turns collection off at that block, so the next
+    item's heading stays out (:func:`heading_block`, GH #1369). Returns the
+    raw list of every element
+    seen while in range — callers typically reduce this to top-level elements
+    via :func:`top_level_elements`.
+
+    ``start_element`` / ``end_element`` are optional hard bounds for items that
+    share one anchor and are told apart by their heading elements (GH #1345):
+    collection starts *at* ``start_element`` (included) instead of after the
+    anchor, and stops at ``end_element`` or the end anchor, whichever comes
+    first.
+    """
+    if not start_anchor:
+        return []
+    # Defensive: a same-anchor boundary would collect nothing meaningful.
+    if end_anchor and end_anchor == start_anchor:
+        end_anchor = None
+
+    if start_element is None:
+        targets = find_anchor_targets(tree, start_anchor)
+        if targets:
+            start_element = heading_block(targets[0])
+    if end_element is None and end_anchor:
+        end_targets = find_anchor_targets(tree, end_anchor)
+        if end_targets:
+            end_element = heading_block(end_targets[0])
+
+    collected: List = []
+    in_range = False
+    for _event, el in etree.iterwalk(tree, events=('start',)):
+        if not hasattr(el, 'get'):
+            continue
+        if start_element is not None:
+            if el is start_element:
+                in_range = True
+        elif is_anchor_match(el, start_anchor):
+            in_range = True
+            continue
+        if ((in_range and end_element is not None and el is end_element)
+                or (end_anchor and is_anchor_match(el, end_anchor))):
+            collected = _truncate_at(collected, el)
+            break
+        if in_range:
+            collected.append(el)
+    return collected
+
+
+# Longest run of heading text an anchor may trail. Measured over 1,478 TOC
+# anchors in the offline corpus (2026-10-11): the 70 anchors with text before
+# them in their block all carry 6 to ~90 chars of item heading; nothing longer
+# exists. A longer prefix is body text the anchor was dropped at the end of,
+# and moving the start there would pull the previous section in.
+_HEADING_PREFIX_MAX = 200
+
+
+def heading_block(anchor):
+    """The heading block an anchor sits inside, or ``None`` if it sits in none.
+
+    Collection normally turns on *after* a start anchor and off *at* an end
+    anchor. That is right when the anchor is a block of its own or an empty
+    sibling placed before its heading, which is how modern filings mark items.
+    Two older shapes put the anchor *inside* the heading:
+
+    * nested first, ``<p><b><a name="item2"></a>ITEM 2. PROPERTIES</b></p>``
+      (GH #1369): the heading's block has already started when the walk
+      reaches the anchor, so the section lost its own heading;
+    * trailing or mid-word, ``<h2>ITEM 2. PROPERTIES.<a name="item2"></a></h2>``
+      and ``Prope<a name="2">rties</a>`` (2010 Bowne-style filings): the same
+      loss at the start, and at the END the next item's heading was collected
+      before its anchor was met, so every slice ended one heading too late.
+
+    In both shapes the boundary belongs on the block, not the anchor. Climb
+    through inline wrappers (and table cells, for a heading split across
+    cells) to the first block, and return it when text would otherwise be
+    lost: heading text before the anchor, or text in the anchor or its tail.
+    An anchor that is itself a block, or an empty one with nothing before it,
+    returns ``None`` so those layouts are unchanged. A prefix longer than
+    ``_HEADING_PREFIX_MAX`` is body text, not a heading, and also returns
+    ``None``.
+    """
+    if not isinstance(anchor.tag, str) or anchor.tag not in _INLINE_TAGS:
+        return None
+    block = None
+    for parent in anchor.iterancestors():
+        if parent.tag in ('body', 'html'):
+            break
+        block = parent
+        if parent.tag not in _INLINE_TAGS and parent.tag not in _TABLE_INTERNAL_TAGS:
+            break
+    if block is None:
+        return None
+
+    prefix = _text_before(block, anchor).strip()
+    in_anchor = (anchor.text or '').strip() or (anchor.tail or '').strip()
+    if not prefix and not in_anchor:
+        return None
+    if len(prefix) > _HEADING_PREFIX_MAX:
+        return None
+    return block
+
+
+def _text_before(block, anchor) -> str:
+    """Text of ``block``'s subtree that precedes ``anchor`` on the anchor's own line.
+
+    A block element that closes before the anchor is a line of its own, not
+    heading text the anchor trails: TechPrecision (2025) places each empty
+    item anchor in one ``<div>`` after the previous lines, "PART I" before
+    Item 1 and "Item 9. ... None." before Item 9A, and counting those lines
+    started Item 1 on its Part divider and Item 9A on Item 9's heading.
+    """
+    parts = [block.text or '']
+    ancestors = list(anchor.iterancestors())
+    skip_until = None
+    for el in block.iter():
+        if el is block:
+            continue
+        if el is anchor:
+            break
+        if skip_until is not None:
+            if any(a is skip_until for a in el.iterancestors()):
+                continue
+            skip_until = None
+        if (isinstance(el.tag, str) and el.tag not in _INLINE_TAGS and el.tag not in _TABLE_INTERNAL_TAGS
+                and el.tag != 'br' and not any(a is el for a in ancestors)):
+            skip_until = el  # a preceding block: drop its text, keep its tail
+            parts.append(el.tail or '')
+            continue
+        if isinstance(el.tag, str):
+            parts.append(el.text or '')
+        parts.append(el.tail or '')
+    return ''.join(parts)
+
+
+def _truncated_clone(el, stop, stop_path: List):
+    """Copy of ``el`` holding only what precedes ``stop`` in document order.
+
+    ``stop_path`` is ``stop``'s ancestor chain. Children before the one that
+    leads to ``stop`` are deep-copied whole (tails included); that one is
+    truncated recursively, and nothing after it is kept.
+    """
+    clone = etree.Element(el.tag, attrib=dict(el.attrib))
+    clone.text = el.text
+    for child in el:
+        if child is stop:
+            break
+        if any(child is a for a in stop_path):
+            clone.append(_truncated_clone(child, stop, stop_path))
+            break
+        clone.append(_clone(child))
+    return clone
+
+
+def _truncate_at(collected: List, stop) -> List:
+    """Cut the collected range at ``stop`` when a collected element contains it.
+
+    Collection stops at ``stop``, but an element that *contains* it was
+    collected when its start was seen, and :func:`top_level_elements` would
+    then serialize it whole: ``stop`` and everything after it leak into the
+    section's HTML (the next item's heading in ``markdown()``). Replace the
+    outermost such container with a copy truncated at ``stop`` and drop its
+    collected descendants, which the copy already holds (GH #1345).
+    """
+    stop_path = list(stop.iterancestors())
+    # Outermost ancestor first: the first one found in the range is the
+    # container to cut. ``in`` on lxml elements compares identity.
+    outer_idx = next((collected.index(a) for a in reversed(stop_path) if a in collected), None)
+    if outer_idx is None:
+        return collected
+    # Everything collected after the container started lies inside it (the
+    # walk stopped at ``stop``, which is still inside it), so the truncated
+    # copy replaces that whole tail of the list.
+    return collected[:outer_idx] + [_truncated_clone(collected[outer_idx], stop, stop_path)]
+
+
+def top_level_elements(collected: List) -> List:
+    """Reduce collected elements to those whose parent is not also collected.
+
+    ``id()``-based membership is safe: ``collected`` holds a live reference
+    to every proxy, so lxml returns the same proxy (same id) for
+    ``getparent()`` of a collected element. Document order is preserved.
+    """
+    collected_ids = {id(e) for e in collected}
+    return [e for e in collected if id(e.getparent()) not in collected_ids]
+
+
+def _repair_table_fragments(elements: List) -> List:
+    """Wrap runs of orphaned table-internal fragments in minimal tables.
+
+    Returns a list of lxml elements (some original, some newly-built table
+    wrappers) ready to be appended under a single container.
+    """
+    repaired: List = []
+    run: List = []
+
+    def flush_run():
+        if not run:
+            return
+        table = etree.Element('table')
+        tbody = etree.SubElement(table, 'tbody')
+        for frag in run:
+            tag = frag.tag if isinstance(frag.tag, str) else ''
+            if tag in ('thead', 'tbody', 'tfoot'):
+                # Section grouping element — append directly to the table,
+                # not inside our synthetic tbody.
+                table.append(_clone(frag))
+            elif tag in ('td', 'th'):
+                # A bare cell needs a row wrapper.
+                tr = etree.SubElement(tbody, 'tr')
+                tr.append(_clone(frag))
+            else:
+                tbody.append(_clone(frag))
+        repaired.append(table)
+        run.clear()
+
+    for el in elements:
+        tag = el.tag if isinstance(el.tag, str) else ''
+        if tag in _TABLE_INTERNAL_TAGS:
+            run.append(el)
+        else:
+            flush_run()
+            repaired.append(el)
+    flush_run()
+    return repaired
+
+
+def _clone(el):
+    """Deep-copy an lxml element so re-parenting it can't mutate the source tree.
+
+    Uses ``copy.deepcopy`` rather than a serialize/re-parse round-trip so HTML
+    void elements (``<br>``, ``<img>``, ...) survive — the XML parser would
+    reject them as unbalanced tags.
+    """
+    return copy.deepcopy(el)
+
+
+def build_section_subtree(tree, start_anchor: str, end_anchor: Optional[str],
+                          start_element=None, end_element=None):
+    """Build a single ``<div>`` element holding the section's content.
+
+    The returned element is detached from the source tree (its children are
+    clones), so callers may render or further parse it freely. Returns
+    ``None`` if the start anchor can't be resolved or the range is empty.
+    """
+    start_elements = find_anchor_targets(tree, start_anchor)
+    if not start_elements:
+        return None
+
+    collected = collect_range_elements(tree, start_anchor, end_anchor,
+                                       start_element=start_element, end_element=end_element)
+    if not collected:
+        return None
+
+    top_level = top_level_elements(collected)
+    if not top_level:
+        return None
+
+    repaired = _repair_table_fragments(top_level)
+
+    container = etree.Element('div')
+    for el in repaired:
+        # Table fragments were already cloned in _repair_table_fragments;
+        # everything else needs cloning before re-parenting.
+        tag = el.tag if isinstance(el.tag, str) else ''
+        if tag == 'table' and el.getparent() is None:
+            container.append(el)  # freshly built, already detached
+        else:
+            container.append(_clone(el))
+    return container
+
+
+def extract_section_html(tree, start_anchor: str, end_anchor: Optional[str],
+                         start_element=None, end_element=None) -> str:
+    """Return the section's HTML as a single well-formed ``<div>`` string.
+
+    This is the hardened replacement for the inline slicing that lived in
+    ``Section._extract_section_html``. Returns ``""`` when the section can't
+    be resolved.
+    """
+    container = build_section_subtree(tree, start_anchor, end_anchor,
+                                      start_element=start_element, end_element=end_element)
+    if container is None:
+        return ""
+    return lxml_html.tostring(container, encoding='unicode')

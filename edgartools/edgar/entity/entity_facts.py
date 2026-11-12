@@ -1,0 +1,3144 @@
+"""
+Enhanced EntityFacts class for AI-ready company facts analysis.
+
+This module provides the main EntityFacts class with investment-focused
+analytics and AI-ready interfaces.
+"""
+
+import warnings
+from collections import OrderedDict, defaultdict
+from datetime import date, datetime, timedelta
+from functools import cached_property
+from typing import TYPE_CHECKING, Any, Callable, Dict, Iterator, List, Optional, Union as TypingUnion
+
+if TYPE_CHECKING:
+    from edgar.entity.query import FactQuery
+    from edgar.ttm.statement import TTMStatement
+    from edgar.ttm.calculator import TTMMetric
+    from edgar.entity.unit_handling import UnitResult
+    from edgar.enums import PeriodType
+
+from typing import Union
+
+import httpx2
+import orjson as json
+import pandas as pd
+from rich.box import SIMPLE, SIMPLE_HEAVY
+from rich.columns import Columns
+from rich.console import Group
+from rich.padding import Padding
+from rich.panel import Panel
+from rich.table import Table
+from rich.text import Text
+
+from edgar.core import log
+from edgar.datatools import apply_declared_schema, empty_declared_frame
+from edgar.entity.dataframe_schema import PINNED, entity_facts_columns
+from edgar.entity.enhanced_statement import MultiPeriodStatement
+from edgar.entity.utils import is_consolidated_total_over
+from edgar.entity.models import FinancialFact
+from edgar.entity.utils import normalize_period_to_entity_facts
+from edgar.httprequests import download_json
+from edgar.storage import get_edgar_data_directory, is_using_local_storage
+
+
+from edgar.exceptions import CompanyFactsNotFoundError, TransportError, ValidationError, http_status
+
+
+def download_company_facts_from_sec(cik: int) -> Dict[str, Any]:
+    """
+    Download company facts from the SEC
+    """
+    from edgar.urls import build_company_facts_url
+    company_facts_url = build_company_facts_url(cik)
+    try:
+        return download_json(company_facts_url)
+    except (httpx2.HTTPStatusError, TransportError) as err:
+        # The model for domain translation across both error eras: a 404 is
+        # something this layer understands, so it becomes the domain's own
+        # NotFoundError. Everything else propagates as a transport failure,
+        # because nobody here knows better than "we could not get an answer".
+        if http_status(err) == 404:
+            log.warning(f"No company facts found on url {company_facts_url}")
+            raise CompanyFactsNotFoundError(cik=cik) from None
+        else:
+            raise
+
+
+def load_company_facts_from_local(cik: int) -> Dict[str, Any]:
+    """
+    Load company facts from local data
+    """
+    company_facts_dir = get_edgar_data_directory() / "companyfacts"
+    if not company_facts_dir.exists():
+        raise CompanyFactsNotFoundError(cik=cik)
+    cik_int = int(cik) if isinstance(cik, str) else cik
+    company_facts_file = company_facts_dir / f"CIK{cik_int:010}.json"
+    if not company_facts_file.exists():
+        raise CompanyFactsNotFoundError(cik=cik)
+
+    return json.loads(company_facts_file.read_text())
+
+
+def _load_company_facts_json(cik: int) -> Dict[str, Any]:
+    if is_using_local_storage():
+        return load_company_facts_from_local(cik)
+    return download_company_facts_from_sec(cik)
+
+
+def _with_predecessor_facts(cik: int, company_facts_json: Dict[str, Any]) -> Dict[str, Any]:
+    """Add the history a successor registrant's predecessor filed under its own CIK (GH #1821)."""
+    from edgar.reference.successors import get_predecessor
+    predecessor = get_predecessor(cik)
+    if predecessor is None:
+        return company_facts_json
+    try:
+        predecessor_json = _load_company_facts_json(predecessor.cik)
+    except CompanyFactsNotFoundError:
+        warnings.warn(f"No company facts found for CIK {predecessor.cik}, the predecessor of CIK {cik}; "
+                      f"facts from before {predecessor.effective_date} are missing.", stacklevel=3)
+        return company_facts_json
+    return merge_predecessor_facts(company_facts_json, predecessor_json, predecessor.effective_date)
+
+
+def merge_predecessor_facts(successor_json: Dict[str, Any], predecessor_json: Dict[str, Any],
+                            effective_date: str) -> Dict[str, Any]:
+    """
+    Merge a predecessor's companyfacts JSON into its successor's.
+
+    Only predecessor facts for periods that ended before ``effective_date`` are taken,
+    so a predecessor that keeps filing as a subsidiary adds nothing after the
+    succession. Where both CIKs report the same concept, unit and period, the
+    successor's value wins.
+
+    The inputs are not modified.
+    """
+    merged = dict(successor_json)
+    merged_facts = {taxonomy: dict(concepts) for taxonomy, concepts in successor_json.get('facts', {}).items()}
+    for taxonomy, concepts in predecessor_json.get('facts', {}).items():
+        target = merged_facts.setdefault(taxonomy, {})
+        for concept, body in concepts.items():
+            existing = target.get(concept)
+            units = dict(existing['units']) if existing else {}
+            for unit, rows in body.get('units', {}).items():
+                have = list(units.get(unit, []))
+                periods = {(row.get('start'), row.get('end')) for row in have}
+                have.extend(row for row in rows
+                            if row.get('end', '') < effective_date
+                            and (row.get('start'), row.get('end')) not in periods)
+                if have:
+                    units[unit] = have
+            if units:
+                target[concept] = {**(existing or body), 'units': units}
+    merged['facts'] = merged_facts
+    return merged
+
+
+# Revenue variants for get_revenue() and get_revenue_detailed(), in priority
+# order. The filed total, Revenues, comes first, as in the statement builder's
+# _REVENUE_CONCEPTS and Financials.get_revenue() (edgartools-jrqvs).
+_REVENUE_VARIANTS = [
+    'Revenues',
+    'RevenueFromContractWithCustomerExcludingAssessedTax',
+    'SalesRevenueNet',
+    'Revenue',
+    'TotalRevenues',
+    'NetSales',
+]
+
+_COMPANY_FACTS_CACHE_MAXSIZE = 1
+
+_company_facts_cache: OrderedDict[int, 'EntityFacts'] = OrderedDict()
+
+
+def clear_company_facts_cache():
+    """Clear the in-memory company facts cache.
+
+    Use this in long-running processes (web apps, MCP servers, notebooks)
+    to free memory from previously loaded EntityFacts objects.
+    Each major company's facts can consume 40-80 MB.
+    """
+    _company_facts_cache.clear()
+
+
+def get_company_facts(cik: int):
+    """
+    Get company facts for a given CIK.
+
+    Args:
+        cik: The company CIK
+
+    Returns:
+        CompanyFacts: The company facts
+
+    Raises:
+        CompanyFactsNotFoundError: If no facts are found for the given CIK
+    """
+    cached = _company_facts_cache.get(cik)
+    if cached is not None:
+        _company_facts_cache.move_to_end(cik)
+        return cached
+
+    company_facts_json = _load_company_facts_json(cik)
+    if company_facts_json:
+        company_facts_json = _with_predecessor_facts(cik, company_facts_json)
+    if not company_facts_json:
+        warnings.warn(
+            f"Could not retrieve company facts for CIK {cik}. "
+            "This is likely a network issue — check your connection to data.sec.gov and try again.",
+            stacklevel=2,
+        )
+        return None
+    from edgar.entity.parser import EntityFactsParser
+    result = EntityFactsParser.parse_company_facts(company_facts_json)
+    if result is not None:
+        _company_facts_cache[cik] = result
+        # Evict oldest entry if cache exceeds max size
+        while len(_company_facts_cache) > _COMPANY_FACTS_CACHE_MAXSIZE:
+            _company_facts_cache.popitem(last=False)
+    return result
+
+
+def _consolidated_total_fact(chosen, candidates):
+    """Swap ``chosen`` for the consolidated total it is a slice of, if present.
+
+    Ranking by recency answers *which year*; among concepts tagged for that same
+    year it falls back to the variant list's order, which is an order over
+    *names*, not over what those names measure. Insurers and banks report ASC-606
+    contract revenue beside a much larger consolidated ``Revenues`` for the same
+    period, and the contract tag is ranked first — so the getter returned a
+    sliver, a ~32x understatement, and the income statement showed less revenue
+    than operating income (edgartools-fdye).
+
+    Magnitude stays a cross-check on the ranked pick and never the ranking
+    itself: taking the largest outright would prefer ``IncludingAssessedTax``
+    over ``Excluding``, and gross over net.
+
+    Restricted to the chosen fact's own period, so a large figure from an older
+    year can never stand in for this year's total.
+    """
+    if chosen.numeric_value is None:
+        return chosen
+
+    larger = [f for f in candidates
+              if f.period_end == chosen.period_end
+              and is_consolidated_total_over(f.numeric_value, chosen.numeric_value)]
+    if not larger:
+        return chosen
+    return max(larger, key=lambda f: f.numeric_value)
+
+
+class EntityFacts:
+    """
+    AI-ready company facts with investment-focused analytics.
+
+    This class provides a comprehensive interface for analyzing company financial data,
+    with support for both traditional DataFrame-based workflows and modern AI/LLM
+    consumption patterns.
+    """
+
+    def __init__(self, cik: int, name: str, facts: List[FinancialFact],
+                 sic_code: Optional[str] = None, ticker: Optional[str] = None):
+        """
+        Initialize EntityFacts with company information and facts.
+
+        Args:
+            cik: Company CIK number
+            name: Company name
+            facts: List of FinancialFact objects
+            sic_code: Optional SIC code for industry-specific statement enhancements
+            ticker: Optional ticker symbol for industry lookup (for curated industries
+                   like payment_networks where SIC codes don't map cleanly)
+        """
+        self.cik = cik
+        self.name = name
+        self._facts = facts
+        self._sic_code = sic_code
+        self._ticker = ticker
+        self._sic_resolver = None
+        self._fact_index = self._build_indices()
+
+    def _resolve_industry_info(self):
+        """Lazily resolve SIC code and ticker for industry-specific statement enhancements.
+
+        Called only when building statements, not on initial facts access.
+        This avoids triggering a submissions download just to get SIC/ticker
+        when the user only needs raw facts, shares_outstanding, or TTM metrics.
+        """
+        if self._sic_code is None and self._sic_resolver is not None:
+            self._sic_code, self._ticker = self._sic_resolver()
+            self._sic_resolver = None
+
+    def _suggest_concepts(self, query: str, n: int = 3) -> List[str]:
+        """Return up to n concept keys similar to query, using difflib."""
+        import difflib
+        all_concepts = [k for k in self._fact_index['by_concept'] if ':' in k or k[0:1].isupper()]
+        return difflib.get_close_matches(query, all_concepts, n=n, cutoff=0.4)
+
+    def _build_indices(self) -> Dict[str, Dict]:
+        """Build optimized indices for fast querying"""
+        by_concept = defaultdict(list)
+        by_period = defaultdict(list)
+        by_statement = defaultdict(list)
+        by_form = defaultdict(list)
+        by_fiscal_year = defaultdict(list)
+        by_fiscal_period = defaultdict(list)
+
+        # Cache period key strings: only ~50-100 unique keys across 20K+ facts
+        _period_key_cache: Dict[tuple, str] = {}
+
+        for fact in self._facts:
+            # Index by concept
+            by_concept[fact.concept].append(fact)
+            # ...and by its LOCAL name, so a lookup can use the name without the
+            # taxonomy prefix. Facts are tagged 'us-gaap:StockholdersEquity', and
+            # only the qualified name and the lowercased label were ever keys, so
+            # get_annual_fact('StockholdersEquity') missed both and reported that
+            # the fact did not exist -- while get_annual_fact('Assets') worked,
+            # purely because us-gaap:Assets happens to be LABELLED 'Assets' and so
+            # matched the label key by coincidence. That is what made this look
+            # intermittent rather than systematic (GH #1202).
+            #
+            # The exact case is indexed, not a lowercased form: measured across
+            # AAPL/JPM/XOM/PFE/KO, 3 to 7 local names per company lowercase onto an
+            # existing label key, so a lowercased bare name would silently merge
+            # two different populations under one key.
+            local_name = fact.concept.rsplit(':', 1)[-1] if fact.concept else None
+            if local_name and local_name != fact.concept:
+                by_concept[local_name].append(fact)
+            if fact.label:
+                by_concept[fact.label.lower()].append(fact)
+
+            # Index by period (intern keys to avoid 24K+ redundant string allocations)
+            pk_tuple = (fact.fiscal_year, fact.fiscal_period)
+            period_key = _period_key_cache.get(pk_tuple)
+            if period_key is None:
+                period_key = f"{fact.fiscal_year}-{fact.fiscal_period}"
+                _period_key_cache[pk_tuple] = period_key
+            by_period[period_key].append(fact)
+
+            # Index by fiscal year and period
+            by_fiscal_year[fact.fiscal_year].append(fact)
+            by_fiscal_period[fact.fiscal_period].append(fact)
+
+            # Index by statement type
+            if fact.statement_type:
+                by_statement[fact.statement_type].append(fact)
+
+            # Index by form type
+            by_form[fact.form_type].append(fact)
+
+        return {
+            'by_concept': by_concept,
+            'by_period': by_period,
+            'by_statement': by_statement,
+            'by_form': by_form,
+            'by_fiscal_year': by_fiscal_year,
+            'by_fiscal_period': by_fiscal_period,
+        }
+
+    def __len__(self) -> int:
+        """Return the total number of facts"""
+        return len(self._facts)
+
+    def __iter__(self) -> Iterator[FinancialFact]:
+        """Iterate over all facts"""
+        return iter(self._facts)
+
+    def get_all_facts(self) -> List[FinancialFact]:
+        """
+        Get all facts for this entity.
+
+        Returns:
+            List of all FinancialFact objects
+        """
+        return self._facts
+
+    def to_pandas(self, *args, **kwargs) -> pd.DataFrame:
+        """Alias of :meth:`to_dataframe`, taking the same arguments.
+
+        ``Filings``, ``XBRL`` and ``FilingSummary`` export with ``to_pandas()``, and
+        code written against them reaches for it here too (edgartools-m3jpa).
+        """
+        return self.to_dataframe(*args, **kwargs)
+
+    def to_dataframe(self,
+                     include_metadata: bool = False,
+                     columns: Optional[List[str]] = None,
+                     pit_mode: bool = False) -> pd.DataFrame:
+        """
+        Export all facts to a pandas DataFrame for analysis.
+
+        This method provides direct access to all financial facts in a tabular format,
+        enabling custom analysis, filtering, and integration with data science workflows.
+
+        Args:
+            include_metadata: Include filing references and data quality metadata (default: False)
+            columns: Specific columns to include. If None, includes standard columns.
+            pit_mode: Point-in-Time mode for backtesting. When True, includes filing_date
+                and form_type as standard columns and preserves all fact versions
+                (no period deduplication), enabling lookahead-bias-free analysis.
+                Sort order becomes (concept, period_end, filing_date).
+
+        Returns:
+            DataFrame with one row per fact, sorted by concept and period_end
+
+        Example:
+            Basic export for exploration:
+            >>> facts = company.get_facts()
+            >>> df = facts.to_dataframe()
+            >>> print(df.head())
+
+            Export with metadata for audit trail:
+            >>> df_full = facts.to_dataframe(include_metadata=True)
+
+            Custom columns for specific analysis:
+            >>> df_slim = facts.to_dataframe(columns=['concept', 'fiscal_year', 'numeric_value'])
+
+            Point-in-Time mode for backtesting:
+            >>> df = facts.to_dataframe(pit_mode=True)
+            >>> # Get revenue as known on a specific date
+            >>> as_of = '2024-10-15'
+            >>> revenue = df[(df['concept'] == 'Revenues') & (df['filing_date'] <= as_of)]
+            >>> latest = revenue.sort_values('filing_date').groupby('period_end').last()
+        """
+        # The column set and dtypes follow this call's arguments, never the facts
+        # that came back — see engineering/decisions/facts-dataframe-schema.md
+        # (edgartools-7wtj).
+        declared = entity_facts_columns(pit_mode=pit_mode, include_metadata=include_metadata)
+        if columns is not None:
+            # df[columns] used to raise KeyError on a name this configuration does
+            # not emit. Reindexing would hand back an all-null column instead, so
+            # the caller's typo becomes missing data — keep the error.
+            unknown = [col for col in columns if col not in declared]
+            if unknown:
+                raise KeyError(
+                    f"to_dataframe() does not emit {unknown} with "
+                    f"include_metadata={include_metadata}, pit_mode={pit_mode}. "
+                    f"Available: {sorted(declared)}")
+        order = list(columns) if columns is not None else list(declared)
+
+        # Build records from facts
+        records = []
+        for fact in self._facts:
+            record = {
+                'concept': fact.concept,
+                'label': fact.label,
+                'value': fact.value,
+                'numeric_value': fact.numeric_value,
+                'unit': fact.unit,
+                'period_type': fact.period_type,
+                'period_start': fact.period_start,
+                'period_end': fact.period_end,
+                'fiscal_year': fact.fiscal_year,
+                'fiscal_period': fact.fiscal_period
+            }
+
+            # PIT mode: include filing_date and form_type as standard columns
+            if pit_mode:
+                record['filing_date'] = fact.filing_date
+                record['form_type'] = fact.form_type
+
+            # Add metadata if requested
+            if include_metadata:
+                record.update({
+                    'accession': fact.accession,
+                    'filing_date': fact.filing_date,
+                    'form_type': fact.form_type,
+                    'statement_type': fact.statement_type,
+                    'taxonomy': fact.taxonomy,
+                    'scale': fact.scale,
+                    'data_quality': fact.data_quality.value if fact.data_quality else None,
+                    'is_audited': fact.is_audited,
+                    'confidence_score': fact.confidence_score
+                })
+
+            records.append(record)
+
+        # Create DataFrame
+        if not records:
+            # Zero rows, but the declared columns and their dtypes: a bare
+            # DataFrame() has no columns, so df['value'] raised KeyError on an
+            # entity with no facts, and a `columns` projection raised too.
+            return empty_declared_frame(declared, [c for c in order if c in declared])
+
+        df = apply_declared_schema(pd.DataFrame(records), declared, order, PINNED)
+
+        # Sort for consistency
+        if not df.empty:
+            sort_cols = []
+            if 'concept' in df.columns:
+                sort_cols.append('concept')
+            if 'period_end' in df.columns:
+                sort_cols.append('period_end')
+            # PIT mode: sort by filing_date too for temporal ordering
+            if pit_mode and 'filing_date' in df.columns:
+                sort_cols.append('filing_date')
+            if sort_cols:
+                df = df.sort_values(sort_cols).reset_index(drop=True)
+
+        return df
+
+    def filter_by_period_type(self, period_type: Union[str, 'PeriodType']) -> 'EntityFacts':
+        """
+        Filter facts by period type and return a new EntityFacts instance.
+
+        Args:
+            period_type: Period type to filter by - either PeriodType enum or string
+                        ('annual', 'quarterly', 'monthly')
+
+        Returns:
+            New EntityFacts instance with filtered facts
+
+        Example:
+            >>> annual_facts = facts.filter_by_period_type('annual')
+            >>> quarterly_facts = facts.filter_by_period_type(PeriodType.QUARTERLY)
+        """
+        # Use the query interface to filter facts
+        filtered_facts = self.query().by_period_type(period_type).execute()
+
+        # Create a new EntityFacts instance with the filtered facts
+        filtered = EntityFacts(
+            cik=self.cik,
+            name=self.name,
+            facts=filtered_facts,
+            sic_code=self._sic_code,
+            ticker=self._ticker
+        )
+        filtered._sic_resolver = self._sic_resolver
+        return filtered
+
+    def __rich__(self):
+        """Creates a rich representation providing an at-a-glance view of company facts."""
+        # Title
+        title = Text.assemble(
+            "📊 ",
+            (self.name, "bold green"),
+            " Financial Facts"
+        )
+
+        # Summary Statistics Table
+        stats = Table(box=SIMPLE_HEAVY, show_header=False, padding=(0, 1))
+        stats.add_column("Metric", style="dim")
+        stats.add_column("Value", style="bold")
+
+        # Get date range
+        dates = [f.filing_date for f in self._facts if f.filing_date]
+        if dates:
+            min_date = min(dates)
+            max_date = max(dates)
+            date_range = f"{min_date.strftime('%Y-%m-%d')} to {max_date.strftime('%Y-%m-%d')}"
+        else:
+            date_range = "No dates available"
+
+        # Count unique concepts
+        unique_concepts = len(set(f.concept for f in self._facts))
+
+        # Count by form type
+        form_counts = defaultdict(int)
+        for fact in self._facts:
+            form_counts[fact.form_type] += 1
+
+        # Get fiscal years covered
+        fiscal_years = sorted(set(f.fiscal_year for f in self._facts if f.fiscal_year))
+        if fiscal_years:
+            year_range = f"{min(fiscal_years)} - {max(fiscal_years)}"
+        else:
+            year_range = "N/A"
+
+        stats.add_row("CIK", str(self.cik))
+        stats.add_row("Total Facts", f"{len(self._facts):,}")
+        stats.add_row("Unique Concepts", f"{unique_concepts:,}")
+        stats.add_row("Date Range", date_range)
+        stats.add_row("Fiscal Years", year_range)
+
+        stats_panel = Panel(
+            stats,
+            title="📈 Summary Statistics",
+            border_style="bright_black"
+        )
+
+        # Key Financial Metrics Table
+        metrics = Table(box=SIMPLE, show_header=True, padding=(0, 1))
+        metrics.add_column("Metric", style="bold")
+        metrics.add_column("Value", justify="right")
+        metrics.add_column("Period")
+        metrics.add_column("Quality", style="dim")
+
+        # Try to get key metrics
+        key_metrics = [
+            ('Revenue', 'Revenue'),
+            ('Net Income', 'NetIncome'),
+            ('Total Assets', 'Assets'),
+            ('Total Liabilities', 'Liabilities'),
+            ('Stockholders Equity', 'StockholdersEquity'),
+            ('Operating Income', 'OperatingIncome'),
+            ('Public Float', 'dei:EntityPublicFloat'),
+            ('Shares Outstanding', 'dei:EntityCommonStockSharesOutstanding')
+        ]
+
+        has_metrics = False
+        self._suppress_warnings = True
+        try:
+            for label, concept in key_metrics:
+                fact = self.get_fact(concept)
+                if fact:
+                    has_metrics = True
+                    # Format value based on unit
+                    if fact.numeric_value:
+                        if 'share' in fact.unit.lower():
+                            value = f"{fact.numeric_value:,.0f}"
+                        else:
+                            value = f"${fact.numeric_value:,.0f}"
+                    else:
+                        value = str(fact.value)
+
+                    period = f"{fact.fiscal_period} {fact.fiscal_year}"
+                    quality = fact.data_quality.value if fact.data_quality else "N/A"
+                    metrics.add_row(label, value, period, quality)
+        finally:
+            self._suppress_warnings = False
+
+        if has_metrics:
+            metrics_panel = Panel(
+                metrics,
+                title="💰 Key Financial Metrics",
+                border_style="bright_black"
+            )
+        else:
+            metrics_panel = Panel(
+                Text("No key financial metrics available", style="dim"),
+                title="💰 Key Financial Metrics",
+                border_style="bright_black"
+            )
+
+        # Available Statements
+        statement_counts = defaultdict(int)
+        for fact in self._facts:
+            if fact.statement_type:
+                statement_counts[fact.statement_type] += 1
+
+        if statement_counts:
+            statements = Table(box=SIMPLE, show_header=True, padding=(0, 1))
+            statements.add_column("Statement Type", style="bold")
+            statements.add_column("Fact Count", justify="right")
+
+            for stmt_type, count in sorted(statement_counts.items()):
+                statements.add_row(stmt_type, f"{count:,}")
+
+            statements_panel = Panel(
+                statements,
+                title="📋 Available Statements",
+                border_style="bright_black"
+            )
+        else:
+            statements_panel = Panel(
+                Text("No statement information available", style="dim"),
+                title="📋 Available Statements",
+                border_style="bright_black"
+            )
+
+        # Recent Filings
+        filing_info = defaultdict(lambda: {'count': 0, 'date': None})
+        for fact in self._facts:
+            key = fact.form_type
+            filing_info[key]['count'] += 1
+            if fact.filing_date:
+                if filing_info[key]['date'] is None or fact.filing_date > filing_info[key]['date']:
+                    filing_info[key]['date'] = fact.filing_date
+
+        filings = Table(box=SIMPLE, show_header=True, padding=(0, 1))
+        filings.add_column("Form", style="bold")
+        filings.add_column("Latest Filing")
+        filings.add_column("Facts", justify="right")
+
+        # Sort by most recent filing date
+        sorted_filings = sorted(
+            filing_info.items(),
+            key=lambda x: x[1]['date'] or date.min,
+            reverse=True
+        )[:5]  # Show top 5
+
+        for form_type, info in sorted_filings:
+            date_str = info['date'].strftime('%Y-%m-%d') if info['date'] else "N/A"
+            filings.add_row(form_type, date_str, f"{info['count']:,}")
+
+        filings_panel = Panel(
+            filings,
+            title="📄 Recent Filings",
+            border_style="bright_black"
+        )
+
+        # Data Quality Summary
+        quality_counts = defaultdict(int)
+        audited_count = sum(1 for f in self._facts if f.is_audited)
+
+        for fact in self._facts:
+            if fact.data_quality:
+                quality_counts[fact.data_quality.value] += 1
+
+        quality = Table(box=SIMPLE, show_header=False, padding=(0, 1))
+        quality.add_column("Metric", style="dim")
+        quality.add_column("Value", style="bold")
+
+        if quality_counts:
+            for q_level, count in sorted(quality_counts.items()):
+                percentage = (count / len(self._facts)) * 100
+                quality.add_row(f"{q_level} Quality", f"{count:,} ({percentage:.1f}%)")
+
+        if audited_count > 0:
+            audit_percentage = (audited_count / len(self._facts)) * 100
+            quality.add_row("Audited Facts", f"{audited_count:,} ({audit_percentage:.1f}%)")
+
+        quality_panel = Panel(
+            quality,
+            title="✅ Data Quality",
+            border_style="bright_black"
+        )
+
+        # Combine all sections
+        content_renderables = [
+            Padding("", (1, 0, 0, 0)),
+            stats_panel,
+            Columns([metrics_panel, statements_panel], equal=True, expand=True),
+            Columns([filings_panel, quality_panel], equal=True, expand=True)
+        ]
+
+        content = Group(*content_renderables)
+
+        # Create the main panel
+        return Panel(
+            content,
+            title=title,
+            subtitle=f"SEC XBRL Facts • {len(self._facts):,} total facts",
+            border_style="blue"
+        )
+
+    def __repr__(self):
+        """String representation using rich formatting."""
+        from edgar.richtools import repr_rich
+        return repr_rich(self.__rich__())
+
+    # Core query interface
+    def query(self) -> 'FactQuery':
+        """
+        Start building a facts query.
+
+        Returns:
+            FactQuery: A new query builder instance
+
+        Example:
+            >>> facts.query().by_concept('Revenue').latest(4).to_dataframe()
+        """
+        from edgar.entity.query import FactQuery
+        return FactQuery(self._facts, self._fact_index)
+
+    # Convenience methods for common queries
+    def get_fact(self, concept: str, period: Optional[str] = None) -> Optional[FinancialFact]:
+        """
+        Get a single fact by concept and optional period.
+
+        Args:
+            concept: Concept name or label
+            period: Optional period in format "YYYY-QN" or "YYYY-FY"
+
+        Returns:
+            The most recent matching fact, or None if not found
+
+        Tip:
+            Use ``search_concepts()`` to find concept names and
+            ``available_periods()`` to find period keys.
+        """
+        # Try exact concept match first
+        facts = self._fact_index['by_concept'].get(concept, [])
+
+        # Try case-insensitive label match
+        if not facts:
+            facts = self._fact_index['by_concept'].get(concept.lower(), [])
+
+        if not facts:
+            if not getattr(self, '_suppress_warnings', False):
+                suggestions = self._suggest_concepts(concept)
+                hint = f"No fact found for concept '{concept}'."
+                if suggestions:
+                    hint += f"\n  Similar concepts: {', '.join(repr(s) for s in suggestions)}"
+                hint += f"\n  Tip: Use search_concepts('{concept}') to explore available concepts."
+                warnings.warn(hint, stacklevel=2)
+            return None
+
+        # Filter by period if specified
+        if period:
+            period = normalize_period_to_entity_facts(period)  # accept "FY 2023" too
+            all_facts = facts
+            facts = [f for f in facts if f"{f.fiscal_year}-{f.fiscal_period}" == period]
+
+            if not facts:
+                if not getattr(self, '_suppress_warnings', False):
+                    avail = sorted(set(f"{f.fiscal_year}-{f.fiscal_period}" for f in all_facts))[-5:]
+                    hint = f"Concept '{concept}' found but no facts match period '{period}'."
+                    hint += f"\n  Recent periods: {', '.join(avail)}"
+                    hint += f"\n  Tip: Use available_periods('{concept}') to see all periods."
+                    warnings.warn(hint, stacklevel=2)
+                return None
+
+        # Return most recent
+        if facts:
+            return max(facts, key=lambda f: (f.filing_date, f.period_end))
+
+        return None
+
+    def get_annual_fact(self, concept: str, fiscal_year: Optional[int] = None) -> Optional[FinancialFact]:
+        """
+        Get an annual (FY) fact by concept and optional fiscal year.
+
+        This method filters for fiscal_period == 'FY' to return annual values,
+        which is more intuitive for financial metrics like revenue and net income.
+
+        Args:
+            concept: Concept name or label
+            fiscal_year: Optional fiscal year (defaults to most recent FY if not specified)
+
+        Returns:
+            The matching annual fact, or None if not found
+        """
+        # Try exact concept match first
+        facts = self._fact_index['by_concept'].get(concept, [])
+
+        # Try case-insensitive label match
+        if not facts:
+            facts = self._fact_index['by_concept'].get(concept.lower(), [])
+
+        if not facts:
+            if not getattr(self, '_suppress_warnings', False):
+                suggestions = self._suggest_concepts(concept)
+                hint = f"No fact found for concept '{concept}'."
+                if suggestions:
+                    hint += f"\n  Similar concepts: {', '.join(repr(s) for s in suggestions)}"
+                hint += f"\n  Tip: Use search_concepts('{concept}') to explore available concepts."
+                warnings.warn(hint, stacklevel=2)
+            return None
+
+        # Filter for annual periods (FY)
+        annual_facts = [f for f in facts if f.fiscal_period == 'FY']
+
+        if not annual_facts:
+            if not getattr(self, '_suppress_warnings', False):
+                periods = sorted(set(f.fiscal_period for f in facts))
+                hint = f"Concept '{concept}' found but has no annual (FY) data."
+                hint += f"\n  Available period types: {', '.join(periods)}"
+                warnings.warn(hint, stacklevel=2)
+            return None
+
+        # Filter by fiscal year if specified
+        if fiscal_year:
+            fy_facts = annual_facts
+            annual_facts = [f for f in annual_facts if f.fiscal_year == fiscal_year]
+
+            if not annual_facts:
+                if not getattr(self, '_suppress_warnings', False):
+                    avail_years = sorted(set(f.fiscal_year for f in fy_facts), reverse=True)[:5]
+                    hint = f"Concept '{concept}' has annual data but not for fiscal year {fiscal_year}."
+                    hint += f"\n  Available fiscal years: {', '.join(str(y) for y in avail_years)}"
+                    warnings.warn(hint, stacklevel=2)
+                return None
+
+        # Return most recent annual fact
+        if annual_facts:
+            return max(annual_facts, key=lambda f: (f.filing_date, f.period_end))
+
+        return None
+
+    def time_series(self, concept: str, periods: int = 20) -> pd.DataFrame:
+        """
+        Get time series data for a concept.
+
+        Returned columns include ``period_start`` and ``duration_days`` so that
+        facts sharing a ``period_end`` but representing different reporting
+        windows (e.g., a 3-month Q2 vs. a 6-month YTD H1) remain distinguishable.
+
+        The concept resolves the way ``get_fact()`` does: a qualified name
+        (``'us-gaap:Assets'``), a bare local name (``'Assets'``) or a lowercased
+        label (``'assets'``) selects exactly that concept. Only text that names
+        no concept and has no taxonomy prefix (``'Net Income'``) falls back to a
+        substring search over concept names and labels; that fallback can mix
+        several concepts in one series, so it warns and names them.
+
+        Args:
+            concept: Concept name or label
+            periods: Number of periods to retrieve
+
+        Returns:
+            DataFrame with columns ``[period_start, period_end, duration_days,
+            numeric_value, fiscal_period, fiscal_year]``.
+        """
+        from edgar.entity.query import FactQuery
+        query = FactQuery(self._facts, self._fact_index)
+
+        # A bare name used to be substring-matched, so time_series('Assets')
+        # returned AssetsCurrent, AmortizationOfIntangibleAssets... rows with no
+        # way to tell them apart (GH #1658). The index holds local names (#1217),
+        # so resolve exactly first, exactly as get_fact() does.
+        by_concept = self._fact_index['by_concept']
+        if concept in by_concept:
+            key, exact = concept, True
+        elif concept.lower() in by_concept:
+            key, exact = concept.lower(), True
+        else:
+            key, exact = concept, ":" in concept
+            if not exact and not getattr(self, '_suppress_warnings', False):
+                needle = concept.lower()
+                matched = sorted({f.concept for f in self._facts
+                                  if needle in f.concept.lower()
+                                  or (f.label and needle in f.label.lower())})
+                if matched:
+                    shown = ', '.join(matched[:5]) + (f" (+{len(matched) - 5} more)" if len(matched) > 5 else "")
+                    warnings.warn(
+                        f"No concept named '{concept}'; time_series() fell back to a substring "
+                        f"match over {len(matched)} concepts: {shown}. Pass a concept name "
+                        f"(see search_concepts('{concept}')) for a single-concept series.",
+                        stacklevel=2)
+
+        df = query \
+            .by_concept(key, exact=exact) \
+            .sort_by('filing_date', ascending=False) \
+            .to_dataframe('period_start', 'period_end', 'numeric_value',
+                          'fiscal_period', 'fiscal_year') \
+            .head(periods)
+
+        # Compute duration_days for duration facts; instant facts get None.
+        # Use a comprehension so date/datetime/None mixes are handled safely.
+        # An empty frame takes the same path: the documented columns are a
+        # property of the query, not of which rows matched (GH #1709).
+        df = df.assign(
+            duration_days=[
+                (e - s).days if (s is not None and e is not None) else None
+                for s, e in zip(df['period_start'], df['period_end'])
+            ]
+        )
+        return df[['period_start', 'period_end', 'duration_days',
+                   'numeric_value', 'fiscal_period', 'fiscal_year']]
+
+    # DEI (Document and Entity Information) helpers
+    def dei_facts(self, as_of: Optional[date] = None) -> pd.DataFrame:
+        """
+        Get Document and Entity Information (DEI) facts.
+
+        DEI facts contain company metadata like entity name, trading symbol,
+        fiscal year-end, shares outstanding, public float, etc.
+
+        Args:
+            as_of: Optional date for point-in-time view (gets latest if not specified)
+
+        Returns:
+            DataFrame with DEI facts
+
+        Example:
+            # Get latest DEI facts
+            dei = facts.dei_facts()
+
+            # Get DEI facts as of specific date
+            dei = facts.dei_facts(as_of=date(2024, 12, 31))
+        """
+        from edgar.entity.query import FactQuery
+        query = FactQuery(self._facts, self._fact_index)
+
+        # Get DEI taxonomy facts
+        query = query.by_concept('dei:', exact=False)
+
+        if as_of:
+            query = query.as_of(as_of)
+        else:
+            # Get latest instant facts for DEI data
+            query = query.latest_instant()
+
+        facts = query.execute()
+
+        if not facts:
+            return pd.DataFrame()
+
+        # Convert to simple DataFrame
+        records = []
+        for fact in facts:
+            records.append({
+                'concept': fact.concept,
+                'label': fact.label,
+                'value': fact.get_formatted_value(),
+                'raw_value': fact.numeric_value or fact.value,
+                'unit': fact.unit,
+                'period_end': fact.period_end,
+                'filing_date': fact.filing_date,
+                'form_type': fact.form_type
+            })
+
+        df = pd.DataFrame(records)
+
+        # Sort by concept for consistent ordering
+        if not df.empty:
+            df = df.sort_values('concept').reset_index(drop=True)
+
+        return df
+
+    def entity_info(self) -> Dict[str, Any]:
+        """
+        Get key entity information as a clean dictionary.
+
+        Returns:
+            Dictionary with entity name, shares outstanding, public float, etc.
+
+        Example:
+            info = facts.entity_info()
+            print(f"Company: {info.get('entity_name', 'Unknown')}")
+            print(f"Shares Outstanding: {info.get('shares_outstanding', 'N/A')}")
+        """
+        dei_df = self.dei_facts()
+
+        info = {
+            'entity_name': self.name,
+            'cik': self.cik
+        }
+
+        if dei_df.empty:
+            return info
+
+        # Map common DEI concepts to friendly keys
+        concept_mapping = {
+            'dei:EntityCommonStockSharesOutstanding': 'shares_outstanding',
+            'dei:EntityPublicFloat': 'public_float',
+            'dei:TradingSymbol': 'trading_symbol',
+            'dei:EntityFilerCategory': 'filer_category',
+            'dei:EntityCurrentReportingStatus': 'reporting_status',
+            'dei:EntityWellKnownSeasonedIssuer': 'well_known_seasoned_issuer',
+            'dei:EntityVoluntaryFilers': 'voluntary_filer',
+            'dei:EntitySmallBusiness': 'small_business',
+            'dei:EntityEmergingGrowthCompany': 'emerging_growth_company',
+            'dei:EntityShellCompany': 'shell_company'
+        }
+
+        for _, row in dei_df.iterrows():
+            concept = row['concept']
+            if concept in concept_mapping:
+                key = concept_mapping[concept]
+                info[key] = row['value']
+                info[f'{key}_raw'] = row['raw_value']
+                info[f'{key}_as_of'] = row['period_end']
+
+        return info
+
+    # Standardized financial concept access methods (FEAT-411)
+    def get_revenue(self, period: Optional[str] = None, unit: Optional[str] = None, annual: bool = True) -> Optional[float]:
+        """
+        Get standardized revenue value across all companies.
+
+        This method handles various revenue concept names (Revenue, Contract Revenue, Net Sales, etc.)
+        and provides consistent access regardless of company-specific naming conventions.
+
+        Args:
+            period: Optional period in format "YYYY-QN" or "YYYY-FY"
+            unit: Optional unit filter (defaults to USD if not specified)
+            annual: If True (default), prefer annual FY facts when period is not specified.
+                   Falls back to most recent if no annual facts available.
+
+        Returns:
+            Revenue value as float, or None if not found
+
+        Example:
+            >>> revenue = facts.get_revenue()  # Returns annual revenue (default)
+            >>> revenue = facts.get_revenue(annual=False)  # Returns most recent
+            >>> quarterly_revenue = facts.get_revenue(period="2024-Q1")
+        """
+        return self._get_standardized_concept_value(
+            concept_variants=_REVENUE_VARIANTS,
+            period=period,
+            unit=unit,
+            fallback_calculation=self._calculate_revenue_from_components,
+            annual=annual,
+            # Revenue's variants are alternative names for one consolidated
+            # total, so a same-period candidate many times larger is that total
+            # rather than a rival name for it. Off elsewhere: net income's
+            # variants are not slices of one another, and preferring the larger
+            # ProfitLoss over NetIncomeLoss would change whose earnings are
+            # reported (edgartools-fdye).
+            prefer_consolidated_total=True
+        )
+
+    def get_net_income(self, period: Optional[str] = None, unit: Optional[str] = None, annual: bool = True) -> Optional[float]:
+        """
+        Get standardized net income value across all companies.
+
+        Handles various net income concept names and provides consistent access.
+
+        Args:
+            period: Optional period in format "YYYY-QN" or "YYYY-FY"
+            unit: Optional unit filter (defaults to USD if not specified)
+            annual: If True (default), prefer annual FY facts when period is not specified.
+                   Falls back to most recent if no annual facts available.
+
+        Returns:
+            Net income value as float, or None if not found
+
+        Example:
+            >>> net_income = facts.get_net_income()  # Returns annual net income (default)
+            >>> net_income = facts.get_net_income(annual=False)  # Returns most recent
+            >>> annual_income = facts.get_net_income(period="2024-FY")
+        """
+        return self._get_standardized_concept_value(
+            concept_variants=[
+                'NetIncomeLoss',
+                'ProfitLoss',
+                'NetIncome',
+                'NetEarnings',
+                'NetIncomeLossAttributableToParent'
+            ],
+            period=period,
+            unit=unit,
+            annual=annual
+        )
+
+    def get_total_assets(self, period: Optional[str] = None, unit: Optional[str] = None, annual: bool = True) -> Optional[float]:
+        """
+        Get standardized total assets value across all companies.
+
+        Args:
+            period: Optional period in format "YYYY-QN" or "YYYY-FY"
+            unit: Optional unit filter (defaults to USD if not specified)
+            annual: If True (default), prefer annual FY facts when period is not specified.
+                   Falls back to most recent if no annual facts available.
+
+        Returns:
+            Total assets value as float, or None if not found
+
+        Example:
+            >>> assets = facts.get_total_assets()  # Returns annual assets (default)
+            >>> assets = facts.get_total_assets(annual=False)  # Returns most recent
+            >>> q4_assets = facts.get_total_assets(period="2024-Q4")
+        """
+        return self._get_standardized_concept_value(
+            concept_variants=[
+                'Assets',
+                'TotalAssets',
+                'AssetsCurrent'  # Fallback for some filings
+            ],
+            period=period,
+            unit=unit,
+            annual=annual
+        )
+
+    def get_total_liabilities(self, period: Optional[str] = None, unit: Optional[str] = None, annual: bool = True) -> Optional[float]:
+        """
+        Get standardized total liabilities value across all companies.
+
+        Args:
+            period: Optional period in format "YYYY-QN" or "YYYY-FY"
+            unit: Optional unit filter (defaults to USD if not specified)
+            annual: If True (default), prefer annual FY facts when period is not specified.
+                   Falls back to most recent if no annual facts available.
+
+        Returns:
+            Total liabilities value as float, or None if not found. A company
+            that files no standalone liabilities total returns None rather than
+            a substitute.
+
+        Example:
+            >>> liabilities = facts.get_total_liabilities()  # Returns annual (default)
+            >>> liabilities = facts.get_total_liabilities(annual=False)  # Returns most recent
+        """
+        # No LiabilitiesAndStockholdersEquity fallback. That concept is the
+        # balance sheet's right-hand total, equal to total assets, and filers
+        # without a standalone us-gaap:Liabilities line only have that one:
+        # NIKE's FY2026 figure came back as $38.41B, its total assets, against
+        # $23.545B of actual liabilities. Financials.get_total_liabilities() and
+        # get_concept('total_liabilities') already return None here (GH #1279).
+        return self._get_standardized_concept_value(
+            concept_variants=[
+                'Liabilities',
+                'TotalLiabilities',
+            ],
+            period=period,
+            unit=unit,
+            annual=annual
+        )
+
+    def get_shareholders_equity(self, period: Optional[str] = None, unit: Optional[str] = None, annual: bool = True) -> Optional[float]:
+        """
+        Get standardized shareholders equity value across all companies.
+
+        Args:
+            period: Optional period in format "YYYY-QN" or "YYYY-FY"
+            unit: Optional unit filter (defaults to USD if not specified)
+            annual: If True (default), prefer annual FY facts when period is not specified.
+                   Falls back to most recent if no annual facts available.
+
+        Returns:
+            Shareholders equity value as float, or None if not found
+
+        Example:
+            >>> equity = facts.get_shareholders_equity()  # Returns annual (default)
+            >>> equity = facts.get_shareholders_equity(annual=False)  # Returns most recent
+        """
+        return self._get_standardized_concept_value(
+            concept_variants=[
+                'StockholdersEquity',
+                'ShareholdersEquity',
+                'TotalEquity',
+                'PartnersCapital',  # For partnerships
+                'MembersEquity'     # For LLCs
+            ],
+            period=period,
+            unit=unit,
+            annual=annual
+        )
+
+    def get_operating_income(self, period: Optional[str] = None, unit: Optional[str] = None, annual: bool = True) -> Optional[float]:
+        """
+        Get standardized operating income value across all companies.
+
+        Args:
+            period: Optional period in format "YYYY-QN" or "YYYY-FY"
+            unit: Optional unit filter (defaults to USD if not specified)
+            annual: If True (default), prefer annual FY facts when period is not specified.
+                   Falls back to most recent if no annual facts available.
+
+        Returns:
+            Operating income value as float, or None if not found
+
+        Example:
+            >>> op_income = facts.get_operating_income()  # Returns annual (default)
+            >>> op_income = facts.get_operating_income(annual=False)  # Returns most recent
+        """
+        return self._get_standardized_concept_value(
+            concept_variants=[
+                'OperatingIncomeLoss',
+                'OperatingIncome',
+                'IncomeLossFromOperations',
+                'OperatingProfit'
+            ],
+            period=period,
+            unit=unit,
+            annual=annual
+        )
+
+    def get_gross_profit(self, period: Optional[str] = None, unit: Optional[str] = None, annual: bool = True) -> Optional[float]:
+        """
+        Get standardized gross profit value across all companies.
+
+        Args:
+            period: Optional period in format "YYYY-QN" or "YYYY-FY"
+            unit: Optional unit filter (defaults to USD if not specified)
+            annual: If True (default), prefer annual FY facts when period is not specified.
+                   Falls back to most recent if no annual facts available.
+
+        Returns:
+            Gross profit value as float, or None if not found
+
+        Example:
+            >>> gross_profit = facts.get_gross_profit()  # Returns annual (default)
+            >>> gross_profit = facts.get_gross_profit(annual=False)  # Returns most recent
+        """
+        return self._get_standardized_concept_value(
+            concept_variants=[
+                'GrossProfit',
+                'GrossMargin'
+            ],
+            period=period,
+            unit=unit,
+            fallback_calculation=self._calculate_gross_profit_from_components,
+            annual=annual
+        )
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # Unified Synonym-Based Access (uses shared edgar.standardization infrastructure)
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    def get_concept(
+        self,
+        concept_name: str,
+        period: Optional[str] = None,
+        unit: Optional[str] = None,
+        return_metadata: bool = False
+    ) -> Union[Optional[float], Dict[str, Any]]:
+        """
+        Get a financial concept value using the unified synonym management system.
+
+        This method provides a simpler interface than the specific methods
+        (get_revenue, get_net_income, etc.) by looking up concept synonyms
+        automatically from the shared SynonymGroups infrastructure.
+
+        Supports 40+ pre-built concepts including:
+        - Income statement: 'revenue', 'net_income', 'operating_income', 'gross_profit', 'ebitda'
+        - Balance sheet: 'total_assets', 'total_liabilities', 'stockholders_equity', 'cash_and_equivalents'
+        - Cash flow: 'operating_cash_flow', 'capex', 'free_cash_flow', 'dividends_paid'
+        - Cash paid: 'interest_paid', 'income_taxes_paid' (net), and their '_gross' variants
+        - Leases: 'operating_lease_payments', 'operating_lease_liability' (Phil Oakley framework)
+
+        Args:
+            concept_name: The canonical concept name (e.g., 'revenue', 'capex', 'operating_lease_payments')
+            period: Optional period in format "YYYY-QN" or "YYYY-FY"
+            unit: Optional unit filter (defaults to the fact's native unit, e.g., USD or shares)
+            return_metadata: If True, return dict with value and metadata (tag used, etc.)
+
+        Returns:
+            Concept value as float, or None if not found.
+            If return_metadata=True, returns dict with 'value', 'tag_used', 'period'.
+            Groups with a measurement basis (e.g. 'interest_paid') also carry
+            'basis' ('net' or 'gross'); there is no fallback between bases.
+
+        Example:
+            >>> facts = company.get_facts()
+            >>> # Simple usage
+            >>> revenue = facts.get_concept('revenue')
+            >>> capex = facts.get_concept('capex')
+            >>> lease_payments = facts.get_concept('operating_lease_payments')
+            >>>
+            >>> # With period
+            >>> q1_revenue = facts.get_concept('revenue', period='2024-Q1')
+            >>>
+            >>> # With metadata
+            >>> result = facts.get_concept('revenue', return_metadata=True)
+            >>> print(f"Value: {result['value']}, Tag: {result['tag_used']}")
+
+        See Also:
+            - edgar.standardization.SynonymGroups for available concepts
+            - get_revenue(), get_net_income() for specific methods (backwards compatible)
+        """
+        from edgar.entity.unit_handling import UnitNormalizer
+        from edgar.standardization import get_synonym_groups
+
+        synonyms = get_synonym_groups()
+        group = synonyms.get_group(concept_name)
+
+        if group is None:
+            hint = f"Unknown concept '{concept_name}'."
+            hint += "\n  Use list_supported_concepts() to see available concept names,"
+            hint += "\n  or search_concepts() to search this company's raw XBRL tags."
+            warnings.warn(hint, stacklevel=2)
+            return None
+
+        # If unit is not specified, do not force USD: share/count concepts
+        # (for example weighted-average shares) should resolve with their
+        # native units.
+        target_unit = unit
+        synonyms_tried = []
+
+        # Recency key for cross-synonym selection: newest filing wins, then the
+        # latest period covered. Mirrors get_fact()'s intra-tag ordering
+        # (max by (filing_date, period_end)). date.min guards facts missing a
+        # date so a comparison never raises.
+        def _recency_key(f: "FinancialFact"):
+            return (f.filing_date or date.min, f.period_end or date.min)
+
+        def _build_result(value, tag, unit_used, fact):
+            if not return_metadata:
+                return value
+            result = {
+                'value': value,
+                # The fact's OWN qualified concept, not the lookup key that
+                # happened to match it. Since a concept is also indexed under its
+                # bare local name (GH #1202), the variant loop below can match on
+                # 'Revenue' before it reaches 'ifrs-full:Revenue' — the same fact
+                # either way, but reporting the bare key would drop the taxonomy
+                # from the provenance and leave a caller unable to tell an IFRS
+                # value from a us-gaap one (GH #637). `tag` is the key that
+                # resolved; it stays available as the last entry of
+                # 'synonyms_tried'.
+                'tag_used': fact.concept or tag,
+                # Resolved period of the fact actually returned — echoes the
+                # requested period, or the fact's own period when the caller
+                # passed period=None, so a stale pick is visible (GH #892).
+                'period': period if period is not None
+                          else f"{fact.fiscal_year}-{fact.fiscal_period}",
+                'period_end': fact.period_end,
+                'filing_date': fact.filing_date,
+                'unit': unit_used,
+                'concept_name': concept_name,
+                'synonyms_tried': synonyms_tried.copy(),
+            }
+            # Measurement basis ('net' or 'gross') comes from the group
+            # definition, never from the name; groups without one (most of
+            # them) keep their existing metadata keys unchanged (GH #1858).
+            if group.basis is not None:
+                result['basis'] = group.basis
+            return result
+
+        # Suppress warnings from get_fact() during synonym resolution
+        self._suppress_warnings = True
+        try:
+            # Best candidate seen so far, when period is not specified:
+            # (recency_key, priority_index, value, tag, unit, fact).
+            best = None
+            for priority_index, concept in enumerate(group.synonyms):
+                synonyms_tried.append(concept)
+                # Try with all known taxonomy prefixes
+                for concept_variant in [concept, f'us-gaap:{concept}', f'ifrs-full:{concept}']:
+                    fact = self.get_fact(concept_variant, period)
+                    if not (fact and fact.numeric_value is not None):
+                        continue
+                    unit_result = UnitNormalizer.get_normalized_value(
+                        fact=fact,
+                        target_unit=target_unit,
+                        apply_scale=True,
+                        strict_unit_match=unit is not None  # Strict when user explicitly specifies unit
+                    )
+                    if not unit_result.success:
+                        continue
+
+                    if period is not None:
+                        # Explicit period: the priority ordering is authoritative
+                        # (the caller pinned the period, so there is no staleness
+                        # ambiguity) — first match wins, preserving prior behavior.
+                        return _build_result(
+                            unit_result.value, concept_variant,
+                            unit_result.normalized_unit, fact
+                        )
+
+                    # No period requested: do NOT stop at the first synonym that
+                    # happens to hold a fact. A company that switched GAAP tags
+                    # (e.g. NVDA/AMZN moving capex from
+                    # PaymentsToAcquirePropertyPlantAndEquipment to
+                    # PaymentsToAcquireProductiveAssets) still has stale facts
+                    # under the higher-priority tag; first-match-wins would return
+                    # those years-old values (GH #892). Instead pick the most
+                    # recent fact across all synonyms, tie-broken by priority.
+                    candidate = (_recency_key(fact), -priority_index,
+                                 unit_result.value, concept_variant,
+                                 unit_result.normalized_unit, fact)
+                    if best is None or candidate[:2] > best[:2]:
+                        best = candidate
+                    # One winning variant per synonym is enough.
+                    break
+        finally:
+            self._suppress_warnings = False
+
+        if best is not None:
+            _, _, value, tag, unit_used, fact = best
+            return _build_result(value, tag, unit_used, fact)
+
+        return None
+
+    def discover_concept_tags(self, concept_name: str) -> List[str]:
+        """
+        Discover which tags from a concept's synonym group exist in this company's facts.
+
+        This is useful for understanding which XBRL tags a specific company uses
+        for a given financial concept.
+
+        Args:
+            concept_name: The canonical concept name (e.g., 'revenue', 'capex')
+
+        Returns:
+            List of tags that exist in this company's facts
+
+        Example:
+            >>> facts = company.get_facts()
+            >>> available = facts.discover_concept_tags('revenue')
+            >>> print(available)
+            ['Revenues', 'RevenueFromContractWithCustomerExcludingAssessedTax']
+        """
+        from edgar.standardization import get_synonym_groups
+
+        synonyms = get_synonym_groups()
+        group = synonyms.get_group(concept_name)
+
+        if group is None:
+            return []
+
+        found_tags = []
+        self._suppress_warnings = True
+        try:
+            for tag in group.synonyms:
+                # Check if tag exists in facts (try all known taxonomy prefixes)
+                for variant in [tag, f'us-gaap:{tag}', f'ifrs-full:{tag}']:
+                    fact = self.get_fact(variant)
+                    if fact is not None:
+                        found_tags.append(tag)
+                        break
+        finally:
+            self._suppress_warnings = False
+
+        return found_tags
+
+    def search_concepts(self, pattern: str) -> 'ConceptSearchResults':
+        """
+        Search this company's facts for concepts matching a pattern.
+
+        Performs a case-insensitive regex search against concept names and labels.
+        Useful for discovering what data a company actually reports before querying.
+
+        Args:
+            pattern: Regex pattern to match (e.g. "revenue", "asset", "cash.*flow")
+
+        Returns:
+            ConceptSearchResults with Rich display and to_dataframe()
+
+        Example:
+            >>> facts = company.get_facts()
+            >>> facts.search_concepts("revenue")
+            # Shows table: Concept | Label | Facts | Years | Periods
+        """
+        import re
+        from edgar.entity.models import ConceptMatch, ConceptSearchResults
+
+        regex = re.compile(pattern, re.IGNORECASE)
+
+        # Single pass: build per-concept aggregates
+        concept_info: Dict[str, dict] = {}
+        for fact in self._facts:
+            key = fact.concept
+            if key not in concept_info:
+                concept_info[key] = {
+                    'label': fact.label or '',
+                    'count': 0,
+                    'years': set(),
+                    'periods': set(),
+                    'units': set(),
+                }
+            info = concept_info[key]
+            info['count'] += 1
+            if fact.fiscal_year:
+                info['years'].add(fact.fiscal_year)
+            if fact.fiscal_period:
+                info['periods'].add(fact.fiscal_period)
+            if fact.unit:
+                info['units'].add(fact.unit)
+
+        # Filter by regex on concept name and label
+        matches = []
+        for concept, info in concept_info.items():
+            if regex.search(concept) or regex.search(info['label']):
+                matches.append(ConceptMatch(
+                    concept=concept,
+                    label=info['label'],
+                    fact_count=info['count'],
+                    fiscal_years=sorted(info['years']),
+                    periods=sorted(info['periods']),
+                    units=sorted(info['units']),
+                ))
+
+        # Sort by fact_count descending
+        matches.sort(key=lambda m: m.fact_count, reverse=True)
+
+        return ConceptSearchResults(matches, pattern)
+
+    def available_periods(self, concept: str = None) -> 'PeriodSummary':
+        """
+        List periods that have data, optionally filtered to a specific concept.
+
+        Args:
+            concept: Optional concept name or label to filter by.
+                     If None, shows periods across all facts.
+
+        Returns:
+            PeriodSummary with Rich display and to_dataframe()
+
+        Example:
+            >>> facts = company.get_facts()
+            >>> facts.available_periods()           # all periods
+            >>> facts.available_periods("Revenue")  # periods with Revenue data
+        """
+        from collections import defaultdict
+        from edgar.entity.models import PeriodEntry, PeriodSummary
+
+        # Determine which facts to scan
+        if concept:
+            facts_to_scan = self._fact_index['by_concept'].get(concept, [])
+            if not facts_to_scan:
+                facts_to_scan = self._fact_index['by_concept'].get(concept.lower(), [])
+        else:
+            facts_to_scan = self._facts
+
+        # Group by period key
+        period_data: Dict[str, dict] = defaultdict(lambda: {
+            'year': 0, 'period': '', 'count': 0, 'concepts': set()
+        })
+        for fact in facts_to_scan:
+            key = f"{fact.fiscal_year}-{fact.fiscal_period}"
+            info = period_data[key]
+            info['year'] = fact.fiscal_year
+            info['period'] = fact.fiscal_period
+            info['count'] += 1
+            info['concepts'].add(fact.concept)
+
+        # Sort: year descending, then FY > Q4 > Q3 > Q2 > Q1
+        period_order = {'FY': 0, 'Q4': 1, 'Q3': 2, 'Q2': 3, 'Q1': 4}
+
+        entries = [
+            PeriodEntry(
+                period_key=key,
+                fiscal_year=info['year'],
+                fiscal_period=info['period'],
+                fact_count=info['count'],
+                concept_count=len(info['concepts']),
+            )
+            for key, info in period_data.items()
+            if info['year']  # skip entries with no fiscal year
+        ]
+        entries.sort(key=lambda e: (-e.fiscal_year, period_order.get(e.fiscal_period, 9)))
+
+        return PeriodSummary(entries)
+
+    def list_supported_concepts(self, category: Optional[str] = None) -> List[str]:
+        """
+        List concept names supported by get_concept().
+
+        Returns all concepts from the SynonymGroups registry, not just those
+        present in this company's facts. Use discover_concept_tags() to find
+        which tags actually exist for a specific company.
+
+        Args:
+            category: Optional filter by category ('income_statement', 'balance_sheet', 'cash_flow')
+
+        Returns:
+            List of concept names sorted alphabetically
+
+        Example:
+            >>> facts = company.get_facts()
+            >>> # All supported concepts
+            >>> all_concepts = facts.list_supported_concepts()
+            >>> # Just cash flow concepts
+            >>> cf_concepts = facts.list_supported_concepts(category='cash_flow')
+            >>> print(cf_concepts)
+            ['capex', 'dividends_paid', 'financing_cash_flow', 'operating_cash_flow', ...]
+        """
+        from edgar.standardization import get_synonym_groups
+
+        synonyms = get_synonym_groups()
+        return synonyms.list_groups(category=category)
+
+    # Convenient properties for common DEI facts
+    @property
+    def shares_outstanding(self) -> Optional[float]:
+        """
+        Get the most recent shares outstanding value.
+
+        Tries DEI entity-level concept first, then falls back to US-GAAP
+        balance sheet concept. This handles multi-class share companies
+        (e.g., GOOG) that don't report the DEI concept.
+
+        Returns:
+            Number of shares outstanding as float, or None if not available
+
+        Example:
+            shares = facts.shares_outstanding
+            if shares:
+                print(f"Shares Outstanding: {shares:,.0f}")
+        """
+        # Try DEI entity-level concept first (most authoritative)
+        # Suppress warnings during fallback chain — only warn if all attempts fail
+        old_suppress = getattr(self, '_suppress_warnings', False)
+        self._suppress_warnings = True
+        try:
+            fact = self.get_fact('dei:EntityCommonStockSharesOutstanding')
+            if fact:
+                return fact.numeric_value
+            # Fallback to US-GAAP balance sheet concept (covers multi-class companies like GOOG)
+            fact = self.get_fact('us-gaap:CommonStockSharesOutstanding')
+            if fact:
+                return fact.numeric_value
+        finally:
+            self._suppress_warnings = old_suppress
+        return None
+
+    @property
+    def public_float(self) -> Optional[float]:
+        """
+        Get the most recent public float value.
+
+        Returns:
+            Public float value as float, or None if not available
+
+        Example:
+            float_val = facts.public_float
+            if float_val:
+                print(f"Public Float: ${float_val:,.0f}")
+        """
+        fact = self.get_fact('dei:EntityPublicFloat')
+        return fact.numeric_value if fact else None
+
+    @property
+    def shares_outstanding_fact(self) -> Optional[FinancialFact]:
+        """
+        Get the most recent shares outstanding fact with full context.
+
+        Returns:
+            FinancialFact object with shares outstanding data, or None
+
+        Example:
+            fact = facts.shares_outstanding_fact
+            if fact:
+                print(f"Shares: {fact.get_formatted_value()} as of {fact.period_end}")
+        """
+        return self.get_fact('dei:EntityCommonStockSharesOutstanding')
+
+    @property
+    def public_float_fact(self) -> Optional[FinancialFact]:
+        """
+        Get the most recent public float fact with full context.
+
+        Returns:
+            FinancialFact object with public float data, or None
+
+        Example:
+            fact = facts.public_float_fact
+            if fact:
+                print(f"Float: {fact.get_formatted_value()} as of {fact.period_end}")
+        """
+        return self.get_fact('dei:EntityPublicFloat')
+
+    def _get_split_adjusted_facts(self) -> List[FinancialFact]:
+        """Get all facts adjusted for stock splits, with caching."""
+        cache_attr = '_cached_split_adjusted_facts'
+        if hasattr(self, cache_attr):
+            return getattr(self, cache_attr)
+
+        facts = self._facts
+        if not facts:
+            return []
+
+        from edgar.ttm.splits import apply_split_adjustments, detect_splits
+        splits = detect_splits(facts)
+        adjusted_facts = apply_split_adjustments(facts, splits) if splits else facts
+
+        object.__setattr__(self, cache_attr, adjusted_facts)
+        return adjusted_facts
+
+    def _prepare_quarterly_facts(self, facts: List[FinancialFact]) -> List[FinancialFact]:
+        """Enhance facts with derived quarter-level duration facts for TTM/quarterly views."""
+        from edgar.ttm.calculator import EPS_NUMERATOR_CONCEPTS, TTMCalculator, numerator_agrees_within
+        from edgar.entity.enhanced_statement import (
+            detect_fiscal_year_end,
+            is_forward_looking_schedule,
+        )
+
+        # Filter out forward-looking schedule data before TTM derivation (Issues #781, #779).
+        # These are footnote disclosures (e.g., expected amortization) tagged with
+        # real fp values but future end dates inconsistent with their fiscal_year.
+        # Must be filtered here, before the TTM calculator derives quarters from them.
+        # Pass the company's FYE month so non-calendar-FYE companies (ADSK, WMT, MSFT)
+        # don't have their forward-fiscal-year quarters incorrectly rejected.
+        #
+        # This asks specifically whether the PERIOD runs ahead of the LABEL. Asking the
+        # weaker question -- do they merely disagree -- also throws out every comparative
+        # re-filing, because the SEC tags those with the filing's fiscal year. On the
+        # Snowflake ledger that discarded 4,093 real facts to exclude 6 schedule ones,
+        # and the casualties included the six-month YTD that Q3 is derived from, so the
+        # quarterly cash-flow statement fell back to a 273-day YTD figure it labelled
+        # Q3 (GH #1180).
+        fiscal_year_end_month = detect_fiscal_year_end(facts)
+        filtered_facts = [fact for fact in facts
+                          if not is_forward_looking_schedule(fact.fiscal_year, fact.period_end,
+                                                             fiscal_year_end_month)]
+
+        concept_facts = defaultdict(list)
+        for fact in filtered_facts:
+            concept_facts[fact.concept].append(fact)
+
+        derived_facts: List[FinancialFact] = []
+
+        for c_facts in concept_facts.values():
+            try:
+                calc = TTMCalculator(c_facts)
+                quarterly = calc._quarterize_facts()
+                for quarter_fact in quarterly:
+                    if quarter_fact.calculation_context and 'derived' in quarter_fact.calculation_context:
+                        derived_facts.append(quarter_fact)
+            except (ValueError, KeyError, AttributeError, IndexError, TypeError):
+                continue
+
+        def _collect_facts(concepts: List[str]) -> List[FinancialFact]:
+            collected: List[FinancialFact] = []
+            for name in concepts:
+                if name in concept_facts:
+                    collected.extend(concept_facts[name])
+                for prefix in ['us-gaap', 'ifrs-full']:
+                    prefixed = f"{prefix}:{name}"
+                    if prefixed in concept_facts:
+                        collected.extend(concept_facts[prefixed])
+            return collected
+
+        # EPS numerators, best first, kept apart so one derivation never pairs one
+        # concept's year with another's quarters (GH #1692)
+        numerators = {
+            kind: [facts for facts in (_collect_facts([name]) for name in names) if facts]
+            for kind, names in EPS_NUMERATOR_CONCEPTS.items()
+        }
+        shares_basic = _collect_facts([
+            "WeightedAverageNumberOfSharesOutstandingBasic",
+            "WeightedAverageNumberOfShareOutstandingBasicAndDiluted",
+        ])
+        shares_diluted = _collect_facts([
+            "WeightedAverageNumberOfDilutedSharesOutstanding",
+            "WeightedAverageNumberOfSharesOutstandingDiluted",
+            "WeightedAverageNumberOfShareOutstandingBasicAndDiluted",
+        ])
+
+        def _has_eps_for_period(concept_name: str, period_end: date, fiscal_period: str) -> bool:
+            candidates = [concept_name]
+            if ":" in concept_name:
+                candidates.append(concept_name.split(":", 1)[1])
+            else:
+                candidates.append(f"us-gaap:{concept_name}")
+                candidates.append(f"ifrs-full:{concept_name}")
+
+            for name in candidates:
+                for fact in concept_facts.get(name, []):
+                    if (
+                        fact.period_end == period_end
+                        and fact.fiscal_period == fiscal_period
+                        and fact.period_type == "duration"
+                    ):
+                        return True
+            return False
+
+        def _fiscal_year_start(facts: List[FinancialFact], year_end: date) -> date:
+            for fact in facts:
+                if fact.period_end == year_end and fact.period_start and fact.fiscal_period == "FY":
+                    return fact.period_start
+            return year_end - timedelta(days=364)
+
+        for kind, eps_concept, shares in (("basic", "us-gaap:EarningsPerShareBasic", shares_basic),
+                                          ("diluted", "us-gaap:EarningsPerShareDiluted", shares_diluted)):
+            if not shares:
+                continue
+            candidates = numerators[kind]
+            decided = set()
+            for rank, numerator_facts in enumerate(candidates):
+                calc = TTMCalculator(numerator_facts)
+                for eps_fact in calc.derive_eps_for_quarter(numerator_facts, shares, eps_concept):
+                    if eps_fact.period_end in decided:
+                        continue
+                    decided.add(eps_fact.period_end)
+                    # A lesser numerator (net income) stands in only where the
+                    # filer's facts for that fiscal year do not show it differing
+                    # from income available to common stockholders.
+                    year_start = _fiscal_year_start(numerator_facts, eps_fact.period_end)
+                    if not all(numerator_agrees_within(better, numerator_facts, year_start, eps_fact.period_end)
+                               for better in candidates[:rank]):
+                        continue
+                    if not _has_eps_for_period(eps_fact.concept, eps_fact.period_end, eps_fact.fiscal_period):
+                        derived_facts.append(eps_fact)
+
+        return facts + derived_facts
+
+    def _parse_ttm_date(self, as_of: Optional[Union[date, str]]) -> Optional[date]:
+        """Parse TTM 'as_of' parameter into a date object."""
+        if as_of is None:
+            return None
+
+        if isinstance(as_of, date):
+            return as_of
+
+        if not isinstance(as_of, str):
+            raise TypeError(f"as_of must be date, str, or None, got {type(as_of).__name__}")
+
+        # Try ISO format: YYYY-MM-DD
+        if '-' in as_of and len(as_of.split('-')) == 3:
+            try:
+                parsed = date.fromisoformat(as_of)
+                if parsed.year < 1900 or parsed.year > 2100:
+                    raise ValueError(f"Year must be between 1900 and 2100, got {parsed.year}")
+                return parsed
+            except ValueError as e:
+                if "year" in str(e).lower():
+                    raise
+                raise ValueError(f"Invalid date format: '{as_of}'. Expected ISO format YYYY-MM-DD") from e
+
+        # Try quarter format: YYYY-QN
+        parts = as_of.upper().split('-')
+        if len(parts) == 2 and 'Q' in parts[1]:
+            try:
+                year = int(parts[0])
+                if year < 1900 or year > 2100:
+                    raise ValueError(f"Year must be between 1900 and 2100, got {year}")
+
+                quarter = int(parts[1].replace('Q', ''))
+                if quarter not in (1, 2, 3, 4):
+                    raise ValueError(f"Quarter must be 1-4, got {quarter}")
+
+                quarter_ends = {1: (3, 31), 2: (6, 30), 3: (9, 30), 4: (12, 31)}
+                month, day = quarter_ends[quarter]
+                return date(year, month, day)
+            except ValueError:
+                raise
+            except (TypeError, KeyError) as e:
+                raise ValueError(f"Invalid quarter format: '{as_of}'. Expected YYYY-QN (e.g., '2024-Q2')") from e
+
+        raise ValueError(f"Invalid date format: '{as_of}'. Use 'YYYY-MM-DD' or 'YYYY-QN'")
+
+    def _parse_filed_by(self, filed_by: Optional[Union[date, str]]) -> Optional[date]:
+        """Parse a ``filed_by`` cutoff: a date or an ISO 'YYYY-MM-DD' string (GH #1699).
+
+        A quarter string is rejected: it names a reporting period, not the day a
+        filing was made.
+        """
+        from edgar.exceptions import InvalidDateError
+
+        if filed_by is None:
+            return None
+        if isinstance(filed_by, datetime):
+            return filed_by.date()
+        if isinstance(filed_by, date):
+            return filed_by
+        if not isinstance(filed_by, str):
+            raise TypeError(f"filed_by must be date, str, or None, got {type(filed_by).__name__}")
+        try:
+            return date.fromisoformat(filed_by.strip())
+        except ValueError:
+            hint = ("a quarter names a reporting period, not a filing date; pass as_of for that"
+                    if 'Q' in filed_by.upper() else "expected an ISO date YYYY-MM-DD")
+            raise InvalidDateError(
+                f"Invalid filed_by '{filed_by}': {hint}.",
+                parameter="filed_by", invalid_value=filed_by,
+                suggestions=["filed_by='2024-08-02'"]) from None
+
+    def _facts_filed_by(self, filed_by: date) -> List[FinancialFact]:
+        """Facts filed on or before ``filed_by``, split-adjusted using only those facts.
+
+        Built per call: the cached split-adjusted facts were adjusted with splits
+        that may have been disclosed after the cutoff (GH #1699).
+        """
+        from edgar.ttm.calculator import facts_filed_by
+        from edgar.ttm.splits import apply_split_adjustments, detect_splits
+
+        eligible = facts_filed_by(self._facts or [], filed_by)
+        splits = detect_splits(eligible)
+        return apply_split_adjustments(eligible, splits) if splits else eligible
+
+    def get_ttm(self, concept: str, as_of: Optional[Union[date, str]] = None, *,
+                filed_by: Optional[Union[date, str]] = None) -> 'TTMMetric':
+        """Calculate Trailing Twelve Months value for a concept.
+
+        ``as_of`` is a reporting-period cutoff. ``filed_by`` (keyword-only) also
+        limits the facts to filings made on or before that date; given alone it
+        is both cutoffs. See `TTMCalculator.calculate_ttm`.
+        """
+        from edgar.ttm.calculator import TTMCalculator
+
+        filed_by_date = self._parse_filed_by(filed_by)
+        if filed_by_date is None:
+            facts = self._get_split_adjusted_facts()
+        else:
+            facts = self._facts_filed_by(filed_by_date)
+
+        if ':' not in concept:
+            concept_candidates = [concept, f'us-gaap:{concept}', f'ifrs-full:{concept}']
+        else:
+            concept_candidates = [concept]
+
+        target_facts = [fact for fact in facts if fact.concept in concept_candidates]
+
+        if not target_facts:
+            filed = f" filed on or before {filed_by_date}" if filed_by_date else ""
+            raise KeyError(f"Concept '{concept}' not found in facts{filed}")
+
+        calc = TTMCalculator(target_facts)
+        as_of_date = self._parse_ttm_date(as_of)
+        return calc.calculate_ttm(as_of=as_of_date, filed_by=filed_by_date)
+
+    def _best_ttm_across_concepts(
+        self,
+        concepts: List[str],
+        as_of: Optional[Union[date, str]],
+        not_found_message: str,
+        filed_by: Optional[Union[date, str]] = None,
+    ) -> 'TTMMetric':
+        """Compute TTM for each candidate concept and return the freshest result.
+
+        Companies migrate GAAP tags over time (e.g. NVDA/GOOG moved revenue from
+        ``RevenueFromContractWithCustomerExcludingAssessedTax`` to ``Revenues``).
+        The abandoned tag still holds years-old facts, so returning the *first*
+        candidate that resolves silently yields a stale TTM — off by more than an
+        order of magnitude, with no error (GH #893). Instead we evaluate every
+        candidate and pick the one whose window ends most recently (by
+        ``as_of_date``), tie-broken by the caller's priority order.
+
+        With ``filed_by``, each concept's result is already its latest gap-free
+        window, so only qualifying windows are ranked (GH #1699).
+        """
+        from edgar.exceptions import ValidationError
+
+        # With filed_by, parse before the loop: a bad argument must raise, not be
+        # skipped as "this concept has no TTM". (Without it, as_of keeps its
+        # existing handling.)
+        filed_by = self._parse_filed_by(filed_by)
+        if filed_by is not None:
+            as_of = self._parse_ttm_date(as_of)
+        best = None  # ((as_of_date, -priority_index), TTMMetric)
+        insufficient = False
+        for priority_index, concept in enumerate(concepts):
+            try:
+                metric = self.get_ttm(concept, as_of, filed_by=filed_by)
+            except KeyError:
+                continue
+            except ValueError:
+                # Present but no usable window. Skip and keep searching so a
+                # stale-but-resolvable earlier candidate never masks a fresh one.
+                insufficient = True
+                continue
+            key = (metric.as_of_date, -priority_index)
+            if best is None or key > best[0]:
+                best = (key, metric)
+
+        if best is None:
+            if filed_by is not None and insufficient:
+                raise ValidationError(
+                    f"{not_found_message}: no candidate concept has four gap-free quarters "
+                    f"ending on or before {as_of or filed_by} in filings made on or before {filed_by}.",
+                    parameter="filed_by", invalid_value=filed_by,
+                    suggestions=["Pass a later filed_by date"])
+            raise KeyError(not_found_message)
+        return best[1]
+
+    def get_ttm_revenue(self, as_of: Optional[Union[date, str]] = None, *,
+                        filed_by: Optional[Union[date, str]] = None) -> 'TTMMetric':
+        """Get Trailing Twelve Months revenue using common revenue concepts."""
+        revenue_concepts = [
+            'Revenues',
+            'RevenueFromContractWithCustomerExcludingAssessedTax',
+            'SalesRevenueNet',
+            'Revenue',
+        ]
+        return self._best_ttm_across_concepts(
+            revenue_concepts, as_of, "Could not find revenue concept in company facts", filed_by=filed_by
+        )
+
+    def get_ttm_net_income(self, as_of: Optional[Union[date, str]] = None, *,
+                           filed_by: Optional[Union[date, str]] = None) -> 'TTMMetric':
+        """Get Trailing Twelve Months net income using common net income concepts."""
+        income_concepts = ['NetIncomeLoss', 'NetIncome', 'ProfitLoss']
+        return self._best_ttm_across_concepts(
+            income_concepts, as_of, "Could not find net income concept in company facts", filed_by=filed_by
+        )
+
+    @cached_property
+    def _ttm_ready_facts(self) -> 'EntityFacts':
+        """Cached facts prepared for quarterly/TTM operations."""
+        prepared_facts = self._prepare_quarterly_facts(self._get_split_adjusted_facts())
+        return EntityFacts(
+            cik=self.cik,
+            name=self.name,
+            facts=prepared_facts,
+            sic_code=self._sic_code,
+            ticker=self._ticker,
+        )
+
+    # ------------------------------------------------------------------
+    # Period resolution
+    # ------------------------------------------------------------------
+    #
+    # Two parameters name the same thing. `period` is the supported spelling;
+    # `annual` is legacy and goes in a later release. (`period_length` was
+    # removed in 6.0; passing it raises TypeError.)
+
+    _VALID_PERIODS = {"annual", "quarterly", "ttm"}
+
+    @classmethod
+    def _resolve_period(cls,
+                        period: Optional[str],
+                        annual: Optional[bool]) -> str:
+        """Collapse period/annual into one period name.
+
+        `annual`, when given, overrides `period`; with neither the default is
+        annual.
+        """
+        if annual is not None:
+            resolved = "annual" if annual else "quarterly"
+        elif period is not None:
+            resolved = period.lower()
+        else:
+            resolved = "annual"
+
+        if resolved not in cls._VALID_PERIODS:
+            # ValidationError IS-A ValueError, so this stays catchable as one.
+            raise ValidationError(
+                "period must be one of: 'annual', 'quarterly', 'ttm'",
+                parameter="period",
+                invalid_value=resolved,
+            )
+        return resolved
+
+    @classmethod
+    def _resolve_balance_sheet_period(cls,
+                                      period: Optional[str],
+                                      annual: Optional[bool]) -> str:
+        """Collapse period/annual into 'annual' or 'quarterly' for a balance sheet.
+
+        A balance sheet is point-in-time, so 'ttm' is rejected along with any
+        other name, as `ValidationError` (IS-A `ValueError`) like its siblings.
+        """
+        if annual is not None:
+            resolved = "annual" if annual else "quarterly"
+        elif period is not None:
+            resolved = period.lower()
+        else:
+            resolved = "annual"
+        if resolved == "ttm":
+            raise ValidationError(
+                "TTM not applicable for Balance Sheet (point-in-time data)",
+                parameter="period",
+                invalid_value=resolved,
+            )
+        if resolved not in {"annual", "quarterly"}:
+            raise ValidationError(
+                "period must be one of: 'annual', 'quarterly'",
+                parameter="period",
+                invalid_value=resolved,
+            )
+        return resolved
+
+    def _build_enhanced_statement(self,
+                                  facts: List[FinancialFact],
+                                  statement_type: str,
+                                  periods: int,
+                                  annual: bool,
+                                  as_dataframe: bool,
+                                  concise_format: bool) -> Union[pd.DataFrame, MultiPeriodStatement]:
+        """Build an enhanced multi-period statement from a fact set."""
+        self._resolve_industry_info()
+        from edgar.entity.enhanced_statement import EnhancedStatementBuilder
+
+        builder = EnhancedStatementBuilder(sic_code=self._sic_code, ticker=self._ticker)
+        enhanced_stmt = builder.build_multi_period_statement(
+            facts=facts,
+            statement_type=statement_type,
+            periods=periods,
+            annual=annual,
+        )
+        enhanced_stmt.company_name = self.name
+        enhanced_stmt.ticker = self._ticker
+        enhanced_stmt.cik = str(self.cik)
+        enhanced_stmt.concise_format = concise_format
+
+        if as_dataframe:
+            return enhanced_stmt.to_dataframe()
+        return enhanced_stmt
+
+    # Financial statement helpers
+    def income_statement(self,
+                         periods: int = 4,
+                         *,
+                         as_dataframe: bool = False,
+                         annual: Optional[bool] = None,
+                         concise_format: bool = False,
+                         period: Optional[str] = None) -> Union[pd.DataFrame, MultiPeriodStatement, 'TTMStatement']:
+        """
+        Get income statement facts for recent periods.
+
+        Args:
+            periods: Number of periods to retrieve
+            as_dataframe: If True, return DataFrame; if False, return MultiPeriodStatement
+            annual: Legacy parameter - if provided, overrides period (True='annual', False='quarterly')
+            concise_format: If True, display values as $1.0B, if False display as $1,000,000,000
+            period: 'annual' (the default), 'quarterly', or 'ttm' (trailing twelve months)
+
+        Returns:
+            MultiPeriodStatement or DataFrame with income statement data
+
+        Example:
+            # Get hierarchical multi-period statement (default)
+            stmt = facts.income_statement(periods=4, annual=True)
+            print(stmt)  # Rich display with hierarchy
+
+            # Get with concise format
+            stmt = facts.income_statement(periods=4, concise_format=True)
+
+            # Get DataFrame for analysis
+            df = facts.income_statement(periods=4, as_dataframe=True)
+
+            # Convert statement to DataFrame later
+            stmt = facts.income_statement(periods=4)
+            df = stmt.to_dataframe()
+        """
+        period = self._resolve_period(period, annual)
+
+        if period == 'ttm':
+            from edgar.ttm.statement import TTMStatementBuilder
+
+            ttm_facts = self._ttm_ready_facts
+            stmt = TTMStatementBuilder(ttm_facts).build_income_statement(max_periods=periods)
+            if as_dataframe:
+                return stmt.to_dataframe()
+            return stmt
+
+        statement_facts = self._ttm_ready_facts if period == 'quarterly' else self
+        return self._build_enhanced_statement(
+            facts=statement_facts._facts,
+            statement_type='IncomeStatement',
+            periods=periods,
+            annual=(period == 'annual'),
+            as_dataframe=as_dataframe,
+            concise_format=concise_format,
+        )
+
+    def balance_sheet(self,
+                      periods: int = 4,
+                      as_of: Optional[date] = None,
+                      as_dataframe: bool = False,
+                      annual: Optional[bool] = None,
+                      concise_format: bool = False,
+                      period: str = 'annual') -> Union[pd.DataFrame, MultiPeriodStatement]:
+        """
+        Get balance sheet facts for recent periods or as of a specific date.
+
+        Args:
+            periods: Number of periods to retrieve (ignored if as_of is specified)
+            as_of: Optional date for point-in-time view; if specified, gets single snapshot
+            as_dataframe: If True, return DataFrame; if False, return MultiPeriodStatement
+            annual: Legacy parameter - if provided, overrides period
+            concise_format: If True, display values as $1.0B, if False display as $1,000,000,000
+            period: 'annual' or 'quarterly' (TTM is not applicable to balance sheets)
+
+        Returns:
+            MultiPeriodStatement or DataFrame with balance sheet data
+
+        Example:
+            # Get hierarchical multi-period statement (default)
+            stmt = facts.balance_sheet(periods=4, annual=True)
+            print(stmt)  # Rich display with hierarchy
+
+            # Get DataFrame for analysis
+            df = facts.balance_sheet(periods=4, as_dataframe=True)
+
+            # Convert statement to DataFrame later
+            stmt = facts.balance_sheet(periods=4)
+            df = stmt.to_dataframe()
+        """
+        period = self._resolve_balance_sheet_period(period, annual)
+
+        if not as_of:
+            return self._build_enhanced_statement(
+                facts=self._facts,
+                statement_type='BalanceSheet',
+                periods=periods,
+                annual=(period == 'annual'),
+                as_dataframe=as_dataframe,
+                concise_format=concise_format,
+            )
+
+        from edgar.entity.query import FactQuery
+        query = FactQuery(self._facts, self._fact_index)
+
+        query = query.by_statement_type('BalanceSheet')
+
+        # Point-in-time view - get latest instant facts as of the specified date
+        query = query.as_of(as_of).latest_instant()
+        facts = query.execute()
+
+        if not facts:
+            if not as_dataframe:
+                from edgar.entity.statement import FinancialStatement
+                return FinancialStatement(
+                    data=pd.DataFrame(),
+                    statement_type="BalanceSheet",
+                    entity_name=self.name,
+                    period_lengths=[],
+                    mixed_periods=False
+                )
+            return pd.DataFrame()
+
+        records = []
+        for fact in facts:
+            records.append({
+                'label': fact.label,
+                'concept': fact.concept,
+                'value': fact.get_formatted_value(),
+                'raw_value': fact.numeric_value or fact.value,
+                'unit': fact.unit,
+                'period_end': fact.period_end,
+                'filing_date': fact.filing_date,
+                'form_type': fact.form_type
+            })
+
+        df = pd.DataFrame(records)
+
+        if not as_dataframe:
+            from edgar.entity.statement import FinancialStatement
+            if not df.empty:
+                period_label = f"As of {as_of}"
+                pivot_data = pd.DataFrame({
+                    period_label: df.set_index('label')['raw_value']
+                })
+            else:
+                pivot_data = pd.DataFrame()
+
+            return FinancialStatement(
+                data=pivot_data,
+                statement_type="BalanceSheet",
+                entity_name=self.name,
+                period_lengths=['instant'],
+                mixed_periods=False
+            )
+
+        return df
+
+    def cash_flow_statement(self,
+                           periods: int = 4,
+                           *,
+                           as_dataframe: bool = False,
+                           annual: Optional[bool] = None,
+                           concise_format: bool = False,
+                           period: Optional[str] = None) -> Union[pd.DataFrame, MultiPeriodStatement, 'TTMStatement']:
+        """
+        Get cash flow statement facts.
+
+        Args:
+            periods: Number of periods to retrieve
+            as_dataframe: If True, return DataFrame; if False, return MultiPeriodStatement
+            annual: Legacy parameter - if provided, overrides period
+            concise_format: If True, display values as $1.0B, if False display as $1,000,000,000
+            period: 'annual' (the default), 'quarterly', or 'ttm' (trailing twelve months)
+
+        Returns:
+            MultiPeriodStatement or DataFrame with cash flow data
+
+        Example:
+            # Get hierarchical multi-period statement (default)
+            stmt = facts.cash_flow_statement(periods=4, annual=True)
+            print(stmt)  # Rich display with hierarchy
+
+            # Get DataFrame for analysis
+            df = facts.cash_flow_statement(periods=4, as_dataframe=True)
+
+            # Convert statement to DataFrame later
+            stmt = facts.cash_flow_statement(periods=4)
+            df = stmt.to_dataframe()
+        """
+        period = self._resolve_period(period, annual)
+
+        if period == 'ttm':
+            from edgar.ttm.statement import TTMStatementBuilder
+
+            ttm_facts = self._ttm_ready_facts
+            stmt = TTMStatementBuilder(ttm_facts).build_cashflow_statement(max_periods=periods)
+            if as_dataframe:
+                return stmt.to_dataframe()
+            return stmt
+
+        statement_facts = self._ttm_ready_facts if period == 'quarterly' else self
+        return self._build_enhanced_statement(
+            facts=statement_facts._facts,
+            statement_type='CashFlow',
+            periods=periods,
+            annual=(period == 'annual'),
+            as_dataframe=as_dataframe,
+            concise_format=concise_format,
+        )
+
+    # Investment analytics
+    def calculate_ratios(self) -> Dict[str, Any]:
+        """
+        Calculate common financial ratios.
+
+        Returns:
+            Dictionary of ratio names to values
+        """
+        # This will be implemented in Phase 3
+        # For now, return a placeholder
+        return {
+            "note": "Ratio calculation will be implemented in Phase 3"
+        }
+
+    def peer_comparison(self, peer_ciks: List[int],
+                        metrics: Optional[List[str]] = None) -> pd.DataFrame:
+        """
+        Compare key metrics with peer companies.
+
+        Args:
+            peer_ciks: List of peer company CIKs
+            metrics: Optional list of specific metrics to compare
+
+        Returns:
+            DataFrame with comparative analysis
+        """
+        # This will be implemented in Phase 3
+        # For now, return a placeholder
+        return pd.DataFrame({
+            "note": ["Peer comparison will be implemented in Phase 3"]
+        })
+
+    def detect_anomalies(self) -> List[Dict[str, Any]]:
+        """
+        Detect unusual patterns or potential red flags.
+
+        Returns:
+            List of detected anomalies with descriptions
+        """
+        # This will be implemented in Phase 3
+        # For now, return a placeholder
+        return [{
+            "type": "placeholder",
+            "message": "Anomaly detection will be implemented in Phase 3"
+        }]
+
+    # AI-ready methods
+    def to_llm_context(self,
+                       focus_areas: Optional[List[str]] = None,
+                       time_period: str = "recent") -> Dict[str, Any]:
+        """
+        Generate comprehensive context for LLM analysis.
+
+        Args:
+            focus_areas: Specific areas to emphasize (e.g., ['profitability', 'growth'])
+            time_period: Time period to analyze ('recent', '5Y', '10Y', 'all')
+
+        Returns:
+            Dictionary with structured context for LLM consumption
+        """
+        context = {
+            "company": {
+                "name": self.name,
+                "cik": self.cik,
+                "total_facts": len(self._facts)
+            },
+            "data_summary": self._generate_data_summary(),
+            "recent_filings": self._get_recent_filings_summary(),
+            "key_metrics": self._extract_key_metrics(time_period)
+        }
+
+        # Add time period context
+        if time_period == "recent":
+            context["time_period"] = "Most recent reported period"
+        elif time_period == "5Y":
+            context["time_period"] = "Five year historical view"
+        elif time_period == "10Y":
+            context["time_period"] = "Ten year historical view"
+        else:
+            context["time_period"] = "All available historical data"
+
+        # Add focus area analysis if specified
+        if focus_areas:
+            context["focus_analysis"] = {}
+            for area in focus_areas:
+                if area == "profitability":
+                    context["focus_analysis"][area] = self._analyze_profitability()
+                elif area == "growth":
+                    context["focus_analysis"][area] = self._analyze_growth()
+                elif area == "liquidity":
+                    context["focus_analysis"][area] = self._analyze_liquidity()
+
+        return context
+
+    def to_agent_tools(self) -> List[Dict[str, Any]]:
+        """
+        Export facts as tools for AI agents (MCP-compatible).
+
+        Returns:
+            List of tool definitions for agent consumption
+        """
+        return [
+            {
+                "name": f"get_{self.name.lower().replace(' ', '_')}_financials",
+                "description": f"Retrieve financial data for {self.name}",
+                "parameters": {
+                    "statement": {
+                        "type": "string",
+                        "description": "Financial statement type (income_statement, balance_sheet, cash_flow)",
+                        "enum": ["income_statement", "balance_sheet", "cash_flow"]
+                    },
+                    "periods": {
+                        "type": "integer",
+                        "description": "Number of periods to retrieve",
+                        "default": 4
+                    }
+                },
+                "returns": "Financial data with context"
+            },
+            {
+                "name": f"analyze_{self.name.lower().replace(' ', '_')}_trends",
+                "description": f"Analyze financial trends for {self.name}",
+                "parameters": {
+                    "metric": {
+                        "type": "string",
+                        "description": "Financial metric to analyze (e.g., Revenue, NetIncome)"
+                    },
+                    "periods": {
+                        "type": "integer",
+                        "description": "Number of periods to analyze",
+                        "default": 8
+                    }
+                },
+                "returns": "Trend analysis with insights"
+            },
+            {
+                "name": f"get_{self.name.lower().replace(' ', '_')}_fact",
+                "description": f"Get a specific financial fact for {self.name}",
+                "parameters": {
+                    "concept": {
+                        "type": "string",
+                        "description": "The financial concept to retrieve (e.g., Revenue, Assets)"
+                    },
+                    "period": {
+                        "type": "string",
+                        "description": "Optional period (e.g., 2024-Q4, 2024-FY)",
+                        "required": False
+                    }
+                },
+                "returns": "Fact value with full context"
+            }
+        ]
+
+    # Helper methods
+    def _generate_data_summary(self) -> Dict[str, Any]:
+        """Generate a summary of available data"""
+        unique_concepts = len(set(f.concept for f in self._facts))
+
+        # Get date range
+        dates = [f.filing_date for f in self._facts if f.filing_date]
+        if dates:
+            min_date = min(dates)
+            max_date = max(dates)
+            date_range = f"{min_date} to {max_date}"
+        else:
+            date_range = "Unknown"
+
+        # Count by form type
+        form_counts = defaultdict(int)
+        for fact in self._facts:
+            form_counts[fact.form_type] += 1
+
+        return {
+            "total_facts": len(self._facts),
+            "unique_concepts": unique_concepts,
+            "date_range": date_range,
+            "form_types": dict(form_counts),
+            "fiscal_years": sorted(set(f.fiscal_year for f in self._facts if f.fiscal_year))
+        }
+
+    def _get_recent_filings_summary(self) -> List[Dict[str, Any]]:
+        """Get summary of recent filings"""
+        # Group facts by filing
+        filings = defaultdict(list)
+        for fact in self._facts:
+            key = (fact.form_type, fact.filing_date, fact.accession)
+            filings[key].append(fact)
+
+        # Sort by filing date
+        recent_filings = sorted(filings.keys(), key=lambda x: x[1] or date.min, reverse=True)[:5]
+
+        summaries = []
+        for form_type, filing_date, accession in recent_filings:
+            summaries.append({
+                "form": form_type,
+                "date": str(filing_date) if filing_date else "Unknown",
+                "fact_count": len(filings[(form_type, filing_date, accession)])
+            })
+
+        return summaries
+
+    def _extract_key_metrics(self, time_period: str) -> Dict[str, Any]:
+        """Extract key financial metrics for the specified time period"""
+        # Define key metrics to extract
+        key_concepts = [
+            'Revenue', 'NetIncome', 'Assets', 'Liabilities',
+            'StockholdersEquity', 'OperatingIncome', 'EarningsPerShare'
+        ]
+
+        metrics = {}
+        self._suppress_warnings = True
+        try:
+            for concept in key_concepts:
+                fact = self.get_fact(concept)
+                if fact:
+                    metrics[concept] = {
+                        "value": fact.numeric_value or fact.value,
+                        "unit": fact.unit,
+                        "period": f"{fact.fiscal_period} {fact.fiscal_year}",
+                        "quality": fact.data_quality.value
+                    }
+        finally:
+            self._suppress_warnings = False
+
+        return metrics
+
+    def _analyze_profitability(self) -> Dict[str, Any]:
+        """Analyze profitability metrics"""
+        self._suppress_warnings = True
+        try:
+            revenue = self.get_fact('Revenue')
+            net_income = self.get_fact('NetIncome')
+        finally:
+            self._suppress_warnings = False
+
+        analysis = {}
+
+        if revenue and net_income and revenue.numeric_value and net_income.numeric_value:
+            net_margin = (net_income.numeric_value / revenue.numeric_value) * 100
+            analysis["net_margin"] = {
+                "value": round(net_margin, 2),
+                "unit": "percent",
+                "interpretation": f"For every dollar of revenue, {self.name} generates ${net_margin / 100:.2f} in profit"
+            }
+
+        return analysis
+
+    def _revenue_growth_yoy(self, annual_only: bool = False) -> Optional[Dict[str, Any]]:
+        """Year-over-year revenue growth for the latest reported period, like for like.
+
+        Both observations share one concept, one unit and one period length (a
+        quarter or a year), and the prior one ends a year before the current one.
+        The current period is the latest revenue period the company reports; if
+        it has no comparable prior period, the answer is None rather than an
+        older or mismatched pair.
+
+        The growth paths used to take the first two rows of
+        ``time_series('Revenue')``: whatever concepts the substring matched, in
+        any unit, period length or order. Snowflake's Q1 read -17.96% from two
+        deferred-revenue rows against a filed +25.75% (GH #1671).
+
+        Args:
+            annual_only: Compare fiscal years only. Otherwise the latest period of
+                either length is used, a year when a quarter and a year end together.
+
+        Returns:
+            Dict with ``value`` (percent, 2 dp), ``concept``, ``unit``,
+            ``duration``, ``current_period_end``, ``prior_period_end``,
+            ``current`` and ``prior``; or None when no like-for-like pair exists.
+        """
+        from edgar.ttm.calculator import ANNUAL_MAX_DAYS, ANNUAL_MIN_DAYS, QUARTER_MAX_DAYS, QUARTER_MIN_DAYS
+
+        def length_of(fact):
+            if fact.period_start is None or fact.period_end is None or fact.numeric_value is None:
+                return None
+            days = (fact.period_end - fact.period_start).days
+            if ANNUAL_MIN_DAYS <= days <= ANNUAL_MAX_DAYS:
+                return 'annual'
+            if not annual_only and QUARTER_MIN_DAYS <= days <= QUARTER_MAX_DAYS:
+                return 'quarterly'
+            return None
+
+        # (concept, unit, length, period_end) -> the latest-filed fact for it
+        observations: Dict[tuple, FinancialFact] = {}
+        for variant in _REVENUE_VARIANTS:
+            for fact in self._fact_index['by_concept'].get(variant, []):
+                length = length_of(fact)
+                if length is None:
+                    continue
+                key = (fact.concept, fact.unit, length, fact.period_end)
+                held = observations.get(key)
+                if held is None or (fact.filing_date or date.min) > (held.filing_date or date.min):
+                    observations[key] = fact
+        if not observations:
+            return None
+
+        # The latest period reported under any revenue name; a year outranks a
+        # quarter ending the same day.
+        latest_end = max(k[3] for k in observations)
+        lengths = {k[2] for k in observations if k[3] == latest_end}
+        length = 'annual' if 'annual' in lengths else 'quarterly'
+
+        pairs = []
+        for (concept, unit, obs_length, end), current in observations.items():
+            if end != latest_end or obs_length != length:
+                continue
+            priors = [f for (c, u, ln, e), f in observations.items()
+                      if c == concept and u == unit and ln == length
+                      and ANNUAL_MIN_DAYS <= (end - e).days <= ANNUAL_MAX_DAYS]
+            if not priors:
+                continue
+            prior = max(priors, key=lambda f: f.period_end)
+            if not prior.numeric_value:
+                continue  # growth from nil revenue is undefined
+            local = concept.rsplit(':', 1)[-1]
+            rank = _REVENUE_VARIANTS.index(local) if local in _REVENUE_VARIANTS else len(_REVENUE_VARIANTS)
+            pairs.append((unit != 'USD', rank, current, prior))
+        if not pairs:
+            return None
+
+        # USD first, then the variant order; but a same-period total many times
+        # larger is the consolidated figure the ranked name is a slice of.
+        pairs.sort(key=lambda p: (p[0], p[1]))
+        chosen = pairs[0]
+        for pair in pairs[1:]:
+            if pair[2].unit == chosen[2].unit and is_consolidated_total_over(
+                    pair[2].numeric_value, chosen[2].numeric_value):
+                chosen = pair
+        _, _, current, prior = chosen
+        growth = (current.numeric_value - prior.numeric_value) / abs(prior.numeric_value) * 100
+        return {
+            "value": round(growth, 2),
+            "concept": current.concept,
+            "unit": current.unit,
+            "duration": length,
+            "current_period_end": current.period_end.isoformat(),
+            "prior_period_end": prior.period_end.isoformat(),
+            "current": current.numeric_value,
+            "prior": prior.numeric_value,
+        }
+
+    def _analyze_growth(self) -> Dict[str, Any]:
+        """Analyze growth trends"""
+        growth = self._revenue_growth_yoy()
+        if growth is None:
+            return {"message": "Year-over-year revenue growth not available: no revenue figure "
+                               "for the latest period has a prior-year figure of the same "
+                               "concept, unit and period length"}
+        span = "fiscal year" if growth["duration"] == "annual" else "quarter"
+        return {
+            "revenue_growth_yoy": {
+                "value": growth["value"],
+                "unit": "percent",
+                "period_comparison": f"{span} ended {growth['current_period_end']} vs "
+                                     f"{span} ended {growth['prior_period_end']}",
+                "concept": growth["concept"],
+            }
+        }
+
+    def _analyze_liquidity(self) -> Dict[str, Any]:
+        """Analyze liquidity metrics"""
+        self._suppress_warnings = True
+        try:
+            current_assets = self.get_fact('CurrentAssets')
+            current_liabilities = self.get_fact('CurrentLiabilities')
+        finally:
+            self._suppress_warnings = False
+
+        if current_assets and current_liabilities and current_assets.numeric_value and current_liabilities.numeric_value:
+            current_ratio = current_assets.numeric_value / current_liabilities.numeric_value
+            return {
+                "current_ratio": {
+                    "value": round(current_ratio, 2),
+                    "interpretation": f"{self.name} has ${current_ratio:.2f} in current assets for every $1 of current liabilities"
+                }
+            }
+
+        return {"message": "Insufficient data for liquidity analysis"}
+
+    # Helper methods for standardized concept access (FEAT-411)
+    def _get_standardized_concept_value(self,
+                                      concept_variants: List[str],
+                                      period: Optional[str] = None,
+                                      unit: Optional[str] = None,
+                                      fallback_calculation: Optional[Callable] = None,
+                                      return_detailed: bool = False,
+                                      strict_unit_match: Optional[bool] = None,
+                                      annual: bool = True,
+                                      prefer_consolidated_total: bool = False) -> Optional[float]:
+        """
+        Core method for retrieving standardized concept values with enhanced unit handling.
+
+        Args:
+            concept_variants: List of concept names to try in priority order
+            period: Optional period filter (e.g., "2024-FY", "2024-Q3")
+            unit: Optional unit filter (defaults to USD)
+            fallback_calculation: Optional function to calculate value from components
+            return_detailed: If True, return UnitResult instead of just value
+            strict_unit_match: If True, require exact unit match. If False, allow compatible units.
+                              If None (default), uses strict matching when unit is explicitly provided.
+            annual: If True and period is None, prefer annual (FY) facts. Falls back to most
+                   recent if no annual facts available. Default: True
+            prefer_consolidated_total: If True, a candidate from the same period that
+                   dwarfs the ranked pick is treated as the consolidated total. Only for
+                   concepts whose variants are alternative names for one total (revenue).
+                   See _consolidated_total_fact.
+
+        Returns:
+            Numeric value or None if not found (or UnitResult if return_detailed=True)
+        """
+        from edgar.entity.unit_handling import UnitNormalizer, UnitResult
+
+        # Default to USD if no unit specified
+        target_unit = unit or 'USD'
+
+        # Use strict matching when the caller explicitly specified a unit
+        if strict_unit_match is None:
+            strict_unit_match = unit is not None
+
+        # Suppress warnings from get_fact()/get_annual_fact() during synonym resolution
+        self._suppress_warnings = True
+        try:
+            # Collect a matching fact from every concept variant/taxonomy
+            # prefix rather than returning at the first one that matches
+            # anything. A company that migrated its XBRL tag over time (e.g.
+            # NVIDIA: RevenueFromContractWithCustomerExcludingAssessedTax was
+            # used through FY2022, then dropped in favor of Revenues) can have
+            # real data under an earlier-priority tag that is years stale,
+            # which used to "win" purely by being tried first.
+            candidates = []
+            for concept in concept_variants:
+                # Try with all known taxonomy prefixes
+                for concept_variant in [concept, f'us-gaap:{concept}', f'ifrs-full:{concept}']:
+                    # Use annual fact if requested and no specific period provided
+                    if annual and period is None:
+                        fact = self.get_annual_fact(concept_variant)
+                        # Fallback to most recent if no annual fact available
+                        if fact is None:
+                            fact = self.get_fact(concept_variant, period)
+                    else:
+                        fact = self.get_fact(concept_variant, period)
+                    if fact and fact.numeric_value is not None:
+                        candidates.append(fact)
+
+            # Prefer the most recent fact across all variants (ties broken
+            # toward non-dimensioned/consolidated facts), falling back to an
+            # older candidate only if unit normalization fails for it.
+            ranked = sorted(
+                candidates,
+                key=lambda f: (f.filing_date, f.period_end, not f.is_dimensioned),
+                reverse=True,
+            )
+            for fact in ranked:
+                if prefer_consolidated_total:
+                    # Recency settles which YEAR to answer from; it cannot
+                    # settle which of two concepts tagged for that same year is
+                    # the consolidated total. MetLife tags the ASC-606 slice
+                    # ($2.4B) and Revenues ($77.1B) for FY2025 alike, and the
+                    # variant list ranks the slice first (edgartools-fdye).
+                    fact = _consolidated_total_fact(fact, ranked)
+
+                # Use enhanced unit handling
+                unit_result = UnitNormalizer.get_normalized_value(
+                    fact=fact,
+                    target_unit=target_unit,
+                    apply_scale=True,
+                    strict_unit_match=strict_unit_match
+                )
+
+                if unit_result.success:
+                    if return_detailed:
+                        return unit_result  # type: ignore[return-value]
+                    return unit_result.value
+        finally:
+            self._suppress_warnings = False
+
+        # Try fallback calculation if provided
+        if fallback_calculation:
+            try:
+                fallback_value = fallback_calculation(period, target_unit, strict_unit_match)
+                if fallback_value is not None:
+                    if return_detailed:
+                        return UnitResult(  # type: ignore[return-value]
+                            value=fallback_value,
+                            normalized_unit=UnitNormalizer.normalize_unit(target_unit),
+                            original_unit=target_unit,
+                            success=True,
+                            error_reason="Calculated from components"
+                        )
+                    return fallback_value
+            except Exception as e:
+                # Fallback calculation failed, continue
+                if return_detailed:
+                    return UnitResult(  # type: ignore[return-value]
+                        value=None,
+                        normalized_unit=None,
+                        original_unit=target_unit or "",
+                        success=False,
+                        error_reason=f"Fallback calculation failed: {str(e)}"
+                    )
+
+        # No value found
+        if return_detailed:
+            return UnitResult(  # type: ignore[return-value]
+                value=None,
+                normalized_unit=None,
+                original_unit=target_unit or "",
+                success=False,
+                error_reason="No matching concept found",
+                suggestions=["Try checking if company uses alternative concept names"]
+            )
+
+        return None
+
+    @staticmethod
+    def _components_answer_unit(component_unit: Optional[str], target_unit: Optional[str],
+                                strict_unit_match: bool) -> bool:
+        """
+        Whether a figure derived from components in `component_unit` answers a
+        request for `target_unit`.
+
+        Same rule the direct path uses: an exact match always answers, and a
+        merely compatible unit answers only when the caller did not pin the unit
+        — where the direct path would return the value with a conversion
+        suggestion rather than refuse it.
+        """
+        from edgar.entity.unit_handling import UnitNormalizer
+
+        if not target_unit:
+            return True
+        if UnitNormalizer.normalize_unit(component_unit or '') == UnitNormalizer.normalize_unit(target_unit):
+            return True
+        return not strict_unit_match and UnitNormalizer.are_compatible(component_unit, target_unit)
+
+    def _calculate_revenue_from_components(self, period: Optional[str] = None, unit: str = 'USD',
+                                               strict_unit_match: bool = False) -> Optional[float]:
+        """
+        Calculate revenue from Gross Profit + Cost of Revenue when explicit revenue not available.
+
+        This follows the same logic as the enhanced_statement.py revenue deduplication.
+        """
+        from edgar.entity.unit_handling import UnitNormalizer
+
+        self._suppress_warnings = True
+        try:
+            gross_profit_fact = self.get_fact('GrossProfit', period)
+            cost_of_revenue_fact = self.get_fact('CostOfRevenue', period)
+
+            # Try alternative cost concepts
+            if not cost_of_revenue_fact:
+                for cost_concept in ['CostOfGoodsAndServicesSold', 'CostOfGoodsSold', 'CostOfSales']:
+                    cost_of_revenue_fact = self.get_fact(cost_concept, period)
+                    if cost_of_revenue_fact:
+                        break
+        finally:
+            self._suppress_warnings = False
+
+        if (gross_profit_fact and cost_of_revenue_fact and
+            gross_profit_fact.numeric_value is not None and
+            cost_of_revenue_fact.numeric_value is not None):
+
+            # Use enhanced unit compatibility checking
+            gp_result = UnitNormalizer.get_normalized_value(gross_profit_fact, target_unit=unit, apply_scale=True,
+                                                            strict_unit_match=strict_unit_match)
+            cr_result = UnitNormalizer.get_normalized_value(cost_of_revenue_fact, target_unit=unit, apply_scale=True,
+                                                            strict_unit_match=strict_unit_match)
+
+            if gp_result.success and cr_result.success:
+                return gp_result.value + cr_result.value
+
+            # Try compatibility check if direct match failed.
+            #
+            # Compatibility BETWEEN THE COMPONENTS says only that they can be
+            # combined with each other. The result still has to answer the unit
+            # the caller asked for, and normalising with no target at all did
+            # not check that: Apple's GrossProfit and CostOfGoodsAndServicesSold
+            # are both USD, so their sum was returned as the answer to
+            # unit='EUR' and to unit='shares' alike.
+            if (UnitNormalizer.are_compatible(gross_profit_fact.unit, cost_of_revenue_fact.unit)
+                    and self._components_answer_unit(gross_profit_fact.unit, unit, strict_unit_match)):
+                # Same unit type but different representations - try calculation anyway
+                gp_normalized = UnitNormalizer.get_normalized_value(gross_profit_fact, apply_scale=True, strict_unit_match=False)
+                cr_normalized = UnitNormalizer.get_normalized_value(cost_of_revenue_fact, apply_scale=True, strict_unit_match=False)
+
+                if gp_normalized.success and cr_normalized.success:
+                    return gp_normalized.value + cr_normalized.value
+
+        return None
+
+    def _calculate_gross_profit_from_components(self, period: Optional[str] = None, unit: str = 'USD',
+                                                    strict_unit_match: bool = False) -> Optional[float]:
+        """
+        Calculate gross profit from Revenue - Cost of Revenue when explicit gross profit not available.
+        """
+        from edgar.entity.unit_handling import UnitNormalizer
+
+        # Try to get revenue using standardized method (but avoid infinite recursion)
+        self._suppress_warnings = True
+        try:
+            revenue_fact = None
+            for concept in ['Revenues', 'RevenueFromContractWithCustomerExcludingAssessedTax', 'SalesRevenueNet', 'Revenue']:
+                revenue_fact = self.get_fact(concept, period)
+                if revenue_fact:
+                    break
+
+            cost_of_revenue_fact = self.get_fact('CostOfRevenue', period)
+
+            # Try alternative cost concepts
+            if not cost_of_revenue_fact:
+                for cost_concept in ['CostOfGoodsAndServicesSold', 'CostOfGoodsSold', 'CostOfSales']:
+                    cost_of_revenue_fact = self.get_fact(cost_concept, period)
+                    if cost_of_revenue_fact:
+                        break
+        finally:
+            self._suppress_warnings = False
+
+        if (revenue_fact and cost_of_revenue_fact and
+            revenue_fact.numeric_value is not None and
+            cost_of_revenue_fact.numeric_value is not None):
+
+            # Use enhanced unit compatibility checking
+            rev_result = UnitNormalizer.get_normalized_value(revenue_fact, target_unit=unit, apply_scale=True,
+                                                             strict_unit_match=strict_unit_match)
+            cr_result = UnitNormalizer.get_normalized_value(cost_of_revenue_fact, target_unit=unit, apply_scale=True,
+                                                            strict_unit_match=strict_unit_match)
+
+            if rev_result.success and cr_result.success:
+                return rev_result.value - cr_result.value
+
+            # Try compatibility check if direct match failed.
+            #
+            # Compatibility BETWEEN THE COMPONENTS says only that they can be
+            # combined with each other. The result still has to answer the unit
+            # the caller asked for, and normalising with no target at all did
+            # not check that: Apple's GrossProfit and CostOfGoodsAndServicesSold
+            # are both USD, so their sum was returned as the answer to
+            # unit='EUR' and to unit='shares' alike.
+            if (UnitNormalizer.are_compatible(revenue_fact.unit, cost_of_revenue_fact.unit)
+                    and self._components_answer_unit(revenue_fact.unit, unit, strict_unit_match)):
+                # Same unit type but different representations - try calculation anyway
+                rev_normalized = UnitNormalizer.get_normalized_value(revenue_fact, apply_scale=True)
+                cr_normalized = UnitNormalizer.get_normalized_value(cost_of_revenue_fact, apply_scale=True)
+
+                if rev_normalized.success and cr_normalized.success:
+                    return rev_normalized.value - cr_normalized.value
+
+        return None
+
+    def get_concept_mapping_info(self, concept_variants: List[str]) -> Dict[str, Any]:
+        """
+        Get information about which concept variants are available for this company.
+
+        Useful for debugging standardized method behavior and understanding
+        company-specific concept usage.
+
+        Args:
+            concept_variants: List of concept names to check
+
+        Returns:
+            Dictionary with availability and confidence information
+
+        Example:
+            >>> info = facts.get_concept_mapping_info(['Revenue', 'Revenues', 'NetSales'])
+            >>> print(f"Available concepts: {info['available']}")
+        """
+        info = {
+            'available': [],
+            'missing': [],
+            'fact_details': {}
+        }
+
+        self._suppress_warnings = True
+        try:
+            for concept in concept_variants:
+                fact = self.get_fact(concept)
+                if fact:
+                    info['available'].append(concept)
+                    info['fact_details'][concept] = {
+                        'label': fact.label,
+                        'unit': fact.unit,
+                        'latest_period': f"{fact.fiscal_period} {fact.fiscal_year}",
+                        'latest_value': fact.numeric_value,
+                        'filing_date': fact.filing_date
+                    }
+                else:
+                    info['missing'].append(concept)
+        finally:
+            self._suppress_warnings = False
+
+        return info
+
+    # Enhanced methods with detailed unit information (FEAT-411 Unit Handling)
+    def get_revenue_detailed(self, period: Optional[str] = None, unit: Optional[str] = None, annual: bool = True):
+        """
+        Get revenue with detailed unit information and error reporting.
+
+        Args:
+            period: Optional period in format "YYYY-QN" or "YYYY-FY"
+            unit: Optional unit filter (defaults to USD)
+            annual: If True (default), prefer annual FY facts when period is not specified.
+                   Falls back to most recent if no annual facts available.
+
+        Returns:
+            UnitResult with value, unit info, and error details
+
+        Example:
+            >>> result = facts.get_revenue_detailed()  # Returns annual revenue details (default)
+            >>> if result.success:
+            ...     print(f"Revenue: ${result.value/1e9:.1f}B (unit: {result.normalized_unit})")
+            ... else:
+            ...     print(f"Error: {result.error_reason}")
+            ...     for suggestion in result.suggestions:
+            ...         print(f"  - {suggestion}")
+        """
+        return self._get_standardized_concept_value(
+            concept_variants=_REVENUE_VARIANTS,
+            period=period,
+            unit=unit,
+            fallback_calculation=self._calculate_revenue_from_components,
+            return_detailed=True,
+            annual=annual,
+            prefer_consolidated_total=True
+        )
+
+    def get_net_income_detailed(self, period: Optional[str] = None, unit: Optional[str] = None, annual: bool = True):
+        """
+        Get net income with detailed unit information and error reporting.
+
+        Args:
+            period: Optional period in format "YYYY-QN" or "YYYY-FY"
+            unit: Optional unit filter (defaults to USD)
+            annual: If True (default), prefer annual FY facts when period is not specified.
+                   Falls back to most recent if no annual facts available.
+
+        Returns:
+            UnitResult with value, unit info, and error details
+        """
+        return self._get_standardized_concept_value(
+            concept_variants=[
+                'NetIncomeLoss',
+                'ProfitLoss',
+                'NetIncome',
+                'NetEarnings',
+                'NetIncomeLossAttributableToParent'
+            ],
+            period=period,
+            unit=unit,
+            return_detailed=True,
+            annual=annual
+        )
+
+    def check_unit_compatibility(self, concept1: str, concept2: str, period: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Check unit compatibility between two concepts for calculations.
+
+        Args:
+            concept1: First concept name
+            concept2: Second concept name
+            period: Optional period filter
+
+        Returns:
+            Dictionary with compatibility info and suggestions
+
+        Example:
+            >>> compat = facts.check_unit_compatibility('Revenue', 'CostOfRevenue')
+            >>> if compat['compatible']:
+            ...     print("Units are compatible for calculations")
+            ... else:
+            ...     print(f"Unit issue: {compat['issue']}")
+        """
+        from edgar.entity.unit_handling import UnitNormalizer
+
+        self._suppress_warnings = True
+        try:
+            fact1 = self.get_fact(concept1, period)
+            fact2 = self.get_fact(concept2, period)
+        finally:
+            self._suppress_warnings = False
+
+        result = {
+            'compatible': False,
+            'concept1': concept1,
+            'concept2': concept2,
+            'fact1_found': fact1 is not None,
+            'fact2_found': fact2 is not None,
+            'issue': None,
+            'suggestions': []
+        }
+
+        if not fact1:
+            result['issue'] = f"Concept '{concept1}' not found"
+            result['suggestions'].append(f"Check if {concept1} exists for this company")
+            return result
+
+        if not fact2:
+            result['issue'] = f"Concept '{concept2}' not found"
+            result['suggestions'].append(f"Check if {concept2} exists for this company")
+            return result
+
+        # Check unit compatibility
+        compatible = UnitNormalizer.are_compatible(fact1.unit, fact2.unit)
+        result['compatible'] = compatible
+
+        result['fact1_unit'] = fact1.unit
+        result['fact2_unit'] = fact2.unit
+        result['fact1_normalized'] = UnitNormalizer.normalize_unit(fact1.unit)
+        result['fact2_normalized'] = UnitNormalizer.normalize_unit(fact2.unit)
+
+        if not compatible:
+            result['issue'] = f"Incompatible units: {fact1.unit} vs {fact2.unit}"
+
+            unit1_type = UnitNormalizer.get_unit_type(fact1.unit)
+            unit2_type = UnitNormalizer.get_unit_type(fact2.unit)
+
+            if unit1_type != unit2_type:
+                result['suggestions'].append(f"Unit type mismatch: {unit1_type.value} vs {unit2_type.value}")
+            else:
+                result['suggestions'].append("Same unit type but different representations")
+
+        return result

@@ -1,0 +1,173 @@
+interactions:
+- request:
+    body: ''
+    headers:
+      Accept:
+      - '*/*'
+      Accept-Encoding:
+      - gzip, deflate, br, zstd
+      Connection:
+      - keep-alive
+      Host:
+      - www.sec.gov
+    method: GET
+    uri: https://www.sec.gov/Archives/edgar/data/1875558/000110465926017097/0001104659-26-017097.txt
+  response:
+    body:
+      string: "<SEC-DOCUMENT>0001104659-26-017097.txt : 20260320\n<SEC-HEADER>0001104659-26-017097.hdr.sgml
+        : 20260320\n<ACCEPTANCE-DATETIME>20260218163328\n<PRIVATE-TO-PUBLIC>\nACCESSION
+        NUMBER:\t\t0001104659-26-017097\nCONFORMED SUBMISSION TYPE:\tCORRESP\nPUBLIC
+        DOCUMENT COUNT:\t\t2\nFILED AS OF DATE:\t\t20260218\n\nFILER:\n\n\tCOMPANY
+        DATA:\t\n\t\tCOMPANY CONFORMED NAME:\t\t\tNuvectis Pharma, Inc.\n\t\tCENTRAL
+        INDEX KEY:\t\t\t0001875558\n\t\tSTANDARD INDUSTRIAL CLASSIFICATION:\tPHARMACEUTICAL
+        PREPARATIONS [2834]\n\t\tORGANIZATION NAME:           \t03 Life Sciences\n\t\tEIN:\t\t\t\t862405608\n\t\tSTATE
+        OF INCORPORATION:\t\t\tDE\n\t\tFISCAL YEAR END:\t\t\t1231\n\n\tFILING VALUES:\n\t\tFORM
+        TYPE:\t\tCORRESP\n\n\tBUSINESS ADDRESS:\t\n\t\tSTREET 1:\t\t1 BRIDGE PLAZA,
+        SUITE 275\n\t\tCITY:\t\t\tFORT LEE\n\t\tSTATE:\t\t\tNJ\n\t\tZIP:\t\t\t07024\n\t\tBUSINESS
+        PHONE:\t\t360-837-7232\n\n\tMAIL ADDRESS:\t\n\t\tSTREET 1:\t\t1 BRIDGE PLAZA,
+        SUITE 275\n\t\tCITY:\t\t\tFORT LEE\n\t\tSTATE:\t\t\tNJ\n\t\tZIP:\t\t\t07024\n</SEC-HEADER>\n<DOCUMENT>\n<TYPE>CORRESP\n<SEQUENCE>1\n<FILENAME>filename1.htm\n<TEXT>\n<HTML>\n<HEAD>\n<TITLE></TITLE>\n</HEAD>\n<BODY>\n\n<P
+        STYLE=\"font: 10pt Times New Roman, Times, Serif; margin: 0pt 0\"></P>\n\n<P
+        STYLE=\"font: 10pt Times New Roman, Times, Serif; margin: 0pt 0\">&nbsp;</P>\n\n<P
+        STYLE=\"text-align: center; margin-top: 0pt; margin-bottom: 0pt\"><IMG SRC=\"tm266190d3_corresp-img01.jpg\"
+        ALT=\"\"></P>\n\n<P STYLE=\"font: 10pt Times New Roman, Times, Serif; margin:
+        0pt 0\">&nbsp;</P>\n\n<P STYLE=\"font: 10pt Times New Roman, Times, Serif;
+        margin: 0pt 0; text-align: center\">February 18, 2026</P>\n\n<P STYLE=\"font:
+        10pt Times New Roman, Times, Serif; margin: 0pt 0\">&nbsp;</P>\n\n<P STYLE=\"font:
+        10pt Times New Roman, Times, Serif; margin: 0pt 0\"><FONT STYLE=\"text-transform:
+        uppercase\"><B><U>VIA EDGAR</U></B></FONT></P>\n\n<P STYLE=\"font: 10pt Times
+        New Roman, Times, Serif; margin: 0pt 0\">&nbsp;</P>\n\n<P STYLE=\"font: 10pt
+        Times New Roman, Times, Serif; margin: 0pt 0\">Securities and Exchange Commission</P>\n\n<P
+        STYLE=\"font: 10pt Times New Roman, Times, Serif; margin: 0pt 0\">Division
+        of Corporation Finance</P>\n\n<P STYLE=\"font: 10pt Times New Roman, Times,
+        Serif; margin: 0pt 0\">100 F Street, N.E.</P>\n\n<P STYLE=\"font: 10pt Times
+        New Roman, Times, Serif; margin: 0pt 0\">Washington, D.C. 20549</P>\n\n<P
+        STYLE=\"font: 10pt Times New Roman, Times, Serif; margin: 0pt 0\">&nbsp;</P>\n\n<TABLE
+        CELLSPACING=\"0\" CELLPADDING=\"0\" STYLE=\"font: 10pt Times New Roman, Times,
+        Serif; width: 100%\">\n  <TR STYLE=\"vertical-align: top\">\n    <TD STYLE=\"width:
+        0.35in\">&nbsp;</TD>\n    <TD STYLE=\"width: 0.35in\"><B>Re:</B></TD>\n    <TD><B>Nuvectis
+        Pharma, Inc.<BR>\nRegistration Statement on Form S-3</B></TD></TR>\n  <TR
+        STYLE=\"vertical-align: top\">\n    <TD>&nbsp;</TD>\n    <TD>&nbsp;</TD>\n
+        \   <TD><B>File No. &nbsp;333-293459</B></TD></TR>\n  </TABLE>\n<P STYLE=\"font:
+        10pt Times New Roman, Times, Serif; margin: 0pt 0\">&nbsp;</P>\n\n<P STYLE=\"font:
+        10pt Times New Roman, Times, Serif; margin: 0pt 0; text-indent: 0.5in\">Ladies
+        and Gentlemen:</P>\n\n<P STYLE=\"font: 10pt Times New Roman, Times, Serif;
+        margin: 0pt 0\">&nbsp;</P>\n\n<P STYLE=\"font: 10pt Times New Roman, Times,
+        Serif; margin: 0pt 0; text-align: justify; text-indent: 0.5in\">Nuvectis Pharma,
+        Inc. (the\n&#8220;Company&#8221;) hereby requests, pursuant to Rule 461 of
+        the General Rules and Regulations under the Securities Act of 1933, as\namended,
+        that the effective date of the above-referenced Registration Statement be
+        accelerated so as to permit it to become effective\nat 4:30 p.m. EST on February
+        20, 2026, or as soon thereafter as practicable.</P>\n\n<P STYLE=\"font: 10pt
+        Times New Roman, Times, Serif; margin: 0pt 0; text-align: justify\">&nbsp;</P>\n\n<P
+        STYLE=\"font: 10pt Times New Roman, Times, Serif; margin: 0pt 0; text-align:
+        justify; text-indent: 0.5in\">Please contact Matt Mamak\nof Alston &amp; Bird
+        LLP, the Company&#8217;s counsel, at (212) 210-1256, as soon as the Registration
+        Statement has been declared effective,\nor if you have any other questions
+        or concerns regarding this matter.</P>\n\n<P STYLE=\"font: 10pt Times New
+        Roman, Times, Serif; margin: 0pt 0; text-align: justify\">&nbsp;</P>\n\n<P
+        STYLE=\"font: 10pt Times New Roman, Times, Serif; margin-top: 0; margin-bottom:
+        0; margin-left: 0in; text-indent: 0in; text-align: justify\"></P>\n\n<TABLE
+        CELLPADDING=\"0\" CELLSPACING=\"0\" STYLE=\"border-collapse: collapse; font:
+        10pt Times New Roman, Times, Serif; width: 100%\">\n<TR STYLE=\"vertical-align:
+        top; text-align: left\">\n  <TD>&nbsp;</TD>\n  <TD COLSPAN=\"2\"><B>Nuvectis
+        Pharma, Inc.</B></TD></TR>\n<TR STYLE=\"vertical-align: top; text-align: left\">\n
+        \ <TD>&nbsp;</TD>\n  <TD COLSPAN=\"2\">&nbsp;</TD></TR>\n<TR STYLE=\"vertical-align:
+        top; text-align: left\">\n  <TD>&nbsp;</TD>\n  <TD COLSPAN=\"2\">&nbsp;</TD></TR>\n<TR
+        STYLE=\"vertical-align: top; text-align: left\">\n  <TD STYLE=\"width: 55%\">&nbsp;</TD>\n
+        \ <TD STYLE=\"width: 5%\">By:</TD>\n  <TD STYLE=\"width: 40%\"><I><U>/s/ Ron
+        Bentsur</U></I></TD></TR>\n<TR STYLE=\"vertical-align: top; text-align: left\">\n
+        \ <TD>&nbsp;</TD>\n  <TD>Name:</TD>\n  <TD>Ron Bentsur</TD></TR>\n<TR STYLE=\"vertical-align:
+        top; text-align: left\">\n  <TD>&nbsp;</TD>\n  <TD>Title:</TD>\n  <TD>Chairman,
+        Chief Executive Officer and President</TD></TR>\n</TABLE>\n\n<P STYLE=\"font:
+        10pt Times New Roman, Times, Serif; margin-top: 0; margin-bottom: 0; margin-left:
+        0in; text-indent: 0in; text-align: justify\">&nbsp;</P>\n\n<P STYLE=\"font:
+        10pt Times New Roman, Times, Serif; margin-top: 0; margin-bottom: 0; margin-left:
+        0in; text-indent: 0in; text-align: justify\"></P>\n\n<!-- Field: Page; Sequence:
+        1; Options: Last -->\n    <DIV STYLE=\"margin-top: 12pt; margin-bottom: 6pt;
+        border-bottom: Black 1pt solid\"><P STYLE=\"margin: 0pt\">&nbsp;</P></DIV>\n
+        \   <!-- Field: /Page -->\n\n</BODY>\n</HTML>\n</TEXT>\n</DOCUMENT>\n<DOCUMENT>\n<TYPE>GRAPHIC\n<SEQUENCE>2\n<FILENAME>tm266190d3_corresp-img01.jpg\n<DESCRIPTION>GRAPHIC\n<TEXT>\nbegin
+        644 tm266190d3_corresp-img01.jpg\nM_]C_X  02D9)1@ ! 0$ 8 !@  #_VP!#  ,\" @,\"
+        @,# P,$ P,$!0@%!00$\nM!0H'!P8(# H,# L*\"PL-#A(0#0X1#@L+$!80$1,4%145# \\7&!84&!(4%13_\nMVP!#
+        0,$! 4$!0D%!0D4#0L-%!04%!04%!04%!04%!04%!04%!04%!04%!04\nM%!04%!04%!04%!04%!04%!04%!04%!3_P
+        \ 1\" !7 *,# 2(  A$! Q$!_\\0\nM'P   04! 0$! 0$           $\" P0%!@<(\"0H+_\\0
+        M1   @$# P($ P4%\nM! 0   %] 0(#  01!1(A,4$&$U%A!R)Q%#*!D:$((T*QP152T? D,V)R@@D*\nM%A<8&1HE)B<H*2HT-38W.#DZ0T1%1D=(24I35%565UA96F-D969G:&EJ<W1U\nM=G=X>7J#A(6&AXB)BI*3E)66EYB9FJ*CI*6FIZBIJK*SM+6VM[BYNL+#Q,7&\nMQ\\C)RM+3U-76U]C9VN'BX^3EYN?HZ>KQ\\O/T]?;W^/GZ_\\0
+        'P$  P$! 0$!\nM 0$! 0        $\" P0%!@<(\"0H+_\\0 M1$  @$\"! 0#! <%! 0  0)W
+        \ $\"\nM Q$$!2$Q!A)!40=A<1,B,H$(%$*1H;'!\"2,S4O 58G+1\"A8D-.$E\\1<8&1HF\nM)R@I*C4V-S@Y.D-$149'2$E*4U155E=865IC9&5F9VAI:G-T=79W>'EZ@H.$\nMA8:'B(F*DI.4E9:7F)F:HJ.DI::GJ*FJLK.TM;:WN+FZPL/$Q<;'R,G*TM/4\nMU=;7V-G:XN/DY>;GZ.GJ\\O/T]?;W^/GZ_]H
+        # ,!  (1 Q$ /P#]4Z**RO$'\nMB\"P\\+:1<:GJ=PMK96Z[GD;] !W)Z8'6JC%S:C%7;(G.-.+G-V2U;>R-)F\"*6\nM8@*.<FO*?&7[2_@KPA/+;+>2:O=1@Y2P
+        = ?0N2 ?PS7SK\\9/VC-8\\?W,UAI\nM4CZ;H RODH</.,]7/<8_A''UZUX];VTM[.(XT::5S@*/F))_GS7Z'EW\"ZE%5\nM,<[?W5^K_P
+        OO/P_//$1PJ/#Y1%2MISRV?\\ A7ZO[CZ9UK]M6<RNNE>'8D0#\nMY7NYR^3]!MQ^=<_%^V9XN64M)INDNF?NB*08'_?RN*\\._L\\>._$L:2PZ'-;0\nM.-WF796']&()KI1^R!XY\"YSIQ/I]HY_EU_&O7>%R\"A[DN2_G*[_,^968\\;8R\nMU6FJEGV@DO\\
+        TG4[#1OVU9Q,BZIX=A>,\\,]K.R%?H\"&S^=>O^!OV@O!WCJ2.\nM\"\"_.GWK@8M;[$9)/8-DJ3[9S[5\\C^)OV?O'/A>-YKC0IIH$&3+:;9A_XX20/\nMJ
+        !7GDB2VDI5@\\4BDCG((J9Y#E6.@Y85V?>+NONN_P!\"Z?&?$>355#,H<R[3\nMCROY-)?DS]1Z*^+/@Q^TSJ/@V6#2_$$DNHZ(6\"B5B6EMP3U![K_L_ECH?LC3\nM=3M=8L(+VQG2ZM)T#Q31G*NIZ$'TK\\]S+*Z^65.6KJGL^C_X/D?MV1<0X//Z\nM/M,,[27Q1>Z_S79_D]\"W1117CGU
+        4444 %%%% !1110 4444 %%%% $<DBPH\nMS,P15&2QX %?#7[0_P 9)?B-XB>PL92N@6#E855N)VZ&0^YYQZ#W)KZ)_:<\\\nM=/X/^'$]O;2;+S56^R*0<$1X_>'\\L+_P.OB+2=-N=>U.VLK9&FNKJ58D0<DL\nMQP,?B1WZU^C<+Y?#E>/JK;1>7=_I]Y^%^(>=U>>&389_%9RMUO\\
+        #']7WT.K\nM^%?PHU3XI:X+&Q'E6T7S7%VX.R%3_,^@SV/;)'VY\\/OA+X<^&]G''IEBC7>T\nM>9?3*&F<]^>P]A4WPQ^'UE\\-?\"=II-JB><%#W,ZCF:4CYC].P]A785X.<9U5\nMQ]1TZ;M36R[^;_R_4^RX6X4P^24(UJT5*NUJ]^7RCZ;-[OT\"BBBOES]\"\"O-/\nMB?\\
+        \ OP[\\2K65Y+=-/U8@E+^W0 D_P\"V/XAVR>?0UZ71710Q%7#352C+E:['\nM%B\\'A\\?1=#%04X/H_P\"M'YK4_/'Q'\\'O$'ACQ-/H,]N7OL;[4*-PNES_
+        ,LS\nMCD^W4X(QGBO8OV1_'=_;:M>^#[V0\"#:TT$,Q(DCD7[RJ.^1DD<?=SW-?0WCC\nMP-I_CO219WJM%/$?,MKR+B6WD[,I&#^'?'K@CP7XN>#-5\\&WGA[XCI;I%K-E\nM<)%JJVQ&R9@V%F]
+        )  &'7Y@.Y-?>QS6&<X?ZG724Y:+_%T?H]O)Z;/3\\=EP\nMW4X6QBS3!2;I0=Y+_IV]))^<=UTDE?1Q=_J\"BH+2ZCO;6&YA;=%,BR(WJI&0\nM?RJ>OSMJVA^W)W5T%%%%(84444
+        %%%% !1110 4444 ?'G[9VN-<^--)TL$[\nM+2R\\SV#.S9_15K$_9-\\-)KGQ/CO)5\\R/3;=[D9/&_(4<?5@1_NYH_:[##XKO\nMG_GUB(QZ;?\\
+        &NK_ &)]O]L>(\\XW^0F/7&[G^E?K$G]7X>O#^5?^3/7\\S^;(\nM+Z[QTXUM;5'_ .21T_\\
+        24?1NI?$#PSHGB6Q\\.ZAX@TVQUZ^ :TTVYND2XG!\nM) *1DY;)5AP.M.T[QYX;UGQ-?>'K'7=/O->L%WW>FP7*/<6Z\\<N@.5^\\O4=Z\nM^!/V]O!.M_$3]KOX?Z%X;NOL7B\";P[Y^GS%RA\\^&2[FC4,/NDM'M![$@FO)?\nMA9\\8/&%WXJ^/?CU'?0?&B>&5DF>WCVM%<)=V<4K!&'RD[6)&.,D=J_/88%3I\nMJ:EJU^;LOD?T0Z]I.+7]6N?KS17YR^!?VD/%_P
+        3_B?\\&/\"6F?$:X;^VO#$T\nM6MO9^4S1:B8KO:[Y7B1\"L+8_V1ZU4^'7[1?Q@\\;>)?#G@!]2U,>)?!TVKWWB\nMQXXE$E_%;$/%;DA>-S*8,@
+        _O%-9/ U%>[6FOY_Y?BBU7B]OZV_S/TEHK\\K?\nMAS^U-\\9=<U7PWXFB\\6-?W=_K9M[K1;^_TVWL9H<K^YB@:03*V#@-M[C!)Z]C\nM_P
+        +\\\\:^-/%OQ(UO6/CC;_\"A_#.MK8Z=X<NK)94DB$S*=\\0!DEP%P<*_.2=J\nMXQ3P$XNSDOQ[V[\"5>+5TC]#9M9L+35+73IKZVBU\"Z#-!:O*JRRA>6**3E@.I\nMQ7-C7/#'QB\\*:S9Z'KFG:Y9LKV<TVGW*3K#-M!
+        )4G#+D'%?\"TC:I?\\ _!0W\nMPK?77Q$6S&IZ=97]M>FV$4=Q#(BL+&))&!\"S?,BY^<>9TS7'^
+        _BUXYTG]GC\nM7IO#'B'2O#FI7'CB2WF\"&STRXNK<01$QP.R+'OW,,L<M@KVR#<,(XN,H2UT?\nMI?\\
+        X8BI.-2,J<XW3NGYH_1#1?%NE_#SX7>'[SQAJMIX?BAL[>UFN=2G6!!*\nM$ VEF(&3M/%6=*^,_@'7=&O]5T[QKH-]IFGA6N[NVU*&2.W#-A3(P8A<G@9K\nMX.T+XK^(_B;\\.K71K_4KWQ-XDT/XD:'##8^*%A\\E&DDF$<+W,(/G(6C8,VS(\nM[
+        A@!Z#\\?OA)XLL? 'Q(\\?\\ B?3O\"?AV0^&H]$M]+\\+B219=U_!*9YY'2/)4\nMH H\"GACS2J4%*H^=V;?Y_P##A1_=4HPCJHI+STT/NBBOCWQ[XR\\4_!7Q!XU\\\nM+7'Q$U_4X9O#^FZG::G=65M=WMO>W&H/:M';IB.,+(
+        -H<[8R<]L'CU^)OQ&\nMTRT^('A5?$VNZ/?66K^&K:SEUB]LM2U\"P^W73Q3AY85\\LY55/EMDKG_:KF6%\nME)737]6_S-W42/O*BOAWXC:UX_\\
+        !;?&%[+XG^(Y$^'%AI-UIRS_ &9C=S3(\nM7<W1\\K]XI QM&!SFMCQ7X\\\\4?\"S6O'?A2Y^('B'4S<6VA2Z??M9VUQ?K=WL\\\nMT4L%L#Y<48D$7RER5BZC/<^K-[27X^7^8>T7;^OZ1]E5D76OZ98:MI^EW-_;\nMVVI:@)3:6DLH66X$8!D\\M3RVT$$XZ9KYY_9D^(NNIXK^)OAWQAK%['9Z!=:<\nMEK'XCU.UN[JV>XC?=%)<P
+        (Q+(N$Y*YQUJQ^TE?3Z9\\</A+>6TIAN;;2?%,T\nM4B_>5UL(V!Y^@J/8M5.1OI^ERN;2Y]*T5\\.V/Q*^(/P\\\\,>
+        ?%C^,M3\\67GB\nMSP+JVMW.FZI'$UM'=6UA'<P>0L:*5Y;:W)W=>IKU?X0Z\\OAO5M#NM8^,C^)H\nM]=\\.#6+K3-7$)1'S%NNX98PJP0YD*>6V021@DJ:<L.XJ]_S$IIGT7142R*R@\nMJ05(R\"\".117*:'R3^V=H!@\\4:+K\"JP6ZM3;LPZ9C8_EQ(*Y[]DKQ&-%^)WV.\nM:39'J5N]NH(X+C#CZ?=Q^-?1/[17@5O'/PXO$MXQ)?6!^V0C'+!1\\ZC'JN3C\nMN0*^%]&U:Z\\.:S:WUM(8;NSF65''\\+*<_CT!K]6RAQS/*)85O5)Q_5/^NQ_.\nM'$\\9</\\
+        %%/,TO<DU/UZ27K_ )H_1;4/ GAS5?%5CXEO=\"T^[\\0Z>GE6FJ36\nMRM<VZ?-\\J.1E1\\[]#_$U5(OA9X-@U;6-4C\\*Z-'J.LQ/#J-RMC%OO4?!=93M\nM^=6P,[NM3_#GQS9?$7PE8ZS9,!YR[9H@>8I1]Y#^/3U&/6NIK\\OJ1J49NG.Z\nM:T9_1%\"M2Q-*-:D[QDDT^Z?4X#P[\\#/A[X1OM/O-%\\$Z#I=[IS.UI=6NGQ)+\nM\"6R&*N!D9!(K;TWP#X;T3Q)J/B#3]!TZRUS41B\\U&WMD2>XZ??<#+=!U]*Z2\nMBLW.3W9M9(X#3_@9\\/-,\\5_\\)+9^!]!MM>\\SS1J$6GQ+*LG7>\"%X;/.X<T:Y\nM\\#OA]XG\\2+X@U?P3H6I:V\"&-]<Z?')*S#&\"S$?,1QC.:[^BGSSO>[\"R[''^(\nM/A9X0\\5^(],\\0:QX:TO4]<TQE:SU&ZM$>>
+        JVY-KD9&&Y'H>:HR? WX>2^'[\nMK0V\\$Z VC75S]LFL?[/B\\IY\\;?-*XQOQQNZUWI( R>E9$?B.TFL+Z]0LUG:N\nMR&4#B1EX;9Z_-\\ON00*J+J/X6R).$=SF_#WPH\\$^'[%-)TKPEH]AIMC>17T-\nMO;64:(EVGS)-P/\\
+        6+D8;J,UTVO>'],\\5:3<Z9K%A;ZGIMP );2ZC$D4@!!\nM93D'! /U%2Z+;RP6\"-<#%S*3+*/1F.2/P^[^%:-*;?-N.'PG+Z_\\/_#/BN2^\nMDUG0-.U1[ZT6PN6N[5)3-;JYD6)B1RH<E@.S<UEZ3\\%O
+        7A^%8=.\\'Z+91YA\nM)$-C&NXQ2>9$S<?,5<[@QZ'G-=Y14\\TDK)E61S6H> O#>KG6OMV@Z?=#6DCB\nMU/SK=&^VI&,(LN1\\X4'C/2HM=^''A7Q4=2&K^'=-U+^T8([2\\-U:HYGBC8M&\nMC9'(4LQ7^Z3D5U5%',UU\"QYCJG[/G@*]\\/R:':^';'1;\">:TEF72K6.!IA;2\nM^;$K,%Y^;//WOF;D9S78ZOX3T?7K^TO=2TJSO[NTCFA@GN(
+        [Q)*H255)&0'\nM48;'6MVBASD]V%D<Y!X'\\/6KZ*T&C6,1T6![;3\"ENH^Q1,H1DBX^12JJN!U\nM%8>G_
+        SX>Z39:Q9V?@G0K6TU@;=0@BT^,1W*YW!74#E<_-MZ ]J[^BA2DMF%\nMD11JL,:QHNQ% 555<
+        \ =A14M%2,*^-/VD/@0WA&\\E\\1Z+$7T>ZD)G@53_HSL\nM?;^$YX].G7&?LNJ]Y9P:A;26US\"EQ;RJ4DBE4,K
+        ]00>HKU\\LS&KEM?VL-4]\nMUW7];'S6?Y%A\\^PCP];22UC+K%_Y/JNOK8^ O@[\\8M1^%.MB12USI-P0+JTS\nMPP]1Z,/ZFON/P;XYT;Q[I27^C7J747&],@21$]G7L?Y]LBOG;XP_LJRPSS:O\nMX/B,\\#-OETH-AU]?+)ZCVZ^F<UYCX9\\/ZOI6HBX\\)ZW)I>MQ-M?2[V7[-<!O\nM[H+820=<@<\\?=[U]OC,-@,\\I_6J$^6?7_P\"V73UV]=#\\ERG'9UPC6>7XRDZE\nM*_NI/7S]FW\\7=PWZV6K/OFBOD^#]IOQYX+/V?Q3X9$[K\\H>6%[9W/KG&W!]E\nMKL-*_:\\TB^5$?PSJQN&_Y96VR3!QZL5KY.ID&/@N:,%)=TTT?I-#C+)JTO9S\nMJN$_Y91DG^5OQ/H\"HI)%AC9W8(BC+,W
+        \ ]:\\@C^-GB;Q&FWPU\\/]3E<D 3:E\nM^YC7WSC!_!JANO\"NN:M\"EW\\2_$T5OIS-\\NA:9E(Y3SA21\\\\F<CY1N]C7(LNG\nM3?[^2CY7YI/T2O\\
+        C9>9ZG]M4ZR_V2$I_P!YIQ@O64DO_)>9^1LWGBB\\^*&K\nM-I/AF=[;P[;2;=2UR/CS2.L%N>Y_O/V[<]=_0&M]?DACT^W6'PUIK*EHR_=N\nMI$X!4=XT(X/\\3<]
+        \":EGH%QXCLH+$V1\\/>%(1M738P(Y[I1VD\"_ZN/\\ V =S\nM<YP,@]O#\"EM$D42+'$@\"JB#\"J!T
+        '8\"LZ]2$%R4U:WSMYM]9/[DO/;HPM&K.\nM3JU7>^[M:_E%=(KSUD]7IO-1117F'M!1110 4444
+        %%%% !1110 4444 %%%\nM% !7+^+?AUX<\\;(1K.E074H4H)P-DH! X#K@XZ<9HHK2G4G2DITY-/NM#\"M0\nMI8B#I5HJ47NFKK[F<>OP.N=)5T\\/^,M8TRV8?):7!%Q
+        GL$^4?GFJ]A\\,/'V\nMFSAX?'>G!U.?-'A^!7QZ$J0>1[T45Z']I8AZ2:?K&+?WM7/(>28--.\"E&W2,\nMYQ7W*27X'6V_A+Q).@75/&=S(I'S+IUE%;9_X$=[#\\\"*U]'\\):7HL[7$%N9;\nMXC#7ET[33M[;V)/X#BBBN.5>I-6O9>22_*QZ<,+2@T[7:ZMN3^]MFY1117.=\n;84444
+        %%%% !1110 4444 %%%% !1110!__9\n\nend\n</TEXT>\n</DOCUMENT>\n</SEC-DOCUMENT>\n"
+    headers:
+      accept-ranges:
+      - bytes
+      content-length:
+      - '12714'
+      content-type:
+      - text/plain
+      date:
+      - Tue, 24 Mar 2026 20:17:01 GMT
+      etag:
+      - '"00006fda72cfc73fce79b43e1c2eabad-gzip"'
+      last-modified:
+      - Fri, 20 Mar 2026 15:07:17 GMT
+      strict-transport-security:
+      - max-age=31536000 ; includeSubDomains ; preload
+      vary:
+      - Accept-Encoding
+      x-amz-id-2:
+      - +VNB4fTO0oFbqkEuDAc7xo0T+ZX96/bkZcQpOwwIJs/rc9umlUxem+vG6ZYRqg46F9cC8RphY8w=
+      x-amz-meta-mode:
+      - '33188'
+      x-amz-replication-status:
+      - COMPLETED
+      x-amz-request-id:
+      - FRTJ364QJXGTEFDD
+      x-amz-server-side-encryption:
+      - AES256
+      x-amz-version-id:
+      - Y0BobLLlJtgzuWO8PhptGF6Z6CK17cAy
+      x-content-type-options:
+      - nosniff
+      x-frame-options:
+      - SAMEORIGIN
+      x-xss-protection:
+      - 1; mode=block
+    status:
+      code: 200
+      message: null
+version: 1

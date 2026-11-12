@@ -1,0 +1,478 @@
+"""
+Data models for XBRL parsing.
+
+This module defines the core data structures used throughout the XBRL parser.
+"""
+
+from typing import Any, Dict, List, Optional, Union
+
+from pydantic import BaseModel, Field
+
+from edgar.exceptions import XBRLProcessingError
+
+# Constants for label roles
+STANDARD_LABEL = "http://www.xbrl.org/2003/role/label"
+TERSE_LABEL = "http://www.xbrl.org/2003/role/terseLabel"
+PERIOD_START_LABEL = "http://www.xbrl.org/2003/role/periodStartLabel"
+PERIOD_END_LABEL = "http://www.xbrl.org/2003/role/periodEndLabel"
+TOTAL_LABEL = "http://www.xbrl.org/2003/role/totalLabel"
+
+
+def is_negated_label_role(role: Optional[str]) -> bool:
+    """
+    Report whether a preferred-label role asks for the value to be negated for display.
+
+    A negated role is identified by its LOCAL NAME — the segment after the final
+    slash — beginning with "negated". That covers the bare form a linkbase may
+    carry ('negatedLabel'), every XBRL International namespace version
+    ('http://www.xbrl.org/2009/role/negatedTotalLabel') and the legacy xbrl.us
+    LRR roles common in 2009-2011 filings
+    ('http://xbrl.us/us-gaap/role/label/negatedLabel'), whose extra path segment
+    defeats a '/role/negated' substring test.
+
+    Matching on the local name rather than anywhere in the URI also keeps a role
+    that merely happens to contain the word from being treated as negated.
+    """
+    if not role:
+        return False
+    return role.rsplit('/', 1)[-1].lower().startswith('negated')
+
+
+def select_display_label(
+        labels: Dict[str, str],
+        preferred_label: Optional[str] = None,
+        standard_label: Optional[str] = None,
+        element_id: Optional[str] = None,
+        element_name: Optional[str] = None
+) -> str:
+    """
+    Select the most appropriate label for display, following a consistent priority order.
+    Includes standardization mapping to provide consistent labels across companies.
+
+    Args:
+        labels: Dictionary of available labels
+        preferred_label: Role of the preferred label (if specified in presentation linkbase)
+        standard_label: The standard label content (if available)
+        element_id: Element ID (fallback)
+        element_name: Element name (alternative fallback)
+
+    Returns:
+        The selected label according to priority rules, with standardization applied if available
+    """
+    # First, select the best available label using existing priority logic
+    selected_label = None
+    # Track if we used a company-specific label (preferred or terse) vs a generic fallback
+    # Standardization should only override generic labels, not company-specific ones
+    used_company_label = False
+
+    # 1. Use preferred label if specified and available
+    if preferred_label and labels and preferred_label in labels:
+        selected_label = labels[preferred_label]
+        used_company_label = True
+
+    # 2. Use terse label if available (more user-friendly)
+    elif labels and TERSE_LABEL in labels:
+        selected_label = labels[TERSE_LABEL]
+        used_company_label = True
+
+    # 3. Fall back to standard label
+    elif standard_label:
+        selected_label = standard_label
+
+    # 4. Try STANDARD_LABEL directly from labels dict
+    elif labels and STANDARD_LABEL in labels:
+        selected_label = labels[STANDARD_LABEL]
+
+    # 5. Take any available label
+    elif labels:
+        selected_label = next(iter(labels.values()), "")
+
+    # 6. Use element name if available
+    elif element_name:
+        selected_label = element_name
+
+    # 7. Last resort: element ID
+    else:
+        selected_label = element_id or ""
+
+    # Apply standardization only when using generic labels (not company-specific preferred/terse)
+    # This preserves company-specific context like "Other intangible assets, net" instead of
+    # generic "Intangible Assets"
+    if element_id and selected_label and not used_company_label:
+        try:
+            # Use module-level singleton for efficient caching across all calls
+            from edgar.xbrl.standardization import get_default_store
+
+            # Try to get standardized concept using the singleton store
+            standardized_label = get_default_store().get_standard_concept(element_id)
+
+            if standardized_label:
+                return standardized_label
+
+        except ImportError:
+            # Standardization not available, continue with selected label
+            pass
+        except Exception:
+            # Any other error in standardization, continue with selected label
+            pass
+
+    return selected_label
+
+
+class ElementCatalog:
+    """
+    A catalog of XBRL elements with their properties.
+
+    This is the base data structure for element metadata as described in the design document.
+
+    Attributes:
+        name: The name of the element (e.g., "us-gaap_NetIncome")
+        data_type: The data type of the element (e.g., "monetary", "string", etc.),
+            or None when the declaring schema is not part of the filing
+        period_type: The period type of the element ("instant" or "duration"). For
+            an element declared outside the filing (us-gaap, dei, srt) it is read
+            from the element's facts, and is None when the element has no facts
+        balance: The balance type of the element (e.g., "debit", "credit", or None).
+            None also when the declaring schema is not part of the filing
+        abstract: Whether the element is abstract (True/False)
+        labels: A dictionary of labels for the element, keyed by role URI
+        substitution_group: The declared substitutionGroup, which is what marks
+            an element as a dimension ("xbrldt:dimensionItem") or a hypercube
+        typed_domain_ref: The xbrldt:typedDomainRef of a TYPED dimension. Its
+            presence is what makes a dimension typed rather than explicit, so
+            None here means "declared without one", not "we never looked"
+    """
+
+    def __init__(self,
+                 name: str,
+                 data_type: Optional[str],
+                 period_type: Optional[str],
+                 balance: Optional[str] = None,
+                 abstract: bool = False,
+                 labels: Optional[Dict[str, str]] = None,
+                 substitution_group: Optional[str] = None,
+                 typed_domain_ref: Optional[str] = None
+                 ):
+        self.name = name
+        self.data_type = data_type
+        self.period_type = period_type
+        self.balance = balance
+        self.abstract = abstract
+        self.labels = labels if labels is not None else {}
+        self.substitution_group = substitution_group
+        self.typed_domain_ref = typed_domain_ref
+
+    def __str__(self) -> str:
+        return self.name
+
+
+# How a typed member the filer marked xsi:nil is shown: the SEC's own rendering
+# prints "(nil)" (GH #1751). The member's value is ''.
+NIL_MEMBER_LABEL = "(nil)"
+
+
+class Context(BaseModel):
+    """
+    An XBRL context defining entity, period, and dimensional information.
+
+    This corresponds to the Context Registry in the design document.
+    """
+    context_id: str
+    entity: Dict[str, Any] = Field(default_factory=dict)
+    period: Dict[str, Any] = Field(default_factory=dict)
+    dimensions: Dict[str, str] = Field(default_factory=dict)
+    # Typed axes whose member the filer marked xsi:nil. The axis stays in
+    # `dimensions` with the value '' (GH #1751).
+    nil_dimensions: List[str] = Field(default_factory=list)
+
+    @property
+    def period_string(self) -> str:
+        """Return a human-readable string representation of the period."""
+        if self.period.get('type') == 'instant':
+            return f"As of {self.period.get('instant')}"
+        elif self.period.get('type') == 'duration':
+            return f"From {self.period.get('startDate')} to {self.period.get('endDate')}"
+        else:
+            return "Forever"
+
+
+class Fact(BaseModel):
+    """
+    An XBRL fact with value and references to context, unit, and element.
+
+    This corresponds to the Fact Database in the design document.
+
+    The instance_id field is used to differentiate between duplicate facts
+    that share the same element_id and context_ref. When a fact has no
+    duplicates, instance_id will be None.
+
+    The fact_id field preserves the original id attribute from the XML element,
+    enabling linkage with footnotes.
+
+    The is_nil field records that the source element carried
+    xsi:nil="true" (or "1"), telling a filed nil item apart from an element
+    with empty content; both have value '' and numeric_value None.
+    """
+    element_id: str
+    context_ref: str
+    value: str
+    unit_ref: Optional[str] = None
+    decimals: Optional[Union[int, str]] = None  # int or "INF"
+    # The @precision attribute as filed. decimals holds what it implies (XBRL 2.1 §4.6.6).
+    precision: Optional[str] = None
+    numeric_value: Optional[float] = None
+    footnotes: List[str] = Field(default_factory=list)
+    instance_id: Optional[int] = None
+    fact_id: Optional[str] = None  # Original id attribute from the XML
+    # Whether the filer marked the item xsi:nil. Source metadata only: it does
+    # not mean zero, not-applicable or a retraction, and a nil item still has
+    # value '' and numeric_value None (GH #1254).
+    is_nil: bool = False
+
+
+class Footnote(BaseModel):
+    """
+    Represents an XBRL footnote with its text content and related facts.
+
+    Footnotes are linked to facts via footnoteArc elements that connect
+    fact IDs to footnote IDs using xlink:from and xlink:to attributes.
+    """
+    footnote_id: str
+    text: str
+    lang: Optional[str] = "en-US"
+    role: Optional[str] = None
+    related_fact_ids: List[str] = Field(default_factory=list)
+
+
+class PresentationNode(BaseModel):
+    """
+    A node in the presentation hierarchy.
+
+    This corresponds to the Presentation Node in the design document.
+    """
+    element_id: str
+    parent: Optional[str] = None
+    children: List[str] = Field(default_factory=list)
+    # Preferred label role for each child *reference*, aligned positionally with
+    # `children`. A concept may be referenced more than once under one parent
+    # (e.g. a cash-flow roll-forward points at the same cash concept with
+    # periodStartLabel and periodEndLabel). Because child nodes are keyed by
+    # element_id they share a single PresentationNode whose `preferred_label`
+    # only retains the last arc, so the per-reference role is tracked here.
+    # (edgartools-0609)
+    child_preferred_labels: List[Optional[str]] = Field(default_factory=list)
+    order: float = 0.0
+    preferred_label: Optional[str] = None
+    depth: int = 0
+
+    # Additional information linked from element catalog
+    element_name: Optional[str] = None
+    standard_label: Optional[str] = None
+    is_abstract: bool = False
+    labels: Dict[str, str] = Field(default_factory=dict)
+
+    @property
+    def display_label(self) -> str:
+        """
+        Return the appropriate label for display, prioritizing user-friendly options.
+
+        Label selection priority:
+        1. Preferred label (if specified in presentation linkbase)
+        2. Terse label (for more concise display)
+        3. Label (standard label)
+        4. Element ID (fallback)
+        """
+        return select_display_label(
+            labels=self.labels,
+            standard_label=self.standard_label,
+            preferred_label=self.preferred_label,
+            element_id=self.element_id
+        )
+
+    @property
+    def is_company_preferred_label(self) -> bool:
+        """
+        Check if the display_label came from a company-specific preferred source.
+
+        Returns True if the label came from:
+        1. A specific preferred_label role (not STANDARD_LABEL) specified in presentation linkbase
+        2. A terseLabel when no preferred_label was specified
+
+        This is used to determine whether standardization should be skipped
+        for this item, as company-preferred labels should be preserved.
+        The key insight is that terseLabel often contains company-specific context
+        (e.g., "Other intangible assets, net") that would be lost with standardization
+        (e.g., "Intangible Assets").
+        """
+        # Check if we have a specific preferred_label (not the default STANDARD_LABEL)
+        if self.preferred_label and self.labels and self.preferred_label in self.labels:
+            # If preferred_label is the standard label role, that's not "company preferred"
+            if self.preferred_label != STANDARD_LABEL:
+                return True
+
+        # Check if terseLabel was used (i.e., no preferred_label was specified but terseLabel exists)
+        # This means the company provided a shorter, more user-friendly label
+        if not self.preferred_label and self.labels and TERSE_LABEL in self.labels:
+            return True
+
+        return False
+
+
+class PresentationRelationship(BaseModel):
+    """
+    One parent-child presentation relationship, as filed.
+
+    Every relationship in the role's network is one of these, after prohibition
+    and overriding (XBRL 2.1 section 3.5.3.9.7). A parent may present the same
+    child twice with a different `order` or `preferred_label` (Bank of America
+    shows a receivable as a terse total and again as a verbose detail); both
+    are kept here, although `PresentationNode.children` lists the child once.
+    """
+    parent_id: str
+    child_id: str
+    order: float = 0.0
+    preferred_label: Optional[str] = None
+
+
+class PresentationTree(BaseModel):
+    """
+    A presentation tree for a specific role.
+
+    This corresponds to the Presentation Hierarchy in the design document.
+    """
+    role_uri: str
+    definition: str
+    # The first root, kept for the many callers that assume one. A role may
+    # legitimately declare several — see `root_element_ids`, which is the
+    # complete list and the thing to traverse.
+    root_element_id: str
+    # Every root the linkbase declares, in the same deterministic sorted order
+    # `root_element_id` is taken from. A presentation role with two roots is
+    # ordinary rather than malformed: Union Pacific's FY2012 10-K has seven,
+    # one of them the consolidated statement of comprehensive income. Walking
+    # from `root_element_id` alone reaches only the first subtree and leaves
+    # the rest sitting in `all_nodes` structurally unreachable (edgartools-0q0d).
+    root_element_ids: List[str] = Field(default_factory=list)
+    # Keyed by element ID, so a concept presented twice in one role has ONE
+    # entry here whose `parent`, `depth` and `order` are the last occurrence's.
+    # Use it for lookup and membership, which is what every caller does; for an
+    # occurrence's real position, walk the tree from the roots and track the
+    # path, which is what `XBRL._generate_line_items` does (edgartools-f07v).
+    all_nodes: Dict[str, PresentationNode] = Field(default_factory=dict)
+    order: int = 0
+    # Every relationship in the role's network, in filed order. `all_nodes` is
+    # the statement view and lists a child concept once per parent (GH #825),
+    # except a period start/end pair; this keeps each reference whose order or
+    # preferred label differs (GH #1758).
+    relationships: List[PresentationRelationship] = Field(default_factory=list)
+
+    def model_post_init(self, __context) -> None:
+        # A tree built by an older caller that only set the scalar still has a
+        # usable root list.
+        if not self.root_element_ids and self.root_element_id:
+            self.root_element_ids = [self.root_element_id]
+
+
+class CalculationNode(BaseModel):
+    """
+    A node in the calculation hierarchy.
+
+    This corresponds to the Calculation Node in the design document.
+    """
+    element_id: str
+    children: List[str] = Field(default_factory=list)
+    parent: Optional[str] = None
+    weight: float = 1.0
+    order: float = 0.0
+
+    # Information linked from schema
+    balance_type: Optional[str] = None  # "debit", "credit", or None
+    period_type: Optional[str] = None  # "instant" or "duration"
+
+
+class CalculationArc(BaseModel):
+    """
+    One parent-to-child summation-item relationship.
+
+    Calculation edges are per relationship, not per concept: a concept may
+    legitimately roll up into two different totals, with a different weight —
+    and often a different sign — under each. `CalculationNode` can only record
+    one of those, so the edges are kept here.
+    """
+    parent_id: str
+    child_id: str
+    weight: float = 1.0
+    order: float = 0.0
+    # The summation-item arcrole: XBRL 2.1's (http://www.xbrl.org/2003/...) or
+    # Calculations 1.1's (https://xbrl.org/2023/...). The two are separate
+    # networks with different validation rules; None for an arc built by hand.
+    arcrole: Optional[str] = None
+
+
+class CalculationTree(BaseModel):
+    """
+    A calculation tree for a specific role.
+
+    This corresponds to the Calculation Network in the design document.
+    """
+    role_uri: str
+    definition: str
+    root_element_id: str
+    all_nodes: Dict[str, CalculationNode] = Field(default_factory=dict)
+    # Every filed relationship in this role. `all_nodes` keeps one node per
+    # concept for lookup and membership; this keeps one entry per edge, which is
+    # what a concept with two calculation parents needs.
+    all_arcs: List[CalculationArc] = Field(default_factory=list)
+
+
+class Axis(BaseModel):
+    """
+    A dimensional axis (dimension) in XBRL.
+
+    This corresponds to the Axis (Dimension) in the design document.
+    """
+    element_id: str
+    label: str
+    # The extended link role this axis was declared under. An axis can be
+    # attached to a different domain in each role, so the pair (role_uri,
+    # element_id) is its identity; "" marks an entry merged across roles.
+    role_uri: str = ""
+    domain_id: Optional[str] = None
+    default_member_id: Optional[str] = None
+    is_typed_dimension: bool = False
+    typed_domain_ref: str = ""
+
+
+class Domain(BaseModel):
+    """
+    A domain in an XBRL dimensional structure.
+
+    This corresponds to the Domain in the design document.
+    """
+    element_id: str
+    label: str
+    # The extended link role this domain was declared under. The same domain
+    # routinely carries different members in different roles; "" marks an entry
+    # merged across roles.
+    role_uri: str = ""
+    members: List[str] = Field(default_factory=list)  # List of domain member element IDs
+    parent: Optional[str] = None  # Parent domain element ID
+
+
+class Table(BaseModel):
+    """
+    A dimensional table (hypercube) in XBRL.
+
+    This corresponds to the Table (Hypercube) in the design document.
+    """
+    element_id: str
+    label: str
+    role_uri: str
+    axes: List[str] = Field(default_factory=list)  # List of axis element IDs
+    line_items: List[str] = Field(default_factory=list)  # List of line item element IDs
+    closed: bool = False
+    context_element: str = "segment"
+
+
+# Defined in edgar.exceptions under the ParsingError branch (07lk.10);
+# re-exported here so existing imports keep working.

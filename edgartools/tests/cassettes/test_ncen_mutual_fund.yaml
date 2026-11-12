@@ -1,0 +1,1321 @@
+interactions:
+- request:
+    body: ''
+    headers:
+      Accept:
+      - '*/*'
+      Accept-Encoding:
+      - gzip, deflate
+      Connection:
+      - keep-alive
+      Host:
+      - www.sec.gov
+    method: GET
+    uri: https://www.sec.gov/Archives/edgar/data/81443/000141036826010921/0001410368-26-010921.txt
+  response:
+    body:
+      string: "<SEC-DOCUMENT>0001410368-26-010921.txt : 20260212\n<SEC-HEADER>0001410368-26-010921.hdr.sgml
+        : 20260212\n<ACCEPTANCE-DATETIME>20260212111240\nACCESSION NUMBER:\t\t0001410368-26-010921\nCONFORMED
+        SUBMISSION TYPE:\tN-CEN\nPUBLIC DOCUMENT COUNT:\t\t2\nCONFORMED PERIOD OF
+        REPORT:\t20251130\nFILED AS OF DATE:\t\t20260212\nDATE AS OF CHANGE:\t\t20260212\nEFFECTIVENESS
+        DATE:\t\t20260212\n\nFILER:\n\n\tCOMPANY DATA:\t\n\t\tCOMPANY CONFORMED NAME:\t\t\tAB
+        CAP FUND, INC.\n\t\tCENTRAL INDEX KEY:\t\t\t0000081443\n\t\tORGANIZATION NAME:
+        \          \t\n\t\tEIN:\t\t\t\t132625045\n\t\tSTATE OF INCORPORATION:\t\t\tDE\n\t\tFISCAL
+        YEAR END:\t\t\t0731\n\n\tFILING VALUES:\n\t\tFORM TYPE:\t\tN-CEN\n\t\tSEC
+        ACT:\t\t1940 Act\n\t\tSEC FILE NUMBER:\t811-01716\n\t\tFILM NUMBER:\t\t26624245\n\n\tBUSINESS
+        ADDRESS:\t\n\t\tSTREET 1:\t\tALLIANCEBERNSTEIN LP\n\t\tSTREET 2:\t\t66 HUDSON
+        BOULEVARD EAST, 26TH FLOOR\n\t\tCITY:\t\t\tNEW YORK\n\t\tSTATE:\t\t\tNY\n\t\tZIP:\t\t\t10001\n\t\tBUSINESS
+        PHONE:\t\t2129691000\n\n\tMAIL ADDRESS:\t\n\t\tSTREET 1:\t\tALLIANCEBERNSTEIN
+        LP\n\t\tSTREET 2:\t\t66 HUDSON BOULEVARD EAST, 26TH FLOOR\n\t\tCITY:\t\t\tNEW
+        YORK\n\t\tSTATE:\t\t\tNY\n\t\tZIP:\t\t\t10001\n\n\tFORMER COMPANY:\t\n\t\tFORMER
+        CONFORMED NAME:\tALLIANCEBERNSTEIN CAP FUND, INC.\n\t\tDATE OF NAME CHANGE:\t20110524\n\n\tFORMER
+        COMPANY:\t\n\t\tFORMER CONFORMED NAME:\tALLIANCEBERNSTEIN CAP FUND,INC\n\t\tDATE
+        OF NAME CHANGE:\t20040908\n\n\tFORMER COMPANY:\t\n\t\tFORMER CONFORMED NAME:\tALLIANCEBERNSTEIN
+        SMALL CAP GROWTH FUND INC\n\t\tDATE OF NAME CHANGE:\t19931001\n<SERIES-AND-CLASSES-CONTRACTS-DATA>\n<EXISTING-SERIES-AND-CLASSES-CONTRACTS>\n<SERIES>\n<OWNER-CIK>0000081443\n<SERIES-ID>S000045542\n<SERIES-NAME>AB
+        Small Cap Value Portfolio\n<CLASS-CONTRACT>\n<CLASS-CONTRACT-ID>C000141790\n<CLASS-CONTRACT-NAME>Class
+        A\n<CLASS-CONTRACT-TICKER-SYMBOL>SCAVX\n</CLASS-CONTRACT>\n<CLASS-CONTRACT>\n<CLASS-CONTRACT-ID>C000141791\n<CLASS-CONTRACT-NAME>Class
+        C\n<CLASS-CONTRACT-TICKER-SYMBOL>SCCVX\n</CLASS-CONTRACT>\n<CLASS-CONTRACT>\n<CLASS-CONTRACT-ID>C000141795\n<CLASS-CONTRACT-NAME>Advisor
+        Class\n<CLASS-CONTRACT-TICKER-SYMBOL>SCYVX\n</CLASS-CONTRACT>\n</SERIES>\n<SERIES>\n<OWNER-CIK>0000081443\n<SERIES-ID>S000062452\n<SERIES-NAME>AB
+        All China Equity Portfolio\n<CLASS-CONTRACT>\n<CLASS-CONTRACT-ID>C000202616\n<CLASS-CONTRACT-NAME>Advisor
+        Class\n<CLASS-CONTRACT-TICKER-SYMBOL>ACEYX\n</CLASS-CONTRACT>\n<CLASS-CONTRACT>\n<CLASS-CONTRACT-ID>C000202617\n<CLASS-CONTRACT-NAME>Class
+        A\n<CLASS-CONTRACT-TICKER-SYMBOL>ACEAX\n</CLASS-CONTRACT>\n</SERIES>\n<SERIES>\n<OWNER-CIK>0000081443\n<SERIES-ID>S000084745\n<SERIES-NAME>AB
+        Mid Cap Value Portfolio\n<CLASS-CONTRACT>\n<CLASS-CONTRACT-ID>C000249214\n<CLASS-CONTRACT-NAME>Class
+        Z\n<CLASS-CONTRACT-TICKER-SYMBOL>ABMVX\n</CLASS-CONTRACT>\n</SERIES>\n</EXISTING-SERIES-AND-CLASSES-CONTRACTS>\n</SERIES-AND-CLASSES-CONTRACTS-DATA>\n</SEC-HEADER>\n<DOCUMENT>\n<TYPE>N-CEN\n<SEQUENCE>1\n<FILENAME>primary_doc.xml\n<TEXT>\n<XML>\n<?xml
+        version=\"1.0\" encoding=\"UTF-8\"?>\n<edgarSubmission xmlns=\"http://www.sec.gov/edgar/ncen\"
+        xmlns:com=\"http://www.sec.gov/edgar/common\">\n  <schemaVersion>X0505</schemaVersion>\n
+        \ <headerData>\n    <submissionType>N-CEN</submissionType>\n    <filerInfo>\n
+        \     <liveTestFlag>LIVE</liveTestFlag>\n      <filer>\n        <issuerCredentials>\n
+        \         <cik>0000081443</cik>\n          <ccc>XXXXXXXX</ccc>\n        </issuerCredentials>\n
+        \       <fileNumber>811-01716</fileNumber>\n      </filer>\n      <flags>\n
+        \       <overrideInternetFlag>false</overrideInternetFlag>\n        <confirmingCopyFlag>false</confirmingCopyFlag>\n
+        \     </flags>\n      <investmentCompanyType>N-1A</investmentCompanyType>\n
+        \   </filerInfo>\n    <seriesClass>\n      <reportSeriesClass>\n        <rptSeriesClassInfo>\n
+        \         <seriesId>S000045542</seriesId>\n          <classInfo>\n            <classId>C000141795</classId>\n
+        \         </classInfo>\n          <classInfo>\n            <classId>C000141790</classId>\n
+        \         </classInfo>\n          <classInfo>\n            <classId>C000141791</classId>\n
+        \         </classInfo>\n        </rptSeriesClassInfo>\n        <rptSeriesClassInfo>\n
+        \         <seriesId>S000062452</seriesId>\n          <classInfo>\n            <classId>C000202617</classId>\n
+        \         </classInfo>\n          <classInfo>\n            <classId>C000202616</classId>\n
+        \         </classInfo>\n        </rptSeriesClassInfo>\n        <rptSeriesClassInfo>\n
+        \         <seriesId>S000084745</seriesId>\n          <classInfo>\n            <classId>C000249214</classId>\n
+        \         </classInfo>\n        </rptSeriesClassInfo>\n      </reportSeriesClass>\n
+        \   </seriesClass>\n  </headerData>\n  <formData>\n    <generalInfo reportEndingPeriod=\"2025-11-30\"
+        isReportPeriodLt12=\"N\"/>\n    <registrantInfo>\n      <registrantFullName>AB
+        CAP FUND, INC.</registrantFullName>\n      <investmentCompFileNo>811-01716</investmentCompFileNo>\n
+        \     <registrantCik>0000081443</registrantCik>\n      <registrantLei>549300I24E20QB4B6Y20</registrantLei>\n
+        \     <registrantstreet1>ALLIANCEBERNSTEIN LP</registrantstreet1>\n      <registrantstreet2>66
+        Hudson Boulevard East</registrantstreet2>\n      <registrantcity>NEW YORK</registrantcity>\n
+        \     <registrantzipCode>10001</registrantzipCode>\n      <registrantstate>US-NY</registrantstate>\n
+        \     <registrantcountry>US</registrantcountry>\n      <registrantphoneNumber>212-969-1000</registrantphoneNumber>\n
+        \     <websites>\n        <website webpage=\"www.abfunds.com\"/>\n      </websites>\n
+        \     <locationBooksRecords>\n        <locationBooksRecord>\n          <officeName>Brown
+        Brothers Harriman &amp; Co.</officeName>\n          <officeAddress1>50 Post
+        Office Square</officeAddress1>\n          <officeCity>Boston</officeCity>\n
+        \         <officeStateCountry officeCountry=\"US\" officeState=\"US-MA\"/>\n
+        \         <officeRecordsZipCode>02110</officeRecordsZipCode>\n          <officePhone>617-772-1818</officePhone>\n
+        \         <booksRecordsDesc>Custody and Accounting Records</booksRecordsDesc>\n
+        \       </locationBooksRecord>\n        <locationBooksRecord>\n          <officeName>State
+        Street Bank and Trust Company</officeName>\n          <officeAddress1>1 Congress
+        Street</officeAddress1>\n          <officeAddress2>Suite 1</officeAddress2>\n
+        \         <officeCity>Boston</officeCity>\n          <officeStateCountry officeCountry=\"US\"
+        officeState=\"US-MA\"/>\n          <officeRecordsZipCode>02114</officeRecordsZipCode>\n
+        \         <officePhone>617-786-3000</officePhone>\n          <booksRecordsDesc>Custody
+        and Accounting Records</booksRecordsDesc>\n        </locationBooksRecord>\n
+        \     </locationBooksRecords>\n      <isRegistrantFirstFiling>N</isRegistrantFirstFiling>\n
+        \     <isRegistrantLastFiling>N</isRegistrantLastFiling>\n      <registrantFamilyInvComp
+        isRegistrantFamilyInvComp=\"Y\" familyInvCompFullName=\"ALLIANCEBE\"/>\n      <registrantClassificationType>N-1A</registrantClassificationType>\n
+        \     <totalSeries>11</totalSeries>\n      <isSecuritiesActRegistration>Y</isSecuritiesActRegistration>\n
+        \     <directors>\n        <director>\n          <directorName>Alexander Chaloff</directorName>\n
+        \         <crdNumber>005019996</crdNumber>\n          <isDirectorInterestedPerson>Y</isDirectorInterestedPerson>\n
+        \         <fileNumbers>\n            <fileNumberInfo fileNumber=\"811-00126\"/>\n
+        \           <fileNumberInfo fileNumber=\"811-00134\"/>\n            <fileNumberInfo
+        fileNumber=\"811-00204\"/>\n            <fileNumberInfo fileNumber=\"811-02383\"/>\n
+        \           <fileNumberInfo fileNumber=\"811-03131\"/>\n            <fileNumberInfo
+        fileNumber=\"811-04791\"/>\n            <fileNumberInfo fileNumber=\"811-05088\"/>\n
+        \           <fileNumberInfo fileNumber=\"811-05398\"/>\n            <fileNumberInfo
+        fileNumber=\"811-05555\"/>\n            <fileNumberInfo fileNumber=\"811-06068\"/>\n
+        \           <fileNumberInfo fileNumber=\"811-06554\"/>\n            <fileNumberInfo
+        fileNumber=\"811-06730\"/>\n            <fileNumberInfo fileNumber=\"811-07618\"/>\n
+        \           <fileNumberInfo fileNumber=\"811-07707\"/>\n            <fileNumberInfo
+        fileNumber=\"811-07732\"/>\n            <fileNumberInfo fileNumber=\"811-07916\"/>\n
+        \           <fileNumberInfo fileNumber=\"811-08188\"/>\n            <fileNumberInfo
+        fileNumber=\"811-08403\"/>\n            <fileNumberInfo fileNumber=\"811-08426\"/>\n
+        \           <fileNumberInfo fileNumber=\"811-09687\"/>\n            <fileNumberInfo
+        fileNumber=\"811-10221\"/>\n            <fileNumberInfo fileNumber=\"811-10573\"/>\n
+        \           <fileNumberInfo fileNumber=\"811-21034\"/>\n            <fileNumberInfo
+        fileNumber=\"811-21497\"/>\n            <fileNumberInfo fileNumber=\"811-22671\"/>\n
+        \           <fileNumberInfo fileNumber=\"811-23100\"/>\n            <fileNumberInfo
+        fileNumber=\"811-23799\"/>\n          </fileNumbers>\n        </director>\n
+        \       <director>\n          <directorName>Carol C. McMullen</directorName>\n
+        \         <crdNumber>N/A</crdNumber>\n          <isDirectorInterestedPerson>N</isDirectorInterestedPerson>\n
+        \         <fileNumbers>\n            <fileNumberInfo fileNumber=\"811-00126\"/>\n
+        \           <fileNumberInfo fileNumber=\"811-00134\"/>\n            <fileNumberInfo
+        fileNumber=\"811-00204\"/>\n            <fileNumberInfo fileNumber=\"811-02383\"/>\n
+        \           <fileNumberInfo fileNumber=\"811-03131\"/>\n            <fileNumberInfo
+        fileNumber=\"811-04791\"/>\n            <fileNumberInfo fileNumber=\"811-05088\"/>\n
+        \           <fileNumberInfo fileNumber=\"811-05398\"/>\n            <fileNumberInfo
+        fileNumber=\"811-05555\"/>\n            <fileNumberInfo fileNumber=\"811-06068\"/>\n
+        \           <fileNumberInfo fileNumber=\"811-06554\"/>\n            <fileNumberInfo
+        fileNumber=\"811-06730\"/>\n            <fileNumberInfo fileNumber=\"811-07618\"/>\n
+        \           <fileNumberInfo fileNumber=\"811-07707\"/>\n            <fileNumberInfo
+        fileNumber=\"811-07732\"/>\n            <fileNumberInfo fileNumber=\"811-07916\"/>\n
+        \           <fileNumberInfo fileNumber=\"811-08188\"/>\n            <fileNumberInfo
+        fileNumber=\"811-08403\"/>\n            <fileNumberInfo fileNumber=\"811-08426\"/>\n
+        \           <fileNumberInfo fileNumber=\"811-09687\"/>\n            <fileNumberInfo
+        fileNumber=\"811-10221\"/>\n            <fileNumberInfo fileNumber=\"811-10573\"/>\n
+        \           <fileNumberInfo fileNumber=\"811-21034\"/>\n            <fileNumberInfo
+        fileNumber=\"811-21497\"/>\n            <fileNumberInfo fileNumber=\"811-22671\"/>\n
+        \           <fileNumberInfo fileNumber=\"811-23100\"/>\n            <fileNumberInfo
+        fileNumber=\"811-23799\"/>\n          </fileNumbers>\n        </director>\n
+        \       <director>\n          <directorName>Emilie D. Wrapp</directorName>\n
+        \         <crdNumber>N/A</crdNumber>\n          <isDirectorInterestedPerson>N</isDirectorInterestedPerson>\n
+        \         <fileNumbers>\n            <fileNumberInfo fileNumber=\"811-00126\"/>\n
+        \           <fileNumberInfo fileNumber=\"811-00134\"/>\n            <fileNumberInfo
+        fileNumber=\"811-00204\"/>\n            <fileNumberInfo fileNumber=\"811-02383\"/>\n
+        \           <fileNumberInfo fileNumber=\"811-03131\"/>\n            <fileNumberInfo
+        fileNumber=\"811-04791\"/>\n            <fileNumberInfo fileNumber=\"811-05088\"/>\n
+        \           <fileNumberInfo fileNumber=\"811-05398\"/>\n            <fileNumberInfo
+        fileNumber=\"811-05555\"/>\n            <fileNumberInfo fileNumber=\"811-06068\"/>\n
+        \           <fileNumberInfo fileNumber=\"811-06554\"/>\n            <fileNumberInfo
+        fileNumber=\"811-06730\"/>\n            <fileNumberInfo fileNumber=\"811-07618\"/>\n
+        \           <fileNumberInfo fileNumber=\"811-07707\"/>\n            <fileNumberInfo
+        fileNumber=\"811-07732\"/>\n            <fileNumberInfo fileNumber=\"811-07916\"/>\n
+        \           <fileNumberInfo fileNumber=\"811-08188\"/>\n            <fileNumberInfo
+        fileNumber=\"811-08403\"/>\n            <fileNumberInfo fileNumber=\"811-08426\"/>\n
+        \           <fileNumberInfo fileNumber=\"811-09687\"/>\n            <fileNumberInfo
+        fileNumber=\"811-10221\"/>\n            <fileNumberInfo fileNumber=\"811-10573\"/>\n
+        \           <fileNumberInfo fileNumber=\"811-21034\"/>\n            <fileNumberInfo
+        fileNumber=\"811-21497\"/>\n            <fileNumberInfo fileNumber=\"811-22671\"/>\n
+        \           <fileNumberInfo fileNumber=\"811-23100\"/>\n            <fileNumberInfo
+        fileNumber=\"811-23799\"/>\n          </fileNumbers>\n        </director>\n
+        \       <director>\n          <directorName>Garry L. Moody</directorName>\n
+        \         <crdNumber>N/A</crdNumber>\n          <isDirectorInterestedPerson>N</isDirectorInterestedPerson>\n
+        \         <fileNumbers>\n            <fileNumberInfo fileNumber=\"811-00126\"/>\n
+        \           <fileNumberInfo fileNumber=\"811-00134\"/>\n            <fileNumberInfo
+        fileNumber=\"811-00204\"/>\n            <fileNumberInfo fileNumber=\"811-02383\"/>\n
+        \           <fileNumberInfo fileNumber=\"811-03131\"/>\n            <fileNumberInfo
+        fileNumber=\"811-04791\"/>\n            <fileNumberInfo fileNumber=\"811-05088\"/>\n
+        \           <fileNumberInfo fileNumber=\"811-05398\"/>\n            <fileNumberInfo
+        fileNumber=\"811-05555\"/>\n            <fileNumberInfo fileNumber=\"811-06068\"/>\n
+        \           <fileNumberInfo fileNumber=\"811-06554\"/>\n            <fileNumberInfo
+        fileNumber=\"811-06730\"/>\n            <fileNumberInfo fileNumber=\"811-07618\"/>\n
+        \           <fileNumberInfo fileNumber=\"811-07707\"/>\n            <fileNumberInfo
+        fileNumber=\"811-07732\"/>\n            <fileNumberInfo fileNumber=\"811-07916\"/>\n
+        \           <fileNumberInfo fileNumber=\"811-08188\"/>\n            <fileNumberInfo
+        fileNumber=\"811-08403\"/>\n            <fileNumberInfo fileNumber=\"811-08426\"/>\n
+        \           <fileNumberInfo fileNumber=\"811-09687\"/>\n            <fileNumberInfo
+        fileNumber=\"811-10221\"/>\n            <fileNumberInfo fileNumber=\"811-10573\"/>\n
+        \           <fileNumberInfo fileNumber=\"811-21034\"/>\n            <fileNumberInfo
+        fileNumber=\"811-21497\"/>\n            <fileNumberInfo fileNumber=\"811-22671\"/>\n
+        \           <fileNumberInfo fileNumber=\"811-23100\"/>\n            <fileNumberInfo
+        fileNumber=\"811-23799\"/>\n          </fileNumbers>\n        </director>\n
+        \       <director>\n          <directorName>Jeanette W. Loeb</directorName>\n
+        \         <crdNumber>N/A</crdNumber>\n          <isDirectorInterestedPerson>N</isDirectorInterestedPerson>\n
+        \         <fileNumbers>\n            <fileNumberInfo fileNumber=\"811-00126\"/>\n
+        \           <fileNumberInfo fileNumber=\"811-00134\"/>\n            <fileNumberInfo
+        fileNumber=\"811-00204\"/>\n            <fileNumberInfo fileNumber=\"811-02383\"/>\n
+        \           <fileNumberInfo fileNumber=\"811-03131\"/>\n            <fileNumberInfo
+        fileNumber=\"811-04791\"/>\n            <fileNumberInfo fileNumber=\"811-05088\"/>\n
+        \           <fileNumberInfo fileNumber=\"811-05398\"/>\n            <fileNumberInfo
+        fileNumber=\"811-05555\"/>\n            <fileNumberInfo fileNumber=\"811-06068\"/>\n
+        \           <fileNumberInfo fileNumber=\"811-06554\"/>\n            <fileNumberInfo
+        fileNumber=\"811-06730\"/>\n            <fileNumberInfo fileNumber=\"811-07618\"/>\n
+        \           <fileNumberInfo fileNumber=\"811-07707\"/>\n            <fileNumberInfo
+        fileNumber=\"811-07732\"/>\n            <fileNumberInfo fileNumber=\"811-07916\"/>\n
+        \           <fileNumberInfo fileNumber=\"811-08188\"/>\n            <fileNumberInfo
+        fileNumber=\"811-08403\"/>\n            <fileNumberInfo fileNumber=\"811-08426\"/>\n
+        \           <fileNumberInfo fileNumber=\"811-09687\"/>\n            <fileNumberInfo
+        fileNumber=\"811-10221\"/>\n            <fileNumberInfo fileNumber=\"811-10573\"/>\n
+        \           <fileNumberInfo fileNumber=\"811-21034\"/>\n            <fileNumberInfo
+        fileNumber=\"811-21497\"/>\n            <fileNumberInfo fileNumber=\"811-22671\"/>\n
+        \           <fileNumberInfo fileNumber=\"811-23100\"/>\n            <fileNumberInfo
+        fileNumber=\"811-23799\"/>\n          </fileNumbers>\n        </director>\n
+        \       <director>\n          <directorName>Jeffrey R. Holland</directorName>\n
+        \         <crdNumber>N/A</crdNumber>\n          <isDirectorInterestedPerson>N</isDirectorInterestedPerson>\n
+        \         <fileNumbers>\n            <fileNumberInfo fileNumber=\"811-00126\"/>\n
+        \           <fileNumberInfo fileNumber=\"811-00134\"/>\n            <fileNumberInfo
+        fileNumber=\"811-00204\"/>\n            <fileNumberInfo fileNumber=\"811-02383\"/>\n
+        \           <fileNumberInfo fileNumber=\"811-03131\"/>\n            <fileNumberInfo
+        fileNumber=\"811-04791\"/>\n            <fileNumberInfo fileNumber=\"811-05088\"/>\n
+        \           <fileNumberInfo fileNumber=\"811-05398\"/>\n            <fileNumberInfo
+        fileNumber=\"811-05555\"/>\n            <fileNumberInfo fileNumber=\"811-06068\"/>\n
+        \           <fileNumberInfo fileNumber=\"811-06554\"/>\n            <fileNumberInfo
+        fileNumber=\"811-06730\"/>\n            <fileNumberInfo fileNumber=\"811-07618\"/>\n
+        \           <fileNumberInfo fileNumber=\"811-07707\"/>\n            <fileNumberInfo
+        fileNumber=\"811-07732\"/>\n            <fileNumberInfo fileNumber=\"811-07916\"/>\n
+        \           <fileNumberInfo fileNumber=\"811-08188\"/>\n            <fileNumberInfo
+        fileNumber=\"811-08403\"/>\n            <fileNumberInfo fileNumber=\"811-08426\"/>\n
+        \           <fileNumberInfo fileNumber=\"811-09687\"/>\n            <fileNumberInfo
+        fileNumber=\"811-10221\"/>\n            <fileNumberInfo fileNumber=\"811-10573\"/>\n
+        \           <fileNumberInfo fileNumber=\"811-21034\"/>\n            <fileNumberInfo
+        fileNumber=\"811-21497\"/>\n            <fileNumberInfo fileNumber=\"811-22671\"/>\n
+        \           <fileNumberInfo fileNumber=\"811-23100\"/>\n            <fileNumberInfo
+        fileNumber=\"811-23799\"/>\n          </fileNumbers>\n        </director>\n
+        \       <director>\n          <directorName>Jorge A. Bermudez</directorName>\n
+        \         <crdNumber>N/A</crdNumber>\n          <isDirectorInterestedPerson>N</isDirectorInterestedPerson>\n
+        \         <fileNumbers>\n            <fileNumberInfo fileNumber=\"811-00126\"/>\n
+        \           <fileNumberInfo fileNumber=\"811-00134\"/>\n            <fileNumberInfo
+        fileNumber=\"811-00204\"/>\n            <fileNumberInfo fileNumber=\"811-02383\"/>\n
+        \           <fileNumberInfo fileNumber=\"811-03131\"/>\n            <fileNumberInfo
+        fileNumber=\"811-04791\"/>\n            <fileNumberInfo fileNumber=\"811-05088\"/>\n
+        \           <fileNumberInfo fileNumber=\"811-05398\"/>\n            <fileNumberInfo
+        fileNumber=\"811-05555\"/>\n            <fileNumberInfo fileNumber=\"811-06068\"/>\n
+        \           <fileNumberInfo fileNumber=\"811-06554\"/>\n            <fileNumberInfo
+        fileNumber=\"811-06730\"/>\n            <fileNumberInfo fileNumber=\"811-07618\"/>\n
+        \           <fileNumberInfo fileNumber=\"811-07707\"/>\n            <fileNumberInfo
+        fileNumber=\"811-07732\"/>\n            <fileNumberInfo fileNumber=\"811-07916\"/>\n
+        \           <fileNumberInfo fileNumber=\"811-08188\"/>\n            <fileNumberInfo
+        fileNumber=\"811-08403\"/>\n            <fileNumberInfo fileNumber=\"811-08426\"/>\n
+        \           <fileNumberInfo fileNumber=\"811-09687\"/>\n            <fileNumberInfo
+        fileNumber=\"811-10221\"/>\n            <fileNumberInfo fileNumber=\"811-10573\"/>\n
+        \           <fileNumberInfo fileNumber=\"811-21034\"/>\n            <fileNumberInfo
+        fileNumber=\"811-21497\"/>\n            <fileNumberInfo fileNumber=\"811-22671\"/>\n
+        \           <fileNumberInfo fileNumber=\"811-23100\"/>\n            <fileNumberInfo
+        fileNumber=\"811-23799\"/>\n          </fileNumbers>\n        </director>\n
+        \       <director>\n          <directorName>R. Jay Gerken</directorName>\n
+        \         <crdNumber>N/A</crdNumber>\n          <isDirectorInterestedPerson>N</isDirectorInterestedPerson>\n
+        \         <fileNumbers>\n            <fileNumberInfo fileNumber=\"811-00126\"/>\n
+        \           <fileNumberInfo fileNumber=\"811-00134\"/>\n            <fileNumberInfo
+        fileNumber=\"811-00204\"/>\n            <fileNumberInfo fileNumber=\"811-02383\"/>\n
+        \           <fileNumberInfo fileNumber=\"811-03131\"/>\n            <fileNumberInfo
+        fileNumber=\"811-04791\"/>\n            <fileNumberInfo fileNumber=\"811-05088\"/>\n
+        \           <fileNumberInfo fileNumber=\"811-05398\"/>\n            <fileNumberInfo
+        fileNumber=\"811-05555\"/>\n            <fileNumberInfo fileNumber=\"811-06068\"/>\n
+        \           <fileNumberInfo fileNumber=\"811-06554\"/>\n            <fileNumberInfo
+        fileNumber=\"811-06730\"/>\n            <fileNumberInfo fileNumber=\"811-07618\"/>\n
+        \           <fileNumberInfo fileNumber=\"811-07707\"/>\n            <fileNumberInfo
+        fileNumber=\"811-07732\"/>\n            <fileNumberInfo fileNumber=\"811-07916\"/>\n
+        \           <fileNumberInfo fileNumber=\"811-08188\"/>\n            <fileNumberInfo
+        fileNumber=\"811-08403\"/>\n            <fileNumberInfo fileNumber=\"811-08426\"/>\n
+        \           <fileNumberInfo fileNumber=\"811-09687\"/>\n            <fileNumberInfo
+        fileNumber=\"811-10221\"/>\n            <fileNumberInfo fileNumber=\"811-10573\"/>\n
+        \           <fileNumberInfo fileNumber=\"811-21034\"/>\n            <fileNumberInfo
+        fileNumber=\"811-21497\"/>\n            <fileNumberInfo fileNumber=\"811-22671\"/>\n
+        \           <fileNumberInfo fileNumber=\"811-23100\"/>\n            <fileNumberInfo
+        fileNumber=\"811-23799\"/>\n          </fileNumbers>\n        </director>\n
+        \     </directors>\n      <chiefComplianceOfficers>\n        <chiefComplianceOfficer>\n
+        \         <ccoName>Jennifer Friedland</ccoName>\n          <crdNumber>N/A</crdNumber>\n
+        \         <ccoStreet1>501 Commerce St</ccoStreet1>\n          <ccoCity>Nashville</ccoCity>\n
+        \         <ccoStateCountry ccoCountry=\"US\" ccoState=\"US-TN\"/>\n          <ccoZipCode>37203</ccoZipCode>\n
+        \         <ccoPhone>XXXXXX</ccoPhone>\n          <isCcoChangedSinceLastFiling>N</isCcoChangedSinceLastFiling>\n
+        \         <ccoEmployers>\n            <ccoEmployer ccoEmployerName=\"N/A\"
+        ccoEmployerId=\"N/A\"/>\n          </ccoEmployers>\n        </chiefComplianceOfficer>\n
+        \     </chiefComplianceOfficers>\n      <isRegistrantSubmittedMatter>N</isRegistrantSubmittedMatter>\n
+        \     <isPreviousLegalProceeding>N</isPreviousLegalProceeding>\n      <isPreviousProceedingTerminated>N</isPreviousProceedingTerminated>\n
+        \     <isClaimFiled>N</isClaimFiled>\n      <coveredByInsurancePolicy isCoveredByInsurancePolicy=\"Y\"
+        isClaimFiledDuringPeriod=\"N\"/>\n      <isFinancialSupportDuringPeriod>N</isFinancialSupportDuringPeriod>\n
+        \     <isExemptionFromAct>N</isExemptionFromAct>\n      <principalUnderwriters>\n
+        \       <principalUnderwriter>\n          <principalUnderwriterName>AllianceBernstein
+        Investments, Inc.</principalUnderwriterName>\n          <principalUnderwriterFileNumber>8-30851</principalUnderwriterFileNumber>\n
+        \         <principalUnderwriterCrdNumber>000014549</principalUnderwriterCrdNumber>\n
+        \         <principalUnderWriterStateCountry principalUnderWriterCountry=\"US\"
+        principalUnderWriterState=\"US-TN\"/>\n          <isPrincipalUnderwriterAffiliatedWithRegistrant>Y</isPrincipalUnderwriterAffiliatedWithRegistrant>\n
+        \       </principalUnderwriter>\n      </principalUnderwriters>\n      <isUnderwriterHiredOrTerminated>N</isUnderwriterHiredOrTerminated>\n
+        \     <publicAccountants>\n        <publicAccountant>\n          <publicAccountantName>Ernst
+        &amp; Young LLP</publicAccountantName>\n          <pcaobNumber>42</pcaobNumber>\n
+        \         <publicAccountantLei>254900Y3CIB1KF938C31</publicAccountantLei>\n
+        \         <publicAccountantStateCountry publicAccountantCountry=\"US\" publicAccountantState=\"US-NY\"/>\n
+        \       </publicAccountant>\n      </publicAccountants>\n      <isPublicAccountantChanged>N</isPublicAccountantChanged>\n
+        \     <isMaterialWeakness>N</isMaterialWeakness>\n      <isOpinionOffered>N</isOpinionOffered>\n
+        \     <isMaterialChange>N</isMaterialChange>\n      <isAccountingPrincipleChange>N</isAccountingPrincipleChange>\n
+        \     <isPaymentErrorInNetAssetValue>N</isPaymentErrorInNetAssetValue>\n      <isPaymentDividend>N</isPaymentDividend>\n
+        \   </registrantInfo>\n    <managementInvestmentQuestionSeriesInfo>\n      <managementInvestmentQuestion>\n
+        \       <mgmtInvFundName>AB All China Equity Portfolio</mgmtInvFundName>\n
+        \       <mgmtInvSeriesId>S000062452</mgmtInvSeriesId>\n        <mgmtInvLei>549300M0QRVBUIG3U327</mgmtInvLei>\n
+        \       <isFirstFilingByFund>N</isFirstFilingByFund>\n        <numAuthorizedClass>11</numAuthorizedClass>\n
+        \       <numAddedClass>0</numAddedClass>\n        <numTerminatedClass>0</numTerminatedClass>\n
+        \       <sharesOutstandings>\n          <sharesOutstanding sharesOutstandingClassName=\"Advisor
+        Class\" sharesOutstandingClassId=\"C000202616\" sharesOutstandingTickerSymbol=\"ACEYX\"/>\n
+        \         <sharesOutstanding sharesOutstandingClassName=\"Class A\" sharesOutstandingClassId=\"C000202617\"
+        sharesOutstandingTickerSymbol=\"ACEAX\"/>\n        </sharesOutstandings>\n
+        \       <fundType>N/A</fundType>\n        <isNonDiversifiedCompany>N</isNonDiversifiedCompany>\n
+        \       <isForeignSubsidiary>N</isForeignSubsidiary>\n        <isFundSecuritiesLending>Y</isFundSecuritiesLending>\n
+        \       <fundLendSecurities didFundLendSecurities=\"Y\">\n          <isFundLiquidated>N</isFundLiquidated>\n
+        \         <isFundAdverselyImpacted>N</isFundAdverselyImpacted>\n        </fundLendSecurities>\n
+        \       <securityLendings>\n          <securityLending>\n            <securitiesAgentName>Mitsubishi
+        UFJ Trust and Banking Corporation</securitiesAgentName>\n            <securitiesAgentLei>JBONEPAGQXF4QP29B387</securitiesAgentLei>\n
+        \           <isSecuritiesAgentAffiliated>N</isSecuritiesAgentAffiliated>\n
+        \           <securityAgentIdemnity isSecurityAgentIdemnity=\"Y\">\n              <idemnityProviders>\n
+        \               <idemnityProvider idemnityProviderName=\"N/A\"/>\n              </idemnityProviders>\n
+        \             <didIndemnificationRights>N</didIndemnificationRights>\n            </securityAgentIdemnity>\n
+        \         </securityLending>\n        </securityLendings>\n        <collateralManagers>\n
+        \         <collateralManager collateralManagerName=\"AllianceBernstein L.P.\"
+        collateralManagerLei=\"0JK55UGWSWNF3X7KLQ85\" isCollateralManagerAffliliated=\"N\"
+        isCollateralManagerAffliliatedWithFund=\"Y\"/>\n        </collateralManagers>\n
+        \       <paymentToAgentManagers>\n          <paymentToAgentManagerType>Revenue
+        sharing split</paymentToAgentManagerType>\n        </paymentToAgentManagers>\n
+        \       <avgPortfolioSecuritiesValue>76748.93000000</avgPortfolioSecuritiesValue>\n
+        \       <netIncomeSecuritiesLending>3318.00000000</netIncomeSecuritiesLending>\n
+        \       <relyOnRuleTypes>\n          <relyOnRuleType>Rule 12d1-1 (17 CFR 270.12d1-1)</relyOnRuleType>\n
+        \         <relyOnRuleType>Rule 18f-4 (17 CFR 270.18f-4)</relyOnRuleType>\n
+        \         <relyOnRuleType>Rule 22d-1 (17 CFR 270.22d-1)</relyOnRuleType>\n
+        \         <relyOnRuleType>Rule 32a-4 (17 CFR 270.32a-4)</relyOnRuleType>\n
+        \       </relyOnRuleTypes>\n        <isExpenseLimitationInPlace>Y</isExpenseLimitationInPlace>\n
+        \       <isExpenseReducedOrWaived>Y</isExpenseReducedOrWaived>\n        <isFeesWaivedRecoupable>N</isFeesWaivedRecoupable>\n
+        \       <isExpenseWaivedRecoupable>N</isExpenseWaivedRecoupable>\n        <investmentAdvisers>\n
+        \         <investmentAdviser>\n            <investmentAdviserName>AllianceBernstein
+        L.P.</investmentAdviserName>\n            <investmentAdviserFileNo>801-56720</investmentAdviserFileNo>\n
+        \           <investmentAdviserCrdNo>000108477</investmentAdviserCrdNo>\n            <investmentAdviserLei>0JK55UGWSWNF3X7KLQ85</investmentAdviserLei>\n
+        \           <investmentAdviserStateCountry investmentAdviserState=\"US-TN\"
+        investmentAdviserCountry=\"US\"/>\n            <isInvestmentAdviserHired>N</isInvestmentAdviserHired>\n
+        \         </investmentAdviser>\n        </investmentAdvisers>\n        <transferAgents>\n
+        \         <transferAgent>\n            <transferAgentName>AllianceBernstein
+        Investor Services, Inc.</transferAgentName>\n            <transferAgentFileNo>084-01187</transferAgentFileNo>\n
+        \           <transferAgentLei>254900AWWRBOHYAC4I42</transferAgentLei>\n            <transferAgentStateCountry
+        transferAgentState=\"US-TX\" transferAgentCountry=\"US\"/>\n            <isTransferAgentAffiliated>Y</isTransferAgentAffiliated>\n
+        \           <isTransferAgentSubAgent>N</isTransferAgentSubAgent>\n          </transferAgent>\n
+        \       </transferAgents>\n        <isTransferAgentHiredOrTerminated>N</isTransferAgentHiredOrTerminated>\n
+        \       <pricingServices>\n          <pricingService>\n            <pricingServiceName>Bloomberg
+        L.P.</pricingServiceName>\n            <pricingServiceLei>549300B56MD0ZC402L06</pricingServiceLei>\n
+        \           <pricingServiceStateCountry pricingServiceState=\"US-NY\" pricingServiceCountry=\"US\"/>\n
+        \           <isPricingServiceAffiliated>N</isPricingServiceAffiliated>\n          </pricingService>\n
+        \         <pricingService>\n            <pricingServiceName>ICE Data Services,
+        Inc.</pricingServiceName>\n            <pricingServiceOther>13-3668779</pricingServiceOther>\n
+        \           <pricingServiceIdNumberDesc>Tax ID</pricingServiceIdNumberDesc>\n
+        \           <pricingServiceStateCountry pricingServiceState=\"US-GA\" pricingServiceCountry=\"US\"/>\n
+        \           <isPricingServiceAffiliated>N</isPricingServiceAffiliated>\n          </pricingService>\n
+        \         <pricingService>\n            <pricingServiceName>London Stock Exchange
+        Group PLC</pricingServiceName>\n            <pricingServiceLei>213800QAUUUP6I445N30</pricingServiceLei>\n
+        \           <pricingServiceCountry>GB</pricingServiceCountry>\n            <isPricingServiceAffiliated>N</isPricingServiceAffiliated>\n
+        \         </pricingService>\n          <pricingService>\n            <pricingServiceName>PricingDirect
+        Inc.</pricingServiceName>\n            <pricingServiceLei>549300WIC0TOJ7N7GD54</pricingServiceLei>\n
+        \           <pricingServiceStateCountry pricingServiceState=\"US-NY\" pricingServiceCountry=\"US\"/>\n
+        \           <isPricingServiceAffiliated>N</isPricingServiceAffiliated>\n          </pricingService>\n
+        \         <pricingService>\n            <pricingServiceName>S&amp;P Global
+        Inc.</pricingServiceName>\n            <pricingServiceLei>Y6X4K52KMJMZE7I7MY94</pricingServiceLei>\n
+        \           <pricingServiceStateCountry pricingServiceState=\"US-NY\" pricingServiceCountry=\"US\"/>\n
+        \           <isPricingServiceAffiliated>N</isPricingServiceAffiliated>\n          </pricingService>\n
+        \         <pricingService>\n            <pricingServiceName>Standard &amp;
+        Poor's Financial Services LLC</pricingServiceName>\n            <pricingServiceLei>549300U4VWNITEKO2881</pricingServiceLei>\n
+        \           <pricingServiceStateCountry pricingServiceState=\"US-NY\" pricingServiceCountry=\"US\"/>\n
+        \           <isPricingServiceAffiliated>N</isPricingServiceAffiliated>\n          </pricingService>\n
+        \         <pricingService>\n            <pricingServiceName>Vertical Management
+        Systems, Inc.</pricingServiceName>\n            <pricingServiceOther>95-4373305</pricingServiceOther>\n
+        \           <pricingServiceIdNumberDesc>Tax ID</pricingServiceIdNumberDesc>\n
+        \           <pricingServiceStateCountry pricingServiceState=\"US-NJ\" pricingServiceCountry=\"US\"/>\n
+        \           <isPricingServiceAffiliated>N</isPricingServiceAffiliated>\n          </pricingService>\n
+        \       </pricingServices>\n        <isPricingServiceHiredOrTerminated>N</isPricingServiceHiredOrTerminated>\n
+        \       <custodians>\n          <custodian>\n            <custodianName>Brown
+        Brothers Harriman &amp; Co.</custodianName>\n            <custodianLei>5493006KMX1VFTPYPW14</custodianLei>\n
+        \           <custodianStateCountry custodianState=\"US-NY\" custodianCountry=\"US\"/>\n
+        \           <isCustodianAffiliated>N</isCustodianAffiliated>\n            <isSubCustodian>N</isSubCustodian>\n
+        \           <custodyType>Bank - section 17(f)(1) (15 U.S.C. 80a-17(f)(1))</custodyType>\n
+        \         </custodian>\n          <custodian>\n            <custodianName>CACEIS
+        Bank</custodianName>\n            <custodianLei>96950023SCR9X9F3L662</custodianLei>\n
+        \           <custodianCountry>FR</custodianCountry>\n            <isCustodianAffiliated>N</isCustodianAffiliated>\n
+        \           <isSubCustodian>Y</isSubCustodian>\n            <custodyType>Foreign
+        custodian - rule 17f-5 (17 CFR 270.17f-5)</custodyType>\n          </custodian>\n
+        \         <custodian>\n            <custodianName>Clearstream Banking S.A.</custodianName>\n
+        \           <custodianLei>549300OL514RA0SXJJ44</custodianLei>\n            <custodianCountry>LU</custodianCountry>\n
+        \           <isCustodianAffiliated>N</isCustodianAffiliated>\n            <isSubCustodian>Y</isSubCustodian>\n
+        \           <custodyType>Foreign securities depository - rule 17f-7 (17 CFR
+        270.17f-7)</custodyType>\n          </custodian>\n          <custodian>\n
+        \           <custodianName>Euroclear Bank</custodianName>\n            <custodianLei>549300OZ46BRLZ8Y6F65</custodianLei>\n
+        \           <custodianCountry>BE</custodianCountry>\n            <isCustodianAffiliated>N</isCustodianAffiliated>\n
+        \           <isSubCustodian>Y</isSubCustodian>\n            <custodyType>Foreign
+        securities depository - rule 17f-7 (17 CFR 270.17f-7)</custodyType>\n          </custodian>\n
+        \         <custodian>\n            <custodianName>HSBC Bank PLC (London, GB,
+        Branch)</custodianName>\n            <custodianLei>MP6I5ZYZBEU3UXPYFY54</custodianLei>\n
+        \           <custodianCountry>GB</custodianCountry>\n            <isCustodianAffiliated>N</isCustodianAffiliated>\n
+        \           <isSubCustodian>Y</isSubCustodian>\n            <custodyType>Foreign
+        custodian - rule 17f-5 (17 CFR 270.17f-5)</custodyType>\n          </custodian>\n
+        \         <custodian>\n            <custodianName>Societe Generale Securities
+        Services S.p.A.</custodianName>\n            <custodianLei>549300SAMQW7TYZ1TR74</custodianLei>\n
+        \           <custodianCountry>IT</custodianCountry>\n            <isCustodianAffiliated>N</isCustodianAffiliated>\n
+        \           <isSubCustodian>Y</isSubCustodian>\n            <custodyType>Foreign
+        custodian - rule 17f-5 (17 CFR 270.17f-5)</custodyType>\n          </custodian>\n
+        \         <custodian>\n            <custodianName>Standard Chartered Bank
+        (China) Limited</custodianName>\n            <custodianLei>549300VGE7QN15BPTZ72</custodianLei>\n
+        \           <custodianCountry>CN</custodianCountry>\n            <isCustodianAffiliated>N</isCustodianAffiliated>\n
+        \           <isSubCustodian>Y</isSubCustodian>\n            <custodyType>Foreign
+        custodian - rule 17f-5 (17 CFR 270.17f-5)</custodyType>\n          </custodian>\n
+        \         <custodian>\n            <custodianName>Standard Chartered Bank
+        (Taiwan) Limited</custodianName>\n            <custodianLei>549300QJEO1B92LSHZ06</custodianLei>\n
+        \           <custodianCountry>TW</custodianCountry>\n            <isCustodianAffiliated>N</isCustodianAffiliated>\n
+        \           <isSubCustodian>Y</isSubCustodian>\n            <custodyType>Foreign
+        custodian - rule 17f-5 (17 CFR 270.17f-5)</custodyType>\n          </custodian>\n
+        \         <custodian>\n            <custodianName>The Hongkong and Shanghai
+        Banking Corporation Limited</custodianName>\n            <custodianLei>2HI3YI5320L3RW6NJ957</custodianLei>\n
+        \           <custodianCountry>HK</custodianCountry>\n            <isCustodianAffiliated>N</isCustodianAffiliated>\n
+        \           <isSubCustodian>Y</isSubCustodian>\n            <custodyType>Foreign
+        custodian - rule 17f-5 (17 CFR 270.17f-5)</custodyType>\n          </custodian>\n
+        \         <custodian>\n            <custodianName>The Hongkong and Shanghai
+        Banking Corporation Limited (Jung-gu, Seoul, KR, Branch)</custodianName>\n
+        \           <custodianLei>2HI3YI5320L3RW6NJ957</custodianLei>\n            <custodianCountry>KR</custodianCountry>\n
+        \           <isCustodianAffiliated>N</isCustodianAffiliated>\n            <isSubCustodian>Y</isSubCustodian>\n
+        \           <custodyType>Foreign custodian - rule 17f-5 (17 CFR 270.17f-5)</custodyType>\n
+        \         </custodian>\n          <custodian>\n            <custodianName>The
+        Hongkong and Shanghai Banking Corporation Limited (Singapore, SG, Branch)</custodianName>\n
+        \           <custodianLei>2HI3YI5320L3RW6NJ957</custodianLei>\n            <custodianCountry>SG</custodianCountry>\n
+        \           <isCustodianAffiliated>N</isCustodianAffiliated>\n            <isSubCustodian>Y</isSubCustodian>\n
+        \           <custodyType>Foreign custodian - rule 17f-5 (17 CFR 270.17f-5)</custodyType>\n
+        \         </custodian>\n        </custodians>\n        <isCustodianHiredOrTerminated>N</isCustodianHiredOrTerminated>\n
+        \       <shareholderServicingAgents>\n          <shareholderServicingAgent>\n
+        \           <shareholderServiceAgentName>AllianceBernstein Investor Services,
+        Inc.</shareholderServiceAgentName>\n            <shareholderServiceAgentLei>254900AWWRBOHYAC4I42</shareholderServiceAgentLei>\n
+        \           <shareholderServiceAgentStateCountry shareholderServiceAgentState=\"US-TX\"
+        shareholderServiceAgentCountry=\"US\"/>\n            <isShareholderServiceAgentAffiliated>Y</isShareholderServiceAgentAffiliated>\n
+        \           <isShareholderServiceAgentSubshare>N</isShareholderServiceAgentSubshare>\n
+        \         </shareholderServicingAgent>\n        </shareholderServicingAgents>\n
+        \       <isShareholderServiceHiredTerminated>N</isShareholderServiceHiredTerminated>\n
+        \       <admins>\n          <admin>\n            <adminName>AllianceBernstein
+        L.P.</adminName>\n            <adminLei>0JK55UGWSWNF3X7KLQ85</adminLei>\n
+        \           <adminStateCountry adminState=\"US-TN\" adminCountry=\"US\"/>\n
+        \           <isAdminAffiliated>Y</isAdminAffiliated>\n            <isAdminSubAdmin>N</isAdminSubAdmin>\n
+        \         </admin>\n        </admins>\n        <isAdminHiredOrTerminated>N</isAdminHiredOrTerminated>\n
+        \       <brokerDealers>\n          <brokerDealer>\n            <brokerDealerName>Sanford
+        C. Bernstein &amp; Co., LLC</brokerDealerName>\n            <brokerDealerFileNo>8-52942</brokerDealerFileNo>\n
+        \           <brokerDealerCrdNo>000104474</brokerDealerCrdNo>\n            <brokerDealerLei>549300I7JYZHT7D5CO04</brokerDealerLei>\n
+        \           <brokerDealerStateCountry brokerDealerState=\"US-NY\" brokerDealerCountry=\"US\"/>\n
+        \           <brokerDealerCommission>0.00000000</brokerDealerCommission>\n
+        \         </brokerDealer>\n          <brokerDealer>\n            <brokerDealerName>Sanford
+        C. Bernstein Limited</brokerDealerName>\n            <brokerDealerFileNo>N/A</brokerDealerFileNo>\n
+        \           <brokerDealerCrdNo>N/A</brokerDealerCrdNo>\n            <brokerDealerLei>54930049G8WQ5OOUSD19</brokerDealerLei>\n
+        \           <brokerDealerCountry>GB</brokerDealerCountry>\n            <brokerDealerCommission>0.00000000</brokerDealerCommission>\n
+        \         </brokerDealer>\n        </brokerDealers>\n        <brokers>\n          <broker>\n
+        \           <brokerName>J.P. Morgan Securities LLC</brokerName>\n            <brokerFileNo>8-35008</brokerFileNo>\n
+        \           <brokerCrdNo>000000079</brokerCrdNo>\n            <brokerLei>ZBUT11V806EZRVTWT807</brokerLei>\n
+        \           <brokerStateCountry brokerState=\"US-NY\" brokerCountry=\"US\"/>\n
+        \           <grossCommission>13391.72000000</grossCommission>\n          </broker>\n
+        \         <broker>\n            <brokerName>Goldman Sachs &amp; Co. LLC</brokerName>\n
+        \           <brokerFileNo>8-129</brokerFileNo>\n            <brokerCrdNo>000000361</brokerCrdNo>\n
+        \           <brokerLei>FOR8UP27PHTHYVLBNG30</brokerLei>\n            <brokerStateCountry
+        brokerState=\"US-NY\" brokerCountry=\"US\"/>\n            <grossCommission>21395.36000000</grossCommission>\n
+        \         </broker>\n          <broker>\n            <brokerName>Jefferies
+        LLC</brokerName>\n            <brokerFileNo>8-15074</brokerFileNo>\n            <brokerCrdNo>000002347</brokerCrdNo>\n
+        \           <brokerLei>58PU97L1C0WSRCWADL48</brokerLei>\n            <brokerStateCountry
+        brokerState=\"US-NY\" brokerCountry=\"US\"/>\n            <grossCommission>15785.35000000</grossCommission>\n
+        \         </broker>\n          <broker>\n            <brokerName>Nomura Securities
+        International, Inc.</brokerName>\n            <brokerFileNo>8-15255</brokerFileNo>\n
+        \           <brokerCrdNo>000004297</brokerCrdNo>\n            <brokerLei>OXTKY6Q8X53C9ILVV871</brokerLei>\n
+        \           <brokerStateCountry brokerState=\"US-NY\" brokerCountry=\"US\"/>\n
+        \           <grossCommission>282.62000000</grossCommission>\n          </broker>\n
+        \         <broker>\n            <brokerName>Citigroup Global Markets Inc.</brokerName>\n
+        \           <brokerFileNo>8-8177</brokerFileNo>\n            <brokerCrdNo>000007059</brokerCrdNo>\n
+        \           <brokerLei>MBNUM2BPBDO7JBLYG310</brokerLei>\n            <brokerStateCountry
+        brokerState=\"US-NY\" brokerCountry=\"US\"/>\n            <grossCommission>601.03000000</grossCommission>\n
+        \         </broker>\n          <broker>\n            <brokerName>UBS Securities
+        LLC</brokerName>\n            <brokerFileNo>8-22651</brokerFileNo>\n            <brokerCrdNo>000007654</brokerCrdNo>\n
+        \           <brokerLei>T6FIZBDPKLYJKFCRVK44</brokerLei>\n            <brokerStateCountry
+        brokerState=\"US-NY\" brokerCountry=\"US\"/>\n            <grossCommission>5365.39000000</grossCommission>\n
+        \         </broker>\n          <broker>\n            <brokerName>Morgan Stanley
+        &amp; Co. LLC</brokerName>\n            <brokerFileNo>8-15869</brokerFileNo>\n
+        \           <brokerCrdNo>000008209</brokerCrdNo>\n            <brokerLei>9R7GPTSO7KV3UQJZQ078</brokerLei>\n
+        \           <brokerStateCountry brokerState=\"US-NY\" brokerCountry=\"US\"/>\n
+        \           <grossCommission>9644.73000000</grossCommission>\n          </broker>\n
+        \         <broker>\n            <brokerName>Wells Fargo Securities, LLC</brokerName>\n
+        \           <brokerFileNo>8-65876</brokerFileNo>\n            <brokerCrdNo>000126292</brokerCrdNo>\n
+        \           <brokerLei>VYVVCKR63DVZZN70PB21</brokerLei>\n            <brokerStateCountry
+        brokerState=\"US-NC\" brokerCountry=\"US\"/>\n            <grossCommission>205.95000000</grossCommission>\n
+        \         </broker>\n          <broker>\n            <brokerName>Haitong International
+        Securities (USA) Inc.</brokerName>\n            <brokerFileNo>8-66566</brokerFileNo>\n
+        \           <brokerCrdNo>000132201</brokerCrdNo>\n            <brokerLei>2549006M82CC9SM1JN29</brokerLei>\n
+        \           <brokerStateCountry brokerState=\"US-NY\" brokerCountry=\"US\"/>\n
+        \           <grossCommission>150.35000000</grossCommission>\n          </broker>\n
+        \         <broker>\n            <brokerName>BofA Securities, Inc.</brokerName>\n
+        \           <brokerFileNo>8-69787</brokerFileNo>\n            <brokerCrdNo>000283942</brokerCrdNo>\n
+        \           <brokerLei>549300HN4UKV1E2R3U73</brokerLei>\n            <brokerStateCountry
+        brokerState=\"US-NY\" brokerCountry=\"US\"/>\n            <grossCommission>9890.37000000</grossCommission>\n
+        \         </broker>\n        </brokers>\n        <aggregateCommission>77222.38000000</aggregateCommission>\n
+        \       <principalTransactions>\n          <principalTransaction>\n            <principalName>Brown
+        Brothers Harriman Investments, LLC</principalName>\n            <principalFileNo>8-69731</principalFileNo>\n
+        \           <principalCrdNo>000282732</principalCrdNo>\n            <principalStateCountry
+        principalState=\"US-NY\" principalCountry=\"US\"/>\n            <principalTotalPurchaseSale>39223357.80000000</principalTotalPurchaseSale>\n
+        \         </principalTransaction>\n        </principalTransactions>\n        <principalAggregatePurchase>39223357.80000000</principalAggregatePurchase>\n
+        \       <isBrokerageResearchPayment>Y</isBrokerageResearchPayment>\n        <mnthlyAvgNetAssets>52887264.89846153</mnthlyAvgNetAssets>\n
+        \       <lineOfCredit hasLineOfCredit=\"Y\">\n          <lineOfCreditDetails>\n
+        \           <lineOfCreditDetail>\n              <isCreditLineCommitted>Committed</isCreditLineCommitted>\n
+        \             <lineOfCreditSize>325000000.00000000</lineOfCreditSize>\n              <lineOfCreditInstitutions>\n
+        \               <lineOfCreditInstitution creditInstitutionName=\"AUSTRALIA
+        AND NEW ZEALAND BANKING GROUP LIMITED\"/>\n                <lineOfCreditInstitution
+        creditInstitutionName=\"BANK OF AMERICA, N.A.\"/>\n                <lineOfCreditInstitution
+        creditInstitutionName=\"BARCLAYS BANK PLC\"/>\n                <lineOfCreditInstitution
+        creditInstitutionName=\"BNP PARIBAS\"/>\n                <lineOfCreditInstitution
+        creditInstitutionName=\"BROWN BROTHERS HARRIMAN &amp; CO.\"/>\n                <lineOfCreditInstitution
+        creditInstitutionName=\"CITIBANK, N.A.\"/>\n                <lineOfCreditInstitution
+        creditInstitutionName=\"DEUTSCHE BANK AG NEW YORK BRANCH\"/>\n                <lineOfCreditInstitution
+        creditInstitutionName=\"GOLDMAN SACHS BANK USA\"/>\n                <lineOfCreditInstitution
+        creditInstitutionName=\"HSBC BANK USA, NATIONAL ASSOCIATION\"/>\n                <lineOfCreditInstitution
+        creditInstitutionName=\"JPMORGAN CHASE BANK, N.A.\"/>\n                <lineOfCreditInstitution
+        creditInstitutionName=\"MORGAN STANLEY BANK, N.A.\"/>\n                <lineOfCreditInstitution
+        creditInstitutionName=\"STANDARD CHARTERED BANK\"/>\n                <lineOfCreditInstitution
+        creditInstitutionName=\"STATE STREET BANK AND TRUST COMPANY\"/>\n                <lineOfCreditInstitution
+        creditInstitutionName=\"THE NORTHERN TRUST COMPANY\"/>\n              </lineOfCreditInstitutions>\n
+        \             <sharedCreditType creditType=\"Shared\">\n                <creditUser
+        fundName=\"AB All Market Real Return Portfolio\" secFileNo=\"811-02383\"/>\n
+        \               <creditUser fundName=\"AB All Market Total Return Portfolio\"
+        secFileNo=\"811-05088\"/>\n                <creditUser fundName=\"AB Balanced
+        Hedged Allocation Portfolio\" secFileNo=\"811-05398\"/>\n                <creditUser
+        fundName=\"AB Bond Inflation Strategy\" secFileNo=\"811-02383\"/>\n                <creditUser
+        fundName=\"AB CORE OPPORTUNITIES FUND, INC.\" secFileNo=\"811-09687\"/>\n
+        \               <creditUser fundName=\"AB California Intermediate Municipal
+        ETF\" secFileNo=\"811-23799\"/>\n                <creditUser fundName=\"AB
+        California Portfolio\" secFileNo=\"811-04719\"/>\n                <creditUser
+        fundName=\"AB Concentrated Growth Fund\" secFileNo=\"811-01716\"/>\n                <creditUser
+        fundName=\"AB Concentrated International Growth Portfolio\" secFileNo=\"811-01716\"/>\n
+        \               <creditUser fundName=\"AB Conservative Buffer ETF\" secFileNo=\"811-23799\"/>\n
+        \               <creditUser fundName=\"AB Core Bond ETF\" secFileNo=\"811-23799\"/>\n
+        \               <creditUser fundName=\"AB Core Plus Bond ETF\" secFileNo=\"811-23799\"/>\n
+        \               <creditUser fundName=\"AB Corporate Bond ETF\" secFileNo=\"811-23799\"/>\n
+        \               <creditUser fundName=\"AB Corporate Income Shares\" secFileNo=\"811-21497\"/>\n
+        \               <creditUser fundName=\"AB DISCOVERY GROWTH FUND, INC.\" secFileNo=\"811-00204\"/>\n
+        \               <creditUser fundName=\"AB Discovery Value Fund\" secFileNo=\"811-10221\"/>\n
+        \               <creditUser fundName=\"AB Discovery Value Portfolio\" secFileNo=\"811-05398\"/>\n
+        \               <creditUser fundName=\"AB Disruptors ETF\" secFileNo=\"811-23799\"/>\n
+        \               <creditUser fundName=\"AB Dynamic Asset Allocation Portfolio\"
+        secFileNo=\"811-05398\"/>\n                <creditUser fundName=\"AB EQUITY
+        INCOME FUND INC\" secFileNo=\"811-07916\"/>\n                <creditUser fundName=\"AB
+        Emerging Markets Multi-Asset Portfolio\" secFileNo=\"811-01716\"/>\n                <creditUser
+        fundName=\"AB Emerging Markets Opportunities ETF\" secFileNo=\"811-23799\"/>\n
+        \               <creditUser fundName=\"AB GLOBAL BOND FUND, INC.\" secFileNo=\"811-06554\"/>\n
+        \               <creditUser fundName=\"AB GLOBAL RISK ALLOCATION FUND, INC.\"
+        secFileNo=\"811-00134\"/>\n                <creditUser fundName=\"AB Global
+        Core Equity Portfolio\" secFileNo=\"811-01716\"/>\n                <creditUser
+        fundName=\"AB Global Real Estate Investment Fund II\" secFileNo=\"811-08403\"/>\n
+        \               <creditUser fundName=\"AB Growth Fund\" secFileNo=\"811-05088\"/>\n
+        \               <creditUser fundName=\"AB HIGH INCOME FUND INC\" secFileNo=\"811-08188\"/>\n
+        \               <creditUser fundName=\"AB High Income Municipal Portfolio\"
+        secFileNo=\"811-04791\"/>\n                <creditUser fundName=\"AB High
+        Yield ETF\" secFileNo=\"811-23799\"/>\n                <creditUser fundName=\"AB
+        Impact Municipal Income Shares\" secFileNo=\"811-21497\"/>\n                <creditUser
+        fundName=\"AB Income Fund\" secFileNo=\"811-02383\"/>\n                <creditUser
+        fundName=\"AB International Buffer ETF\" secFileNo=\"811-23799\"/>\n                <creditUser
+        fundName=\"AB International Growth ETF\" secFileNo=\"811-23799\"/>\n                <creditUser
+        fundName=\"AB International Low Volatility Equity ETF\" secFileNo=\"811-23799\"/>\n
+        \               <creditUser fundName=\"AB International Value Fund\" secFileNo=\"811-10221\"/>\n
+        \               <creditUser fundName=\"AB International Value Portfolio\"
+        secFileNo=\"811-05398\"/>\n                <creditUser fundName=\"AB LARGE
+        CAP GROWTH FUND INC\" secFileNo=\"811-06730\"/>\n                <creditUser
+        fundName=\"AB Large Cap Growth Portfolio\" secFileNo=\"811-05398\"/>\n                <creditUser
+        fundName=\"AB Large Cap Value Fund\" secFileNo=\"811-10221\"/>\n                <creditUser
+        fundName=\"AB Massachusetts Portfolio\" secFileNo=\"811-07618\"/>\n                <creditUser
+        fundName=\"AB Mid Cap Value Portfolio\" secFileNo=\"811-01716\"/>\n                <creditUser
+        fundName=\"AB Moderate Buffer ETF\" secFileNo=\"811-23799\"/>\n                <creditUser
+        fundName=\"AB Municipal Bond Inflation Strategy\" secFileNo=\"811-02383\"/>\n
+        \               <creditUser fundName=\"AB Municipal Income Shares\" secFileNo=\"811-21497\"/>\n
+        \               <creditUser fundName=\"AB National Portfolio\" secFileNo=\"811-04791\"/>\n
+        \               <creditUser fundName=\"AB New York Intermediate Municipal
+        ETF\" secFileNo=\"811-23799\"/>\n                <creditUser fundName=\"AB
+        New York Portfolio\" secFileNo=\"811-04791\"/>\n                <creditUser
+        fundName=\"AB RELATIVE VALUE FUND, INC.\" secFileNo=\"811-00126\"/>\n                <creditUser
+        fundName=\"AB Relative Value Portfolio\" secFileNo=\"811-05398\"/>\n                <creditUser
+        fundName=\"AB SUSTAINABLE GLOBAL THEMATIC FUND, INC.\" secFileNo=\"811-03131\"/>\n
+        \               <creditUser fundName=\"AB SUSTAINABLE INTERNATIONAL THEMATIC
+        FUND INC\" secFileNo=\"811-08426\"/>\n                <creditUser fundName=\"AB
+        Select US Equity Portfolio\" secFileNo=\"811-01716\"/>\n                <creditUser
+        fundName=\"AB Select US Long/Short Portfolio\" secFileNo=\"811-01716\"/>\n
+        \               <creditUser fundName=\"AB Short Duration High Yield ETF\"
+        secFileNo=\"811-23799\"/>\n                <creditUser fundName=\"AB Short
+        Duration Income ETF\" secFileNo=\"811-23799\"/>\n                <creditUser
+        fundName=\"AB Small Cap Growth Portfolio\" secFileNo=\"811-05398\"/>\n                <creditUser
+        fundName=\"AB Small Cap Value Portfolio\" secFileNo=\"811-01716\"/>\n                <creditUser
+        fundName=\"AB Sustainable Global Thematic Portfolio\" secFileNo=\"811-05398\"/>\n
+        \               <creditUser fundName=\"AB Sustainable Thematic Balanced Portfolio\"
+        secFileNo=\"811-05088\"/>\n                <creditUser fundName=\"AB Sustainable
+        Thematic Credit Portfolio\" secFileNo=\"811-02383\"/>\n                <creditUser
+        fundName=\"AB Sustainable US Thematic Portfolio\" secFileNo=\"811-01716\"/>\n
+        \               <creditUser fundName=\"AB Tax-Aware Fixed Income Opportunities
+        Portfolio\" secFileNo=\"811-02383\"/>\n                <creditUser fundName=\"AB
+        Tax-Aware Intermediate Municipal ETF\" secFileNo=\"811-23799\"/>\n                <creditUser
+        fundName=\"AB Tax-Aware Long Municipal ETF\" secFileNo=\"811-23799\"/>\n                <creditUser
+        fundName=\"AB Tax-Aware Short Duration Municipal ETF\" secFileNo=\"811-23799\"/>\n
+        \               <creditUser fundName=\"AB Tax-Managed Wealth Appreciation
+        Strategy\" secFileNo=\"811-05088\"/>\n                <creditUser fundName=\"AB
+        Taxable Multi-Sector Income Shares\" secFileNo=\"811-21497\"/>\n                <creditUser
+        fundName=\"AB US High Dividend ETF\" secFileNo=\"811-23799\"/>\n                <creditUser
+        fundName=\"AB US Large Cap Strategic Equities ETF\" secFileNo=\"811-23799\"/>\n
+        \               <creditUser fundName=\"AB US Low Volatility Equity ETF\" secFileNo=\"811-23799\"/>\n
+        \               <creditUser fundName=\"AB Ultra Short Income ETF\" secFileNo=\"811-23799\"/>\n
+        \               <creditUser fundName=\"AB Virginia Portfolio\" secFileNo=\"811-07618\"/>\n
+        \               <creditUser fundName=\"AB Wealth Appreciation Strategy\" secFileNo=\"811-05088\"/>\n
+        \             </sharedCreditType>\n              <isCreditLineUsed>N</isCreditLineUsed>\n
+        \           </lineOfCreditDetail>\n          </lineOfCreditDetails>\n        </lineOfCredit>\n
+        \       <isInterfundLending>N</isInterfundLending>\n        <isInterfundBorrowing>N</isInterfundBorrowing>\n
+        \       <isSwingPricing>N</isSwingPricing>\n        <liquidityClassifications>\n
+        \         <liquidityClassificationService>\n            <liquidityName>MSCI
+        Inc.</liquidityName>\n            <liquidityLei>549300HTIN2PD78UB763</liquidityLei>\n
+        \           <liquidityStateCountry liquidityCountry=\"US\" liquidityState=\"US-NY\"/>\n
+        \           <isAffiliatedPerson>N</isAffiliatedPerson>\n            <assetClassType>Equity-common</assetClassType>\n
+        \           <assetClassType>Short-term investment vehicle</assetClassType>\n
+        \         </liquidityClassificationService>\n        </liquidityClassifications>\n
+        \       <isLiquidityHiredTerminated>Y</isLiquidityHiredTerminated>\n      </managementInvestmentQuestion>\n
+        \     <managementInvestmentQuestion>\n        <mgmtInvFundName>AB Mid Cap
+        Value Portfolio</mgmtInvFundName>\n        <mgmtInvSeriesId>S000084745</mgmtInvSeriesId>\n
+        \       <mgmtInvLei>254900REYH25IG02SR60</mgmtInvLei>\n        <isFirstFilingByFund>N</isFirstFilingByFund>\n
+        \       <numAuthorizedClass>11</numAuthorizedClass>\n        <numAddedClass>0</numAddedClass>\n
+        \       <numTerminatedClass>0</numTerminatedClass>\n        <sharesOutstandings>\n
+        \         <sharesOutstanding sharesOutstandingClassName=\"Class Z\" sharesOutstandingClassId=\"C000249214\"
+        sharesOutstandingTickerSymbol=\"ABMVX\"/>\n        </sharesOutstandings>\n
+        \       <fundType>N/A</fundType>\n        <isNonDiversifiedCompany>N</isNonDiversifiedCompany>\n
+        \       <isForeignSubsidiary>N</isForeignSubsidiary>\n        <isFundSecuritiesLending>Y</isFundSecuritiesLending>\n
+        \       <fundLendSecurities didFundLendSecurities=\"Y\">\n          <isFundLiquidated>N</isFundLiquidated>\n
+        \         <isFundAdverselyImpacted>N</isFundAdverselyImpacted>\n        </fundLendSecurities>\n
+        \       <securityLendings>\n          <securityLending>\n            <securitiesAgentName>State
+        Street Bank and Trust Company</securitiesAgentName>\n            <securitiesAgentLei>571474TGEMMWANRLN572</securitiesAgentLei>\n
+        \           <isSecuritiesAgentAffiliated>N</isSecuritiesAgentAffiliated>\n
+        \           <securityAgentIdemnity isSecurityAgentIdemnity=\"Y\">\n              <idemnityProviders>\n
+        \               <idemnityProvider idemnityProviderName=\"N/A\"/>\n              </idemnityProviders>\n
+        \             <didIndemnificationRights>N</didIndemnificationRights>\n            </securityAgentIdemnity>\n
+        \         </securityLending>\n        </securityLendings>\n        <collateralManagers>\n
+        \         <collateralManager collateralManagerName=\"AllianceBernstein L.P.\"
+        collateralManagerLei=\"0JK55UGWSWNF3X7KLQ85\" isCollateralManagerAffliliated=\"N\"
+        isCollateralManagerAffliliatedWithFund=\"Y\"/>\n        </collateralManagers>\n
+        \       <paymentToAgentManagers>\n          <paymentToAgentManagerType>Revenue
+        sharing split</paymentToAgentManagerType>\n        </paymentToAgentManagers>\n
+        \       <avgPortfolioSecuritiesValue>10187.16000000</avgPortfolioSecuritiesValue>\n
+        \       <netIncomeSecuritiesLending>9.00000000</netIncomeSecuritiesLending>\n
+        \       <relyOnRuleTypes>\n          <relyOnRuleType>Rule 12d1-1 (17 CFR 270.12d1-1)</relyOnRuleType>\n
+        \         <relyOnRuleType>Rule 18f-4 (17 CFR 270.18f-4)</relyOnRuleType>\n
+        \         <relyOnRuleType>Rule 22d-1 (17 CFR 270.22d-1)</relyOnRuleType>\n
+        \         <relyOnRuleType>Rule 32a-4 (17 CFR 270.32a-4)</relyOnRuleType>\n
+        \       </relyOnRuleTypes>\n        <isExpenseLimitationInPlace>Y</isExpenseLimitationInPlace>\n
+        \       <isExpenseReducedOrWaived>Y</isExpenseReducedOrWaived>\n        <isFeesWaivedRecoupable>N</isFeesWaivedRecoupable>\n
+        \       <isExpenseWaivedRecoupable>N</isExpenseWaivedRecoupable>\n        <investmentAdvisers>\n
+        \         <investmentAdviser>\n            <investmentAdviserName>AllianceBernstein
+        L.P.</investmentAdviserName>\n            <investmentAdviserFileNo>801-56720</investmentAdviserFileNo>\n
+        \           <investmentAdviserCrdNo>000108477</investmentAdviserCrdNo>\n            <investmentAdviserLei>0JK55UGWSWNF3X7KLQ85</investmentAdviserLei>\n
+        \           <investmentAdviserStateCountry investmentAdviserState=\"US-TN\"
+        investmentAdviserCountry=\"US\"/>\n            <isInvestmentAdviserHired>N</isInvestmentAdviserHired>\n
+        \         </investmentAdviser>\n        </investmentAdvisers>\n        <transferAgents>\n
+        \         <transferAgent>\n            <transferAgentName>AllianceBernstein
+        Investor Services, Inc.</transferAgentName>\n            <transferAgentFileNo>084-01187</transferAgentFileNo>\n
+        \           <transferAgentLei>254900AWWRBOHYAC4I42</transferAgentLei>\n            <transferAgentStateCountry
+        transferAgentState=\"US-TX\" transferAgentCountry=\"US\"/>\n            <isTransferAgentAffiliated>Y</isTransferAgentAffiliated>\n
+        \           <isTransferAgentSubAgent>N</isTransferAgentSubAgent>\n          </transferAgent>\n
+        \       </transferAgents>\n        <isTransferAgentHiredOrTerminated>N</isTransferAgentHiredOrTerminated>\n
+        \       <pricingServices>\n          <pricingService>\n            <pricingServiceName>Bloomberg
+        L.P.</pricingServiceName>\n            <pricingServiceLei>549300B56MD0ZC402L06</pricingServiceLei>\n
+        \           <pricingServiceStateCountry pricingServiceState=\"US-NY\" pricingServiceCountry=\"US\"/>\n
+        \           <isPricingServiceAffiliated>N</isPricingServiceAffiliated>\n          </pricingService>\n
+        \         <pricingService>\n            <pricingServiceName>ICE Data Services,
+        Inc.</pricingServiceName>\n            <pricingServiceOther>13-3668779</pricingServiceOther>\n
+        \           <pricingServiceIdNumberDesc>Tax ID</pricingServiceIdNumberDesc>\n
+        \           <pricingServiceStateCountry pricingServiceState=\"US-GA\" pricingServiceCountry=\"US\"/>\n
+        \           <isPricingServiceAffiliated>N</isPricingServiceAffiliated>\n          </pricingService>\n
+        \         <pricingService>\n            <pricingServiceName>London Stock Exchange
+        Group PLC</pricingServiceName>\n            <pricingServiceLei>213800QAUUUP6I445N30</pricingServiceLei>\n
+        \           <pricingServiceCountry>GB</pricingServiceCountry>\n            <isPricingServiceAffiliated>N</isPricingServiceAffiliated>\n
+        \         </pricingService>\n          <pricingService>\n            <pricingServiceName>PricingDirect
+        Inc.</pricingServiceName>\n            <pricingServiceLei>549300WIC0TOJ7N7GD54</pricingServiceLei>\n
+        \           <pricingServiceStateCountry pricingServiceState=\"US-NY\" pricingServiceCountry=\"US\"/>\n
+        \           <isPricingServiceAffiliated>N</isPricingServiceAffiliated>\n          </pricingService>\n
+        \         <pricingService>\n            <pricingServiceName>S&amp;P Global
+        Inc.</pricingServiceName>\n            <pricingServiceLei>Y6X4K52KMJMZE7I7MY94</pricingServiceLei>\n
+        \           <pricingServiceStateCountry pricingServiceState=\"US-NY\" pricingServiceCountry=\"US\"/>\n
+        \           <isPricingServiceAffiliated>N</isPricingServiceAffiliated>\n          </pricingService>\n
+        \         <pricingService>\n            <pricingServiceName>Standard &amp;
+        Poor's Financial Services LLC</pricingServiceName>\n            <pricingServiceLei>549300U4VWNITEKO2881</pricingServiceLei>\n
+        \           <pricingServiceStateCountry pricingServiceState=\"US-NY\" pricingServiceCountry=\"US\"/>\n
+        \           <isPricingServiceAffiliated>N</isPricingServiceAffiliated>\n          </pricingService>\n
+        \         <pricingService>\n            <pricingServiceName>Vertical Management
+        Systems, Inc.</pricingServiceName>\n            <pricingServiceOther>95-4373305</pricingServiceOther>\n
+        \           <pricingServiceIdNumberDesc>Tax ID</pricingServiceIdNumberDesc>\n
+        \           <pricingServiceStateCountry pricingServiceState=\"US-NJ\" pricingServiceCountry=\"US\"/>\n
+        \           <isPricingServiceAffiliated>N</isPricingServiceAffiliated>\n          </pricingService>\n
+        \       </pricingServices>\n        <isPricingServiceHiredOrTerminated>N</isPricingServiceHiredOrTerminated>\n
+        \       <custodians>\n          <custodian>\n            <custodianName>Euroclear
+        Bank</custodianName>\n            <custodianLei>549300OZ46BRLZ8Y6F65</custodianLei>\n
+        \           <custodianCountry>BE</custodianCountry>\n            <isCustodianAffiliated>N</isCustodianAffiliated>\n
+        \           <isSubCustodian>Y</isSubCustodian>\n            <custodyType>Foreign
+        securities depository - rule 17f-7 (17 CFR 270.17f-7)</custodyType>\n          </custodian>\n
+        \         <custodian>\n            <custodianName>Mizuho Bank, Ltd. (Minato
+        ku, Tokyo, JP, Branch)</custodianName>\n            <custodianLei>RB0PEZSDGCO3JS6CEU02</custodianLei>\n
+        \           <custodianCountry>JP</custodianCountry>\n            <isCustodianAffiliated>N</isCustodianAffiliated>\n
+        \           <isSubCustodian>Y</isSubCustodian>\n            <custodyType>Foreign
+        custodian - rule 17f-5 (17 CFR 270.17f-5)</custodyType>\n          </custodian>\n
+        \         <custodian>\n            <custodianName>Standard Chartered Bank
+        (Johannesburg, Gauteng, ZA, Branch)</custodianName>\n            <custodianLei>RILFO74KP1CM8P6PCT96</custodianLei>\n
+        \           <custodianCountry>ZA</custodianCountry>\n            <isCustodianAffiliated>N</isCustodianAffiliated>\n
+        \           <isSubCustodian>Y</isSubCustodian>\n            <custodyType>Foreign
+        custodian - rule 17f-5 (17 CFR 270.17f-5)</custodyType>\n          </custodian>\n
+        \         <custodian>\n            <custodianName>State Street Bank and Trust
+        Company</custodianName>\n            <custodianLei>571474TGEMMWANRLN572</custodianLei>\n
+        \           <custodianStateCountry custodianState=\"US-MA\" custodianCountry=\"US\"/>\n
+        \           <isCustodianAffiliated>N</isCustodianAffiliated>\n            <isSubCustodian>N</isSubCustodian>\n
+        \           <custodyType>Bank - section 17(f)(1) (15 U.S.C. 80a-17(f)(1))</custodyType>\n
+        \         </custodian>\n          <custodian>\n            <custodianName>UBS
+        Switzerland AG</custodianName>\n            <custodianLei>549300WOIFUSNYH0FL22</custodianLei>\n
+        \           <custodianCountry>CH</custodianCountry>\n            <isCustodianAffiliated>N</isCustodianAffiliated>\n
+        \           <isSubCustodian>Y</isSubCustodian>\n            <custodyType>Foreign
+        custodian - rule 17f-5 (17 CFR 270.17f-5)</custodyType>\n          </custodian>\n
+        \         <custodian>\n            <custodianName>UniCredit Bank Hungary Zrt.</custodianName>\n
+        \           <custodianLei>Y28RT6GGYJ696PMW8T44</custodianLei>\n            <custodianCountry>HU</custodianCountry>\n
+        \           <isCustodianAffiliated>N</isCustodianAffiliated>\n            <isSubCustodian>Y</isSubCustodian>\n
+        \           <custodyType>Foreign custodian - rule 17f-5 (17 CFR 270.17f-5)</custodyType>\n
+        \         </custodian>\n        </custodians>\n        <isCustodianHiredOrTerminated>Y</isCustodianHiredOrTerminated>\n
+        \       <shareholderServicingAgents>\n          <shareholderServicingAgent>\n
+        \           <shareholderServiceAgentName>AllianceBernstein Investor Services,
+        Inc.</shareholderServiceAgentName>\n            <shareholderServiceAgentLei>254900AWWRBOHYAC4I42</shareholderServiceAgentLei>\n
+        \           <shareholderServiceAgentStateCountry shareholderServiceAgentState=\"US-TX\"
+        shareholderServiceAgentCountry=\"US\"/>\n            <isShareholderServiceAgentAffiliated>Y</isShareholderServiceAgentAffiliated>\n
+        \           <isShareholderServiceAgentSubshare>N</isShareholderServiceAgentSubshare>\n
+        \         </shareholderServicingAgent>\n        </shareholderServicingAgents>\n
+        \       <isShareholderServiceHiredTerminated>N</isShareholderServiceHiredTerminated>\n
+        \       <admins>\n          <admin>\n            <adminName>AllianceBernstein
+        L.P.</adminName>\n            <adminLei>0JK55UGWSWNF3X7KLQ85</adminLei>\n
+        \           <adminStateCountry adminState=\"US-TN\" adminCountry=\"US\"/>\n
+        \           <isAdminAffiliated>Y</isAdminAffiliated>\n            <isAdminSubAdmin>N</isAdminSubAdmin>\n
+        \         </admin>\n        </admins>\n        <isAdminHiredOrTerminated>N</isAdminHiredOrTerminated>\n
+        \       <brokerDealers>\n          <brokerDealer>\n            <brokerDealerName>Sanford
+        C. Bernstein &amp; Co., LLC</brokerDealerName>\n            <brokerDealerFileNo>8-52942</brokerDealerFileNo>\n
+        \           <brokerDealerCrdNo>000104474</brokerDealerCrdNo>\n            <brokerDealerLei>549300I7JYZHT7D5CO04</brokerDealerLei>\n
+        \           <brokerDealerStateCountry brokerDealerState=\"US-NY\" brokerDealerCountry=\"US\"/>\n
+        \           <brokerDealerCommission>0.00000000</brokerDealerCommission>\n
+        \         </brokerDealer>\n          <brokerDealer>\n            <brokerDealerName>Sanford
+        C. Bernstein Limited</brokerDealerName>\n            <brokerDealerFileNo>N/A</brokerDealerFileNo>\n
+        \           <brokerDealerCrdNo>N/A</brokerDealerCrdNo>\n            <brokerDealerLei>54930049G8WQ5OOUSD19</brokerDealerLei>\n
+        \           <brokerDealerCountry>GB</brokerDealerCountry>\n            <brokerDealerCommission>0.00000000</brokerDealerCommission>\n
+        \         </brokerDealer>\n        </brokerDealers>\n        <brokers>\n          <broker>\n
+        \           <brokerName>J.P. Morgan Securities LLC</brokerName>\n            <brokerFileNo>8-35008</brokerFileNo>\n
+        \           <brokerCrdNo>000000079</brokerCrdNo>\n            <brokerLei>ZBUT11V806EZRVTWT807</brokerLei>\n
+        \           <brokerStateCountry brokerState=\"US-NY\" brokerCountry=\"US\"/>\n
+        \           <grossCommission>28.10000000</grossCommission>\n          </broker>\n
+        \         <broker>\n            <brokerName>Goldman Sachs &amp; Co. LLC</brokerName>\n
+        \           <brokerFileNo>8-129</brokerFileNo>\n            <brokerCrdNo>000000361</brokerCrdNo>\n
+        \           <brokerLei>FOR8UP27PHTHYVLBNG30</brokerLei>\n            <brokerStateCountry
+        brokerState=\"US-NY\" brokerCountry=\"US\"/>\n            <grossCommission>59.70000000</grossCommission>\n
+        \         </broker>\n          <broker>\n            <brokerName>Jefferies
+        LLC</brokerName>\n            <brokerFileNo>8-15074</brokerFileNo>\n            <brokerCrdNo>000002347</brokerCrdNo>\n
+        \           <brokerLei>58PU97L1C0WSRCWADL48</brokerLei>\n            <brokerStateCountry
+        brokerState=\"US-NY\" brokerCountry=\"US\"/>\n            <grossCommission>48.67000000</grossCommission>\n
+        \         </broker>\n          <broker>\n            <brokerName>UBS Securities
+        LLC</brokerName>\n            <brokerFileNo>8-22651</brokerFileNo>\n            <brokerCrdNo>000007654</brokerCrdNo>\n
+        \           <brokerLei>T6FIZBDPKLYJKFCRVK44</brokerLei>\n            <brokerStateCountry
+        brokerState=\"US-NY\" brokerCountry=\"US\"/>\n            <grossCommission>27.90000000</grossCommission>\n
+        \         </broker>\n          <broker>\n            <brokerName>Morgan Stanley
+        &amp; Co. LLC</brokerName>\n            <brokerFileNo>8-15869</brokerFileNo>\n
+        \           <brokerCrdNo>000008209</brokerCrdNo>\n            <brokerLei>9R7GPTSO7KV3UQJZQ078</brokerLei>\n
+        \           <brokerStateCountry brokerState=\"US-NY\" brokerCountry=\"US\"/>\n
+        \           <grossCommission>12.80000000</grossCommission>\n          </broker>\n
+        \         <broker>\n            <brokerName>BMO Capital Markets Corp.</brokerName>\n
+        \           <brokerFileNo>8-34344</brokerFileNo>\n            <brokerCrdNo>000016686</brokerCrdNo>\n
+        \           <brokerLei>RUC0QBLBRPRCU4W1NE59</brokerLei>\n            <brokerStateCountry
+        brokerState=\"US-NY\" brokerCountry=\"US\"/>\n            <grossCommission>44.75000000</grossCommission>\n
+        \         </broker>\n          <broker>\n            <brokerName>Barclays
+        Capital Inc.</brokerName>\n            <brokerFileNo>8-41342</brokerFileNo>\n
+        \           <brokerCrdNo>000019714</brokerCrdNo>\n            <brokerLei>AC28XWWI3WIBK2824319</brokerLei>\n
+        \           <brokerStateCountry brokerState=\"US-NY\" brokerCountry=\"US\"/>\n
+        \           <grossCommission>13.63000000</grossCommission>\n          </broker>\n
+        \         <broker>\n            <brokerName>Citation Group Ltd.</brokerName>\n
+        \           <brokerFileNo>8-43632</brokerFileNo>\n            <brokerCrdNo>000028305</brokerCrdNo>\n
+        \           <brokerStateCountry brokerState=\"US-NY\" brokerCountry=\"US\"/>\n
+        \           <grossCommission>85.17000000</grossCommission>\n          </broker>\n
+        \         <broker>\n            <brokerName>Wells Fargo Securities, LLC</brokerName>\n
+        \           <brokerFileNo>8-65876</brokerFileNo>\n            <brokerCrdNo>000126292</brokerCrdNo>\n
+        \           <brokerLei>VYVVCKR63DVZZN70PB21</brokerLei>\n            <brokerStateCountry
+        brokerState=\"US-NC\" brokerCountry=\"US\"/>\n            <grossCommission>16.40000000</grossCommission>\n
+        \         </broker>\n          <broker>\n            <brokerName>BofA Securities,
+        Inc.</brokerName>\n            <brokerFileNo>8-69787</brokerFileNo>\n            <brokerCrdNo>000283942</brokerCrdNo>\n
+        \           <brokerLei>549300HN4UKV1E2R3U73</brokerLei>\n            <brokerStateCountry
+        brokerState=\"US-NY\" brokerCountry=\"US\"/>\n            <grossCommission>75.87000000</grossCommission>\n
+        \         </broker>\n        </brokers>\n        <aggregateCommission>473.56000000</aggregateCommission>\n
+        \       <principalTransactions>\n          <principalTransaction>\n            <principalName>State
+        Street Bank and Trust Company</principalName>\n            <principalFileNo>N/A</principalFileNo>\n
+        \           <principalCrdNo>N/A</principalCrdNo>\n            <principalLei>571474TGEMMWANRLN572</principalLei>\n
+        \           <principalStateCountry principalState=\"US-MA\" principalCountry=\"US\"/>\n
+        \           <principalTotalPurchaseSale>576628.62000000</principalTotalPurchaseSale>\n
+        \         </principalTransaction>\n        </principalTransactions>\n        <principalAggregatePurchase>576628.62000000</principalAggregatePurchase>\n
+        \       <isBrokerageResearchPayment>Y</isBrokerageResearchPayment>\n        <mnthlyAvgNetAssets>2220418.67230769</mnthlyAvgNetAssets>\n
+        \       <lineOfCredit hasLineOfCredit=\"Y\">\n          <lineOfCreditDetails>\n
+        \           <lineOfCreditDetail>\n              <isCreditLineCommitted>Committed</isCreditLineCommitted>\n
+        \             <lineOfCreditSize>325000000.00000000</lineOfCreditSize>\n              <lineOfCreditInstitutions>\n
+        \               <lineOfCreditInstitution creditInstitutionName=\"AUSTRALIA
+        AND NEW ZEALAND BANKING GROUP LIMITED\"/>\n                <lineOfCreditInstitution
+        creditInstitutionName=\"BANK OF AMERICA, N.A.\"/>\n                <lineOfCreditInstitution
+        creditInstitutionName=\"BARCLAYS BANK PLC\"/>\n                <lineOfCreditInstitution
+        creditInstitutionName=\"BNP PARIBAS\"/>\n                <lineOfCreditInstitution
+        creditInstitutionName=\"BROWN BROTHERS HARRIMAN &amp; CO.\"/>\n                <lineOfCreditInstitution
+        creditInstitutionName=\"CITIBANK, N.A.\"/>\n                <lineOfCreditInstitution
+        creditInstitutionName=\"DEUTSCHE BANK AG NEW YORK BRANCH\"/>\n                <lineOfCreditInstitution
+        creditInstitutionName=\"GOLDMAN SACHS BANK USA\"/>\n                <lineOfCreditInstitution
+        creditInstitutionName=\"HSBC BANK USA, NATIONAL ASSOCIATION\"/>\n                <lineOfCreditInstitution
+        creditInstitutionName=\"JPMORGAN CHASE BANK, N.A.\"/>\n                <lineOfCreditInstitution
+        creditInstitutionName=\"MORGAN STANLEY BANK, N.A.\"/>\n                <lineOfCreditInstitution
+        creditInstitutionName=\"STANDARD CHARTERED BANK\"/>\n                <lineOfCreditInstitution
+        creditInstitutionName=\"STATE STREET BANK AND TRUST COMPANY\"/>\n                <lineOfCreditInstitution
+        creditInstitutionName=\"THE NORTHERN TRUST COMPANY\"/>\n              </lineOfCreditInstitutions>\n
+        \             <sharedCreditType creditType=\"Shared\">\n                <creditUser
+        fundName=\"AB All China Equity Portfolio\" secFileNo=\"811-01716\"/>\n                <creditUser
+        fundName=\"AB All Market Real Return Portfolio\" secFileNo=\"811-02383\"/>\n
+        \               <creditUser fundName=\"AB All Market Total Return Portfolio\"
+        secFileNo=\"811-05088\"/>\n                <creditUser fundName=\"AB Balanced
+        Hedged Allocation Portfolio\" secFileNo=\"811-05398\"/>\n                <creditUser
+        fundName=\"AB Bond Inflation Strategy\" secFileNo=\"811-02383\"/>\n                <creditUser
+        fundName=\"AB CORE OPPORTUNITIES FUND, INC.\" secFileNo=\"811-09687\"/>\n
+        \               <creditUser fundName=\"AB California Intermediate Municipal
+        ETF\" secFileNo=\"811-23799\"/>\n                <creditUser fundName=\"AB
+        California Portfolio\" secFileNo=\"811-04719\"/>\n                <creditUser
+        fundName=\"AB Concentrated Growth Fund\" secFileNo=\"811-01716\"/>\n                <creditUser
+        fundName=\"AB Concentrated International Growth Portfolio\" secFileNo=\"811-01716\"/>\n
+        \               <creditUser fundName=\"AB Conservative Buffer ETF\" secFileNo=\"811-23799\"/>\n
+        \               <creditUser fundName=\"AB Core Bond ETF\" secFileNo=\"811-23799\"/>\n
+        \               <creditUser fundName=\"AB Core Plus Bond ETF\" secFileNo=\"811-23799\"/>\n
+        \               <creditUser fundName=\"AB Corporate Bond ETF\" secFileNo=\"811-23799\"/>\n
+        \               <creditUser fundName=\"AB Corporate Income Shares\" secFileNo=\"811-21497\"/>\n
+        \               <creditUser fundName=\"AB DISCOVERY GROWTH FUND, INC.\" secFileNo=\"811-00204\"/>\n
+        \               <creditUser fundName=\"AB Discovery Value Fund\" secFileNo=\"811-10221\"/>\n
+        \               <creditUser fundName=\"AB Discovery Value Portfolio\" secFileNo=\"811-05398\"/>\n
+        \               <creditUser fundName=\"AB Disruptors ETF\" secFileNo=\"811-23799\"/>\n
+        \               <creditUser fundName=\"AB Dynamic Asset Allocation Portfolio\"
+        secFileNo=\"811-05398\"/>\n                <creditUser fundName=\"AB EQUITY
+        INCOME FUND INC\" secFileNo=\"811-07916\"/>\n                <creditUser fundName=\"AB
+        Emerging Markets Multi-Asset Portfolio\" secFileNo=\"811-01716\"/>\n                <creditUser
+        fundName=\"AB Emerging Markets Opportunities ETF\" secFileNo=\"811-23799\"/>\n
+        \               <creditUser fundName=\"AB GLOBAL BOND FUND, INC.\" secFileNo=\"811-06554\"/>\n
+        \               <creditUser fundName=\"AB GLOBAL RISK ALLOCATION FUND, INC.\"
+        secFileNo=\"811-00134\"/>\n                <creditUser fundName=\"AB Global
+        Core Equity Portfolio\" secFileNo=\"811-01716\"/>\n                <creditUser
+        fundName=\"AB Global Real Estate Investment Fund II\" secFileNo=\"811-08403\"/>\n
+        \               <creditUser fundName=\"AB Growth Fund\" secFileNo=\"811-05088\"/>\n
+        \               <creditUser fundName=\"AB HIGH INCOME FUND INC\" secFileNo=\"811-08188\"/>\n
+        \               <creditUser fundName=\"AB High Income Municipal Portfolio\"
+        secFileNo=\"811-04791\"/>\n                <creditUser fundName=\"AB High
+        Yield ETF\" secFileNo=\"811-23799\"/>\n                <creditUser fundName=\"AB
+        Impact Municipal Income Shares\" secFileNo=\"811-21497\"/>\n                <creditUser
+        fundName=\"AB Income Fund\" secFileNo=\"811-02383\"/>\n                <creditUser
+        fundName=\"AB International Buffer ETF\" secFileNo=\"811-23799\"/>\n                <creditUser
+        fundName=\"AB International Growth ETF\" secFileNo=\"811-23799\"/>\n                <creditUser
+        fundName=\"AB International Low Volatility Equity ETF\" secFileNo=\"811-23799\"/>\n
+        \               <creditUser fundName=\"AB International Value Fund\" secFileNo=\"811-10221\"/>\n
+        \               <creditUser fundName=\"AB International Value Portfolio\"
+        secFileNo=\"811-05398\"/>\n                <creditUser fundName=\"AB LARGE
+        CAP GROWTH FUND INC\" secFileNo=\"811-06730\"/>\n                <creditUser
+        fundName=\"AB Large Cap Growth Portfolio\" secFileNo=\"811-05398\"/>\n                <creditUser
+        fundName=\"AB Large Cap Value Fund\" secFileNo=\"811-10221\"/>\n                <creditUser
+        fundName=\"AB Massachusetts Portfolio\" secFileNo=\"811-07618\"/>\n                <creditUser
+        fundName=\"AB Moderate Buffer ETF\" secFileNo=\"811-23799\"/>\n                <creditUser
+        fundName=\"AB Municipal Bond Inflation Strategy\" secFileNo=\"811-02383\"/>\n
+        \               <creditUser fundName=\"AB Municipal Income Shares\" secFileNo=\"811-21497\"/>\n
+        \               <creditUser fundName=\"AB National Portfolio\" secFileNo=\"811-04791\"/>\n
+        \               <creditUser fundName=\"AB New York Intermediate Municipal
+        ETF\" secFileNo=\"811-23799\"/>\n                <creditUser fundName=\"AB
+        New York Portfolio\" secFileNo=\"811-04791\"/>\n                <creditUser
+        fundName=\"AB RELATIVE VALUE FUND, INC.\" secFileNo=\"811-00126\"/>\n                <creditUser
+        fundName=\"AB Relative Value Portfolio\" secFileNo=\"811-05398\"/>\n                <creditUser
+        fundName=\"AB SUSTAINABLE GLOBAL THEMATIC FUND, INC.\" secFileNo=\"811-03131\"/>\n
+        \               <creditUser fundName=\"AB SUSTAINABLE INTERNATIONAL THEMATIC
+        FUND INC\" secFileNo=\"811-08426\"/>\n                <creditUser fundName=\"AB
+        Select US Equity Portfolio\" secFileNo=\"811-01716\"/>\n                <creditUser
+        fundName=\"AB Select US Long/Short Portfolio\" secFileNo=\"811-01716\"/>\n
+        \               <creditUser fundName=\"AB Short Duration High Yield ETF\"
+        secFileNo=\"811-23799\"/>\n                <creditUser fundName=\"AB Short
+        Duration Income ETF\" secFileNo=\"811-23799\"/>\n                <creditUser
+        fundName=\"AB Small Cap Growth Portfolio\" secFileNo=\"811-05398\"/>\n                <creditUser
+        fundName=\"AB Small Cap Value Portfolio\" secFileNo=\"811-01716\"/>\n                <creditUser
+        fundName=\"AB Sustainable Global Thematic Portfolio\" secFileNo=\"811-05398\"/>\n
+        \               <creditUser fundName=\"AB Sustainable Thematic Balanced Portfolio\"
+        secFileNo=\"811-05088\"/>\n                <creditUser fundName=\"AB Sustainable
+        Thematic Credit Portfolio\" secFileNo=\"811-02383\"/>\n                <creditUser
+        fundName=\"AB Sustainable US Thematic Portfolio\" secFileNo=\"811-01716\"/>\n
+        \               <creditUser fundName=\"AB Tax-Aware Fixed Income Opportunities
+        Portfolio\" secFileNo=\"811-02383\"/>\n                <creditUser fundName=\"AB
+        Tax-Aware Intermediate Municipal ETF\" secFileNo=\"811-23799\"/>\n                <creditUser
+        fundName=\"AB Tax-Aware Long Municipal ETF\" secFileNo=\"811-23799\"/>\n                <creditUser
+        fundName=\"AB Tax-Aware Short Duration Municipal ETF\" secFileNo=\"811-23799\"/>\n
+        \               <creditUser fundName=\"AB Tax-Managed Wealth Appreciation
+        Strategy\" secFileNo=\"811-05088\"/>\n                <creditUser fundName=\"AB
+        Taxable Multi-Sector Income Shares\" secFileNo=\"811-21497\"/>\n                <creditUser
+        fundName=\"AB US High Dividend ETF\" secFileNo=\"811-23799\"/>\n                <creditUser
+        fundName=\"AB US Large Cap Strategic Equities ETF\" secFileNo=\"811-23799\"/>\n
+        \               <creditUser fundName=\"AB US Low Volatility Equity ETF\" secFileNo=\"811-23799\"/>\n
+        \               <creditUser fundName=\"AB Ultra Short Income ETF\" secFileNo=\"811-23799\"/>\n
+        \               <creditUser fundName=\"AB Virginia Portfolio\" secFileNo=\"811-07618\"/>\n
+        \               <creditUser fundName=\"AB Wealth Appreciation Strategy\" secFileNo=\"811-05088\"/>\n
+        \             </sharedCreditType>\n              <isCreditLineUsed>N</isCreditLineUsed>\n
+        \           </lineOfCreditDetail>\n          </lineOfCreditDetails>\n        </lineOfCredit>\n
+        \       <isInterfundLending>N</isInterfundLending>\n        <isInterfundBorrowing>N</isInterfundBorrowing>\n
+        \       <isSwingPricing>N</isSwingPricing>\n        <liquidityClassifications>\n
+        \         <liquidityClassificationService>\n            <liquidityName>MSCI
+        Inc.</liquidityName>\n            <liquidityLei>549300HTIN2PD78UB763</liquidityLei>\n
+        \           <liquidityStateCountry liquidityCountry=\"US\" liquidityState=\"US-NY\"/>\n
+        \           <isAffiliatedPerson>N</isAffiliatedPerson>\n            <assetClassType>Equity-common</assetClassType>\n
+        \           <assetClassType>Short-term investment vehicle</assetClassType>\n
+        \         </liquidityClassificationService>\n        </liquidityClassifications>\n
+        \       <isLiquidityHiredTerminated>Y</isLiquidityHiredTerminated>\n      </managementInvestmentQuestion>\n
+        \     <managementInvestmentQuestion>\n        <mgmtInvFundName>AB Small Cap
+        Value Portfolio</mgmtInvFundName>\n        <mgmtInvSeriesId>S000045542</mgmtInvSeriesId>\n
+        \       <mgmtInvLei>549300UQGW9QD71LSV33</mgmtInvLei>\n        <isFirstFilingByFund>N</isFirstFilingByFund>\n
+        \       <numAuthorizedClass>11</numAuthorizedClass>\n        <numAddedClass>0</numAddedClass>\n
+        \       <numTerminatedClass>0</numTerminatedClass>\n        <sharesOutstandings>\n
+        \         <sharesOutstanding sharesOutstandingClassName=\"Advisor Class\"
+        sharesOutstandingClassId=\"C000141795\" sharesOutstandingTickerSymbol=\"SCYVX\"/>\n
+        \         <sharesOutstanding sharesOutstandingClassName=\"Class A\" sharesOutstandingClassId=\"C000141790\"
+        sharesOutstandingTickerSymbol=\"SCAVX\"/>\n          <sharesOutstanding sharesOutstandingClassName=\"Class
+        C\" sharesOutstandingClassId=\"C000141791\" sharesOutstandingTickerSymbol=\"SCCVX\"/>\n
+        \       </sharesOutstandings>\n        <fundType>N/A</fundType>\n        <isNonDiversifiedCompany>N</isNonDiversifiedCompany>\n
+        \       <isForeignSubsidiary>N</isForeignSubsidiary>\n        <isFundSecuritiesLending>Y</isFundSecuritiesLending>\n
+        \       <fundLendSecurities didFundLendSecurities=\"Y\">\n          <isFundLiquidated>N</isFundLiquidated>\n
+        \         <isFundAdverselyImpacted>N</isFundAdverselyImpacted>\n        </fundLendSecurities>\n
+        \       <securityLendings>\n          <securityLending>\n            <securitiesAgentName>State
+        Street Bank and Trust Company</securitiesAgentName>\n            <securitiesAgentLei>571474TGEMMWANRLN572</securitiesAgentLei>\n
+        \           <isSecuritiesAgentAffiliated>N</isSecuritiesAgentAffiliated>\n
+        \           <securityAgentIdemnity isSecurityAgentIdemnity=\"Y\">\n              <idemnityProviders>\n
+        \               <idemnityProvider idemnityProviderName=\"N/A\"/>\n              </idemnityProviders>\n
+        \             <didIndemnificationRights>N</didIndemnificationRights>\n            </securityAgentIdemnity>\n
+        \         </securityLending>\n        </securityLendings>\n        <collateralManagers>\n
+        \         <collateralManager collateralManagerName=\"AllianceBernstein L.P.\"
+        collateralManagerLei=\"0JK55UGWSWNF3X7KLQ85\" isCollateralManagerAffliliated=\"N\"
+        isCollateralManagerAffliliatedWithFund=\"Y\"/>\n        </collateralManagers>\n
+        \       <paymentToAgentManagers>\n          <paymentToAgentManagerType>Revenue
+        sharing split</paymentToAgentManagerType>\n        </paymentToAgentManagers>\n
+        \       <avgPortfolioSecuritiesValue>12593196.88000000</avgPortfolioSecuritiesValue>\n
+        \       <netIncomeSecuritiesLending>17246.00000000</netIncomeSecuritiesLending>\n
+        \       <relyOnRuleTypes>\n          <relyOnRuleType>Rule 12d1-1 (17 CFR 270.12d1-1)</relyOnRuleType>\n
+        \         <relyOnRuleType>Rule 18f-4 (17 CFR 270.18f-4)</relyOnRuleType>\n
+        \         <relyOnRuleType>Rule 22d-1 (17 CFR 270.22d-1)</relyOnRuleType>\n
+        \         <relyOnRuleType>Rule 32a-4 (17 CFR 270.32a-4)</relyOnRuleType>\n
+        \       </relyOnRuleTypes>\n        <isExpenseLimitationInPlace>Y</isExpenseLimitationInPlace>\n
+        \       <isExpenseReducedOrWaived>Y</isExpenseReducedOrWaived>\n        <isFeesWaivedRecoupable>N</isFeesWaivedRecoupable>\n
+        \       <isExpenseWaivedRecoupable>N</isExpenseWaivedRecoupable>\n        <investmentAdvisers>\n
+        \         <investmentAdviser>\n            <investmentAdviserName>AllianceBernstein
+        L.P.</investmentAdviserName>\n            <investmentAdviserFileNo>801-56720</investmentAdviserFileNo>\n
+        \           <investmentAdviserCrdNo>000108477</investmentAdviserCrdNo>\n            <investmentAdviserLei>0JK55UGWSWNF3X7KLQ85</investmentAdviserLei>\n
+        \           <investmentAdviserStateCountry investmentAdviserState=\"US-TN\"
+        investmentAdviserCountry=\"US\"/>\n            <isInvestmentAdviserHired>N</isInvestmentAdviserHired>\n
+        \         </investmentAdviser>\n        </investmentAdvisers>\n        <transferAgents>\n
+        \         <transferAgent>\n            <transferAgentName>AllianceBernstein
+        Investor Services, Inc.</transferAgentName>\n            <transferAgentFileNo>084-01187</transferAgentFileNo>\n
+        \           <transferAgentLei>254900AWWRBOHYAC4I42</transferAgentLei>\n            <transferAgentStateCountry
+        transferAgentState=\"US-TX\" transferAgentCountry=\"US\"/>\n            <isTransferAgentAffiliated>Y</isTransferAgentAffiliated>\n
+        \           <isTransferAgentSubAgent>N</isTransferAgentSubAgent>\n          </transferAgent>\n
+        \       </transferAgents>\n        <isTransferAgentHiredOrTerminated>N</isTransferAgentHiredOrTerminated>\n
+        \       <pricingServices>\n          <pricingService>\n            <pricingServiceName>Bloomberg
+        L.P.</pricingServiceName>\n            <pricingServiceLei>549300B56MD0ZC402L06</pricingServiceLei>\n
+        \           <pricingServiceStateCountry pricingServiceState=\"US-NY\" pricingServiceCountry=\"US\"/>\n
+        \           <isPricingServiceAffiliated>N</isPricingServiceAffiliated>\n          </pricingService>\n
+        \         <pricingService>\n            <pricingServiceName>ICE Data Services,
+        Inc.</pricingServiceName>\n            <pricingServiceOther>13-3668779</pricingServiceOther>\n
+        \           <pricingServiceIdNumberDesc>Tax ID</pricingServiceIdNumberDesc>\n
+        \           <pricingServiceStateCountry pricingServiceState=\"US-GA\" pricingServiceCountry=\"US\"/>\n
+        \           <isPricingServiceAffiliated>N</isPricingServiceAffiliated>\n          </pricingService>\n
+        \         <pricingService>\n            <pricingServiceName>London Stock Exchange
+        Group PLC</pricingServiceName>\n            <pricingServiceLei>213800QAUUUP6I445N30</pricingServiceLei>\n
+        \           <pricingServiceCountry>GB</pricingServiceCountry>\n            <isPricingServiceAffiliated>N</isPricingServiceAffiliated>\n
+        \         </pricingService>\n          <pricingService>\n            <pricingServiceName>PricingDirect
+        Inc.</pricingServiceName>\n            <pricingServiceLei>549300WIC0TOJ7N7GD54</pricingServiceLei>\n
+        \           <pricingServiceStateCountry pricingServiceState=\"US-NY\" pricingServiceCountry=\"US\"/>\n
+        \           <isPricingServiceAffiliated>N</isPricingServiceAffiliated>\n          </pricingService>\n
+        \         <pricingService>\n            <pricingServiceName>S&amp;P Global
+        Inc.</pricingServiceName>\n            <pricingServiceLei>Y6X4K52KMJMZE7I7MY94</pricingServiceLei>\n
+        \           <pricingServiceStateCountry pricingServiceState=\"US-NY\" pricingServiceCountry=\"US\"/>\n
+        \           <isPricingServiceAffiliated>N</isPricingServiceAffiliated>\n          </pricingService>\n
+        \         <pricingService>\n            <pricingServiceName>Standard &amp;
+        Poor's Financial Services LLC</pricingServiceName>\n            <pricingServiceLei>549300U4VWNITEKO2881</pricingServiceLei>\n
+        \           <pricingServiceStateCountry pricingServiceState=\"US-NY\" pricingServiceCountry=\"US\"/>\n
+        \           <isPricingServiceAffiliated>N</isPricingServiceAffiliated>\n          </pricingService>\n
+        \         <pricingService>\n            <pricingServiceName>Vertical Management
+        Systems, Inc.</pricingServiceName>\n            <pricingServiceOther>95-4373305</pricingServiceOther>\n
+        \           <pricingServiceIdNumberDesc>Tax ID</pricingServiceIdNumberDesc>\n
+        \           <pricingServiceStateCountry pricingServiceState=\"US-NJ\" pricingServiceCountry=\"US\"/>\n
+        \           <isPricingServiceAffiliated>N</isPricingServiceAffiliated>\n          </pricingService>\n
+        \       </pricingServices>\n        <isPricingServiceHiredOrTerminated>N</isPricingServiceHiredOrTerminated>\n
+        \       <custodians>\n          <custodian>\n            <custodianName>Clearstream
+        Banking S.A.</custodianName>\n            <custodianLei>549300OL514RA0SXJJ44</custodianLei>\n
+        \           <custodianCountry>LU</custodianCountry>\n            <isCustodianAffiliated>N</isCustodianAffiliated>\n
+        \           <isSubCustodian>Y</isSubCustodian>\n            <custodyType>Foreign
+        securities depository - rule 17f-7 (17 CFR 270.17f-7)</custodyType>\n          </custodian>\n
+        \         <custodian>\n            <custodianName>State Street Bank and Trust
+        Company</custodianName>\n            <custodianLei>571474TGEMMWANRLN572</custodianLei>\n
+        \           <custodianStateCountry custodianState=\"US-MA\" custodianCountry=\"US\"/>\n
+        \           <isCustodianAffiliated>N</isCustodianAffiliated>\n            <isSubCustodian>N</isSubCustodian>\n
+        \           <custodyType>Bank - section 17(f)(1) (15 U.S.C. 80a-17(f)(1))</custodyType>\n
+        \         </custodian>\n        </custodians>\n        <isCustodianHiredOrTerminated>N</isCustodianHiredOrTerminated>\n
+        \       <shareholderServicingAgents>\n          <shareholderServicingAgent>\n
+        \           <shareholderServiceAgentName>AllianceBernstein Investor Services,
+        Inc.</shareholderServiceAgentName>\n            <shareholderServiceAgentLei>254900AWWRBOHYAC4I42</shareholderServiceAgentLei>\n
+        \           <shareholderServiceAgentStateCountry shareholderServiceAgentState=\"US-TX\"
+        shareholderServiceAgentCountry=\"US\"/>\n            <isShareholderServiceAgentAffiliated>Y</isShareholderServiceAgentAffiliated>\n
+        \           <isShareholderServiceAgentSubshare>N</isShareholderServiceAgentSubshare>\n
+        \         </shareholderServicingAgent>\n        </shareholderServicingAgents>\n
+        \       <isShareholderServiceHiredTerminated>N</isShareholderServiceHiredTerminated>\n
+        \       <admins>\n          <admin>\n            <adminName>AllianceBernstein
+        L.P.</adminName>\n            <adminLei>0JK55UGWSWNF3X7KLQ85</adminLei>\n
+        \           <adminStateCountry adminState=\"US-TN\" adminCountry=\"US\"/>\n
+        \           <isAdminAffiliated>Y</isAdminAffiliated>\n            <isAdminSubAdmin>N</isAdminSubAdmin>\n
+        \         </admin>\n        </admins>\n        <isAdminHiredOrTerminated>N</isAdminHiredOrTerminated>\n
+        \       <brokerDealers>\n          <brokerDealer>\n            <brokerDealerName>Sanford
+        C. Bernstein &amp; Co., LLC</brokerDealerName>\n            <brokerDealerFileNo>8-52942</brokerDealerFileNo>\n
+        \           <brokerDealerCrdNo>000104474</brokerDealerCrdNo>\n            <brokerDealerLei>549300I7JYZHT7D5CO04</brokerDealerLei>\n
+        \           <brokerDealerStateCountry brokerDealerState=\"US-NY\" brokerDealerCountry=\"US\"/>\n
+        \           <brokerDealerCommission>0.00000000</brokerDealerCommission>\n
+        \         </brokerDealer>\n          <brokerDealer>\n            <brokerDealerName>Sanford
+        C. Bernstein Limited</brokerDealerName>\n            <brokerDealerFileNo>N/A</brokerDealerFileNo>\n
+        \           <brokerDealerCrdNo>N/A</brokerDealerCrdNo>\n            <brokerDealerLei>54930049G8WQ5OOUSD19</brokerDealerLei>\n
+        \           <brokerDealerCountry>GB</brokerDealerCountry>\n            <brokerDealerCommission>0.00000000</brokerDealerCommission>\n
+        \         </brokerDealer>\n        </brokerDealers>\n        <brokers>\n          <broker>\n
+        \           <brokerName>J.P. Morgan Securities LLC</brokerName>\n            <brokerFileNo>8-35008</brokerFileNo>\n
+        \           <brokerCrdNo>000000079</brokerCrdNo>\n            <brokerLei>ZBUT11V806EZRVTWT807</brokerLei>\n
+        \           <brokerStateCountry brokerState=\"US-NY\" brokerCountry=\"US\"/>\n
+        \           <grossCommission>53960.62000000</grossCommission>\n          </broker>\n
+        \         <broker>\n            <brokerName>Goldman Sachs &amp; Co. LLC</brokerName>\n
+        \           <brokerFileNo>8-129</brokerFileNo>\n            <brokerCrdNo>000000361</brokerCrdNo>\n
+        \           <brokerLei>FOR8UP27PHTHYVLBNG30</brokerLei>\n            <brokerStateCountry
+        brokerState=\"US-NY\" brokerCountry=\"US\"/>\n            <grossCommission>46882.17000000</grossCommission>\n
+        \         </broker>\n          <broker>\n            <brokerName>Jefferies
+        LLC</brokerName>\n            <brokerFileNo>8-15074</brokerFileNo>\n            <brokerCrdNo>000002347</brokerCrdNo>\n
+        \           <brokerLei>58PU97L1C0WSRCWADL48</brokerLei>\n            <brokerStateCountry
+        brokerState=\"US-NY\" brokerCountry=\"US\"/>\n            <grossCommission>50011.82000000</grossCommission>\n
+        \         </broker>\n          <broker>\n            <brokerName>Citigroup
+        Global Markets Inc.</brokerName>\n            <brokerFileNo>8-8177</brokerFileNo>\n
+        \           <brokerCrdNo>000007059</brokerCrdNo>\n            <brokerLei>MBNUM2BPBDO7JBLYG310</brokerLei>\n
+        \           <brokerStateCountry brokerState=\"US-NY\" brokerCountry=\"US\"/>\n
+        \           <grossCommission>22720.62000000</grossCommission>\n          </broker>\n
+        \         <broker>\n            <brokerName>UBS Securities LLC</brokerName>\n
+        \           <brokerFileNo>8-22651</brokerFileNo>\n            <brokerCrdNo>000007654</brokerCrdNo>\n
+        \           <brokerLei>T6FIZBDPKLYJKFCRVK44</brokerLei>\n            <brokerStateCountry
+        brokerState=\"US-NY\" brokerCountry=\"US\"/>\n            <grossCommission>30450.18000000</grossCommission>\n
+        \         </broker>\n          <broker>\n            <brokerName>Morgan Stanley
+        &amp; Co. LLC</brokerName>\n            <brokerFileNo>8-15869</brokerFileNo>\n
+        \           <brokerCrdNo>000008209</brokerCrdNo>\n            <brokerLei>9R7GPTSO7KV3UQJZQ078</brokerLei>\n
+        \           <brokerStateCountry brokerState=\"US-NY\" brokerCountry=\"US\"/>\n
+        \           <grossCommission>67746.85000000</grossCommission>\n          </broker>\n
+        \         <broker>\n            <brokerName>BMO Capital Markets Corp.</brokerName>\n
+        \           <brokerFileNo>8-34344</brokerFileNo>\n            <brokerCrdNo>000016686</brokerCrdNo>\n
+        \           <brokerLei>RUC0QBLBRPRCU4W1NE59</brokerLei>\n            <brokerStateCountry
+        brokerState=\"US-NY\" brokerCountry=\"US\"/>\n            <grossCommission>31448.97000000</grossCommission>\n
+        \         </broker>\n          <broker>\n            <brokerName>Barclays
+        Capital Inc.</brokerName>\n            <brokerFileNo>8-41342</brokerFileNo>\n
+        \           <brokerCrdNo>000019714</brokerCrdNo>\n            <brokerLei>AC28XWWI3WIBK2824319</brokerLei>\n
+        \           <brokerStateCountry brokerState=\"US-NY\" brokerCountry=\"US\"/>\n
+        \           <grossCommission>62669.44000000</grossCommission>\n          </broker>\n
+        \         <broker>\n            <brokerName>Wells Fargo Securities, LLC</brokerName>\n
+        \           <brokerFileNo>8-65876</brokerFileNo>\n            <brokerCrdNo>000126292</brokerCrdNo>\n
+        \           <brokerLei>VYVVCKR63DVZZN70PB21</brokerLei>\n            <brokerStateCountry
+        brokerState=\"US-NC\" brokerCountry=\"US\"/>\n            <grossCommission>17450.79000000</grossCommission>\n
+        \         </broker>\n          <broker>\n            <brokerName>BofA Securities,
+        Inc.</brokerName>\n            <brokerFileNo>8-69787</brokerFileNo>\n            <brokerCrdNo>000283942</brokerCrdNo>\n
+        \           <brokerLei>549300HN4UKV1E2R3U73</brokerLei>\n            <brokerStateCountry
+        brokerState=\"US-NY\" brokerCountry=\"US\"/>\n            <grossCommission>88414.00000000</grossCommission>\n
+        \         </broker>\n        </brokers>\n        <aggregateCommission>574662.31000000</aggregateCommission>\n
+        \       <principalTransactions>\n          <principalTransaction>\n            <principalName>State
+        Street Bank and Trust Company</principalName>\n            <principalFileNo>N/A</principalFileNo>\n
+        \           <principalCrdNo>N/A</principalCrdNo>\n            <principalLei>571474TGEMMWANRLN572</principalLei>\n
+        \           <principalStateCountry principalState=\"US-MA\" principalCountry=\"US\"/>\n
+        \           <principalTotalPurchaseSale>357595686.63000000</principalTotalPurchaseSale>\n
+        \         </principalTransaction>\n        </principalTransactions>\n        <principalAggregatePurchase>357595686.63000000</principalAggregatePurchase>\n
+        \       <isBrokerageResearchPayment>Y</isBrokerageResearchPayment>\n        <mnthlyAvgNetAssets>564700404.99461538</mnthlyAvgNetAssets>\n
+        \       <lineOfCredit hasLineOfCredit=\"Y\">\n          <lineOfCreditDetails>\n
+        \           <lineOfCreditDetail>\n              <isCreditLineCommitted>Committed</isCreditLineCommitted>\n
+        \             <lineOfCreditSize>325000000.00000000</lineOfCreditSize>\n              <lineOfCreditInstitutions>\n
+        \               <lineOfCreditInstitution creditInstitutionName=\"AUSTRALIA
+        AND NEW ZEALAND BANKING GROUP LIMITED\"/>\n                <lineOfCreditInstitution
+        creditInstitutionName=\"BANK OF AMERICA, N.A.\"/>\n                <lineOfCreditInstitution
+        creditInstitutionName=\"BARCLAYS BANK PLC\"/>\n                <lineOfCreditInstitution
+        creditInstitutionName=\"BNP PARIBAS\"/>\n                <lineOfCreditInstitution
+        creditInstitutionName=\"BROWN BROTHERS HARRIMAN &amp; CO.\"/>\n                <lineOfCreditInstitution
+        creditInstitutionName=\"CITIBANK, N.A.\"/>\n                <lineOfCreditInstitution
+        creditInstitutionName=\"DEUTSCHE BANK AG NEW YORK BRANCH\"/>\n                <lineOfCreditInstitution
+        creditInstitutionName=\"GOLDMAN SACHS BANK USA\"/>\n                <lineOfCreditInstitution
+        creditInstitutionName=\"HSBC BANK USA, NATIONAL ASSOCIATION\"/>\n                <lineOfCreditInstitution
+        creditInstitutionName=\"JPMORGAN CHASE BANK, N.A.\"/>\n                <lineOfCreditInstitution
+        creditInstitutionName=\"MORGAN STANLEY BANK, N.A.\"/>\n                <lineOfCreditInstitution
+        creditInstitutionName=\"STANDARD CHARTERED BANK\"/>\n                <lineOfCreditInstitution
+        creditInstitutionName=\"STATE STREET BANK AND TRUST COMPANY\"/>\n                <lineOfCreditInstitution
+        creditInstitutionName=\"THE NORTHERN TRUST COMPANY\"/>\n              </lineOfCreditInstitutions>\n
+        \             <sharedCreditType creditType=\"Shared\">\n                <creditUser
+        fundName=\"AB All China Equity Portfolio\" secFileNo=\"811-01716\"/>\n                <creditUser
+        fundName=\"AB All Market Real Return Portfolio\" secFileNo=\"811-02383\"/>\n
+        \               <creditUser fundName=\"AB All Market Total Return Portfolio\"
+        secFileNo=\"811-05088\"/>\n                <creditUser fundName=\"AB Balanced
+        Hedged Allocation Portfolio\" secFileNo=\"811-05398\"/>\n                <creditUser
+        fundName=\"AB Bond Inflation Strategy\" secFileNo=\"811-02383\"/>\n                <creditUser
+        fundName=\"AB CORE OPPORTUNITIES FUND, INC.\" secFileNo=\"811-09687\"/>\n
+        \               <creditUser fundName=\"AB California Intermediate Municipal
+        ETF\" secFileNo=\"811-23799\"/>\n                <creditUser fundName=\"AB
+        California Portfolio\" secFileNo=\"811-04719\"/>\n                <creditUser
+        fundName=\"AB Concentrated Growth Fund\" secFileNo=\"811-01716\"/>\n                <creditUser
+        fundName=\"AB Concentrated International Growth Portfolio\" secFileNo=\"811-01716\"/>\n
+        \               <creditUser fundName=\"AB Conservative Buffer ETF\" secFileNo=\"811-23799\"/>\n
+        \               <creditUser fundName=\"AB Core Bond ETF\" secFileNo=\"811-23799\"/>\n
+        \               <creditUser fundName=\"AB Core Plus Bond ETF\" secFileNo=\"811-23799\"/>\n
+        \               <creditUser fundName=\"AB Corporate Bond ETF\" secFileNo=\"811-23799\"/>\n
+        \               <creditUser fundName=\"AB Corporate Income Shares\" secFileNo=\"811-21497\"/>\n
+        \               <creditUser fundName=\"AB DISCOVERY GROWTH FUND, INC.\" secFileNo=\"811-00204\"/>\n
+        \               <creditUser fundName=\"AB Discovery Value Fund\" secFileNo=\"811-10221\"/>\n
+        \               <creditUser fundName=\"AB Discovery Value Portfolio\" secFileNo=\"811-05398\"/>\n
+        \               <creditUser fundName=\"AB Disruptors ETF\" secFileNo=\"811-23799\"/>\n
+        \               <creditUser fundName=\"AB Dynamic Asset Allocation Portfolio\"
+        secFileNo=\"811-05398\"/>\n                <creditUser fundName=\"AB EQUITY
+        INCOME FUND INC\" secFileNo=\"811-07916\"/>\n                <creditUser fundName=\"AB
+        Emerging Markets Multi-Asset Portfolio\" secFileNo=\"811-01716\"/>\n                <creditUser
+        fundName=\"AB Emerging Markets Opportunities ETF\" secFileNo=\"811-23799\"/>\n
+        \               <creditUser fundName=\"AB GLOBAL BOND FUND, INC.\" secFileNo=\"811-06554\"/>\n
+        \               <creditUser fundName=\"AB GLOBAL RISK ALLOCATION FUND, INC.\"
+        secFileNo=\"811-00134\"/>\n                <creditUser fundName=\"AB Global
+        Core Equity Portfolio\" secFileNo=\"811-01716\"/>\n                <creditUser
+        fundName=\"AB Global Real Estate Investment Fund II\" secFileNo=\"811-08403\"/>\n
+        \               <creditUser fundName=\"AB Growth Fund\" secFileNo=\"811-05088\"/>\n
+        \               <creditUser fundName=\"AB HIGH INCOME FUND INC\" secFileNo=\"811-08188\"/>\n
+        \               <creditUser fundName=\"AB High Income Municipal Portfolio\"
+        secFileNo=\"811-04791\"/>\n                <creditUser fundName=\"AB High
+        Yield ETF\" secFileNo=\"811-23799\"/>\n                <creditUser fundName=\"AB
+        Impact Municipal Income Shares\" secFileNo=\"811-21497\"/>\n                <creditUser
+        fundName=\"AB Income Fund\" secFileNo=\"811-02383\"/>\n                <creditUser
+        fundName=\"AB International Buffer ETF\" secFileNo=\"811-23799\"/>\n                <creditUser
+        fundName=\"AB International Growth ETF\" secFileNo=\"811-23799\"/>\n                <creditUser
+        fundName=\"AB International Low Volatility Equity ETF\" secFileNo=\"811-23799\"/>\n
+        \               <creditUser fundName=\"AB International Value Fund\" secFileNo=\"811-10221\"/>\n
+        \               <creditUser fundName=\"AB International Value Portfolio\"
+        secFileNo=\"811-05398\"/>\n                <creditUser fundName=\"AB LARGE
+        CAP GROWTH FUND INC\" secFileNo=\"811-06730\"/>\n                <creditUser
+        fundName=\"AB Large Cap Growth Portfolio\" secFileNo=\"811-05398\"/>\n                <creditUser
+        fundName=\"AB Large Cap Value Fund\" secFileNo=\"811-10221\"/>\n                <creditUser
+        fundName=\"AB Massachusetts Portfolio\" secFileNo=\"811-07618\"/>\n                <creditUser
+        fundName=\"AB Mid Cap Value Portfolio\" secFileNo=\"811-01716\"/>\n                <creditUser
+        fundName=\"AB Moderate Buffer ETF\" secFileNo=\"811-23799\"/>\n                <creditUser
+        fundName=\"AB Municipal Bond Inflation Strategy\" secFileNo=\"811-02383\"/>\n
+        \               <creditUser fundName=\"AB Municipal Income Shares\" secFileNo=\"811-21497\"/>\n
+        \               <creditUser fundName=\"AB National Portfolio\" secFileNo=\"811-04791\"/>\n
+        \               <creditUser fundName=\"AB New York Intermediate Municipal
+        ETF\" secFileNo=\"811-23799\"/>\n                <creditUser fundName=\"AB
+        New York Portfolio\" secFileNo=\"811-04791\"/>\n                <creditUser
+        fundName=\"AB RELATIVE VALUE FUND, INC.\" secFileNo=\"811-00126\"/>\n                <creditUser
+        fundName=\"AB Relative Value Portfolio\" secFileNo=\"811-05398\"/>\n                <creditUser
+        fundName=\"AB SUSTAINABLE GLOBAL THEMATIC FUND, INC.\" secFileNo=\"811-03131\"/>\n
+        \               <creditUser fundName=\"AB SUSTAINABLE INTERNATIONAL THEMATIC
+        FUND INC\" secFileNo=\"811-08426\"/>\n                <creditUser fundName=\"AB
+        Select US Equity Portfolio\" secFileNo=\"811-01716\"/>\n                <creditUser
+        fundName=\"AB Select US Long/Short Portfolio\" secFileNo=\"811-01716\"/>\n
+        \               <creditUser fundName=\"AB Short Duration High Yield ETF\"
+        secFileNo=\"811-23799\"/>\n                <creditUser fundName=\"AB Short
+        Duration Income ETF\" secFileNo=\"811-23799\"/>\n                <creditUser
+        fundName=\"AB Small Cap Growth Portfolio\" secFileNo=\"811-05398\"/>\n                <creditUser
+        fundName=\"AB Sustainable Global Thematic Portfolio\" secFileNo=\"811-05398\"/>\n
+        \               <creditUser fundName=\"AB Sustainable Thematic Balanced Portfolio\"
+        secFileNo=\"811-05088\"/>\n                <creditUser fundName=\"AB Sustainable
+        Thematic Credit Portfolio\" secFileNo=\"811-02383\"/>\n                <creditUser
+        fundName=\"AB Sustainable US Thematic Portfolio\" secFileNo=\"811-01716\"/>\n
+        \               <creditUser fundName=\"AB Tax-Aware Fixed Income Opportunities
+        Portfolio\" secFileNo=\"811-02383\"/>\n                <creditUser fundName=\"AB
+        Tax-Aware Intermediate Municipal ETF\" secFileNo=\"811-23799\"/>\n                <creditUser
+        fundName=\"AB Tax-Aware Long Municipal ETF\" secFileNo=\"811-23799\"/>\n                <creditUser
+        fundName=\"AB Tax-Aware Short Duration Municipal ETF\" secFileNo=\"811-23799\"/>\n
+        \               <creditUser fundName=\"AB Tax-Managed Wealth Appreciation
+        Strategy\" secFileNo=\"811-05088\"/>\n                <creditUser fundName=\"AB
+        Taxable Multi-Sector Income Shares\" secFileNo=\"811-21497\"/>\n                <creditUser
+        fundName=\"AB US High Dividend ETF\" secFileNo=\"811-23799\"/>\n                <creditUser
+        fundName=\"AB US Large Cap Strategic Equities ETF\" secFileNo=\"811-23799\"/>\n
+        \               <creditUser fundName=\"AB US Low Volatility Equity ETF\" secFileNo=\"811-23799\"/>\n
+        \               <creditUser fundName=\"AB Ultra Short Income ETF\" secFileNo=\"811-23799\"/>\n
+        \               <creditUser fundName=\"AB Virginia Portfolio\" secFileNo=\"811-07618\"/>\n
+        \               <creditUser fundName=\"AB Wealth Appreciation Strategy\" secFileNo=\"811-05088\"/>\n
+        \             </sharedCreditType>\n              <isCreditLineUsed>N</isCreditLineUsed>\n
+        \           </lineOfCreditDetail>\n          </lineOfCreditDetails>\n        </lineOfCredit>\n
+        \       <isInterfundLending>N</isInterfundLending>\n        <isInterfundBorrowing>N</isInterfundBorrowing>\n
+        \       <isSwingPricing>N</isSwingPricing>\n        <liquidityClassifications>\n
+        \         <liquidityClassificationService>\n            <liquidityName>MSCI
+        Inc.</liquidityName>\n            <liquidityLei>549300HTIN2PD78UB763</liquidityLei>\n
+        \           <liquidityStateCountry liquidityCountry=\"US\" liquidityState=\"US-NY\"/>\n
+        \           <isAffiliatedPerson>N</isAffiliatedPerson>\n            <assetClassType>Equity-common</assetClassType>\n
+        \           <assetClassType>Short-term investment vehicle</assetClassType>\n
+        \         </liquidityClassificationService>\n        </liquidityClassifications>\n
+        \       <isLiquidityHiredTerminated>Y</isLiquidityHiredTerminated>\n      </managementInvestmentQuestion>\n
+        \   </managementInvestmentQuestionSeriesInfo>\n    <attachmentsTab>\n      <isIPAReportInternalControl>true</isIPAReportInternalControl>\n
+        \   </attachmentsTab>\n    <signature registrantSignedName=\"AB CAP FUND,
+        INC.\" signedDate=\"2026-02-10\" signature=\"Stephen Woetzel\" title=\"Controller\"/>\n
+        \ </formData>\n</edgarSubmission>\n</XML>\n</TEXT>\n</DOCUMENT>\n<DOCUMENT>\n<TYPE>INTERNAL
+        CONTROL RPT\n<SEQUENCE>2\n<FILENAME>NCEN_811-01716_22453507_1125.htm\n<TEXT>\n\n<HTML>\n<HEAD>\n
+        \  <TITLE>n-cenabcapfundinc64w3312264c.htm - Generated by SEC Publisher for
+        SEC Filing</TITLE>\n</HEAD>\n\n<BODY bgcolor=\"#ffffff\">\n<a name=\"page_1\"></a><a
+        name=\"_bclPageBorder1\"></a><DIV STYLE=\"PADDING-RIGHT: 0%; PADDING-LEFT:
+        0%\">\n<p align=center style=\"margin-bottom:0in;margin-left:0in;margin-right:0in;margin-top:0in;text-align:center;\"><b><font
+        face=\"times new roman\" lang=EN-US style=\"font-size:12.0pt;line-height:normal;\">Report
+        of Independent Registered Public\nAccounting Firm</font></b></p>\n\n<p style=\"margin-bottom:0in;margin-left:0in;margin-right:0in;margin-top:0in;\"><font
+        face=\"times new roman\" lang=EN-US style=\"font-size:12.0pt;line-height:normal;\">&nbsp;</font></p>\n\n<p
+        style=\"margin-bottom:0in;margin-left:0in;margin-right:0in;margin-top:0in;text-align:justify;text-justify:inter-ideograph;\"><font
+        face=\"times new roman\" lang=EN-US style=\"font-size:12.0pt;line-height:normal;\">To
+        the Shareholders and Board of Directors of AB Small\nCap Value Portfolio,
+        AB All China Equity Portfolio and AB Mid Cap Value\nPortfolio</font></p>\n\n<p
+        style=\"margin-bottom:0in;margin-left:0in;margin-right:0in;margin-top:0in;text-align:justify;text-justify:inter-ideograph;\"><font
+        face=\"times new roman\" lang=EN-US style=\"font-size:12.0pt;line-height:normal;\">&nbsp;</font></p>\n\n<p
+        style=\"margin-bottom:0in;margin-left:0in;margin-right:0in;margin-top:0in;text-align:justify;text-justify:inter-ideograph;\"><font
+        face=\"times new roman\" lang=EN-US style=\"font-size:12.0pt;line-height:normal;\">In
+        planning and performing our audits of the financial\nstatements of AB Small
+        Cap Value Portfolio, AB All China Equity Portfolio and\nAB Mid Cap Value Portfolio
+        (the &#8220;Funds&#8221;), (three of the portfolios constituting\nAB Cap Fund,
+        Inc.) as of and for the year or period ended November 30, 2025, in\naccordance
+        with the standards of the Public Company Accounting Oversight Board\n(United
+        States) (PCAOB), we considered the Funds&#8217; internal control over\nfinancial
+        reporting, including controls over safeguarding securities, as a\nbasis for
+        designing our auditing procedures for the purpose of expressing our\nopinions
+        on the financial statements and to comply with the requirements of\nForm N-CEN,
+        but not for the purpose of expressing an opinions on the\neffectiveness of
+        the Funds&#8217; internal control over financial reporting.\nAccordingly,
+        we express no such opinion.&#160; </font></p>\n\n<p style=\"margin-bottom:0in;margin-left:0in;margin-right:0in;margin-top:0in;text-align:justify;text-justify:inter-ideograph;\"><font
+        face=\"times new roman\" lang=EN-US style=\"font-size:12.0pt;line-height:normal;\">&nbsp;</font></p>\n\n<p
+        style=\"margin-bottom:0in;margin-left:0in;margin-right:0in;margin-top:0in;text-align:justify;text-justify:inter-ideograph;\"><font
+        face=\"times new roman\" lang=EN-US style=\"font-size:12.0pt;line-height:normal;\">The
+        management of the Funds is responsible for\nestablishing and maintaining effective
+        internal control over financial\nreporting. In fulfilling this responsibility,
+        estimates and judgments by\nmanagement are required to assess the expected
+        benefits and related costs of\ncontrols. A fund&#8217;s internal control over
+        financial reporting is a process\ndesigned to provide reasonable assurance
+        regarding the reliability of financial\nreporting and the preparation of financial
+        statements for external purposes in\naccordance with U.S. generally accepted
+        accounting principles. A fund&#8217;s internal\ncontrol over financial reporting
+        includes those policies and procedures that\n(1) pertain to the maintenance
+        of records that, in reasonable detail,\naccurately and fairly reflect the
+        transactions and dispositions of the assets\nof the fund; (2) provide reasonable
+        assurance that transactions are recorded as\nnecessary to permit preparation
+        of financial statements in accordance with U.S.\ngenerally accepted accounting
+        principles, and that receipts and expenditures of\nthe fund are being made
+        only in accordance with authorizations of management\nand directors of the
+        fund; and (3) provide reasonable assurance regarding\nprevention or timely
+        detection of unauthorized acquisition, use or disposition\nof a fund&#8217;s
+        assets that could have a material effect on the financial\nstatements.</font></p>\n\n<p
+        style=\"margin-bottom:0in;margin-left:0in;margin-right:0in;margin-top:0in;text-align:justify;text-justify:inter-ideograph;\"><font
+        face=\"times new roman\" lang=EN-US style=\"font-size:12.0pt;line-height:normal;\">&nbsp;</font></p>\n\n<p
+        style=\"margin-bottom:0in;margin-left:0in;margin-right:0in;margin-top:0in;text-align:justify;text-justify:inter-ideograph;\"><font
+        face=\"times new roman\" lang=EN-US style=\"font-size:12.0pt;line-height:normal;\">Because
+        of its inherent limitations, internal control\nover financial reporting may
+        not prevent or detect misstatements. Also,\nprojections of any evaluation
+        of effectiveness to future periods are subject to\nthe risk that controls
+        may become inadequate because of changes in conditions,\nor that the degree
+        of compliance with the policies or procedures may\ndeteriorate. </font></p>\n\n<p
+        style=\"margin-bottom:0in;margin-left:0in;margin-right:0in;margin-top:0in;text-align:justify;text-justify:inter-ideograph;\"><font
+        face=\"times new roman\" lang=EN-US style=\"font-size:12.0pt;line-height:normal;\">&nbsp;</font></p>\n\n<p
+        style=\"margin-bottom:0in;margin-left:0in;margin-right:0in;margin-top:0in;text-align:justify;text-justify:inter-ideograph;\"><font
+        face=\"times new roman\" lang=EN-US style=\"font-size:12.0pt;line-height:normal;\">A
+        deficiency in internal control over financial\nreporting exists when the design
+        or operation of a control does not allow\nmanagement or employees, in the
+        normal course of performing their assigned\nfunctions, to prevent or detect
+        misstatements on a timely basis. A material\nweakness is a deficiency, or
+        a combination of deficiencies, in internal control\nover financial reporting,
+        such that there is a reasonable possibility that a\nmaterial misstatement
+        of the fund&#8217;s annual or interim financial statements will\nnot be prevented
+        or detected on a timely basis.</font></p>\n\n<p style=\"margin-bottom:0in;margin-left:0in;margin-right:0in;margin-top:0in;text-align:justify;text-justify:inter-ideograph;\"><font
+        face=\"times new roman\" lang=EN-US style=\"font-size:12.0pt;line-height:normal;\">&nbsp;</font></p>\n\n\n\n\n<p
+        style=\"margin-bottom:10.0pt;margin-left:0in;margin-right:0in;margin-top:0in;\"><font
+        face=\"times new roman\" lang=EN-US style=\"font-size:12.0pt;line-height:115%;\">&nbsp;</font></p>\n\n\n</DIV><HR
+        noshade align=\"center\" width=\"100%\" size=2><DIV STYLE=\"page-break-before:
+        always\">&nbsp;</DIV><a name=\"page_2\"></a><a name=\"_bclPageBorder2\"></a><DIV
+        STYLE=\"PADDING-RIGHT: 0%; PADDING-LEFT: 0%\">\n<p style=\"margin-bottom:0in;margin-left:0in;margin-right:0in;margin-top:0in;text-align:justify;text-justify:inter-ideograph;\"><font
+        face=\"times new roman\" lang=EN-US style=\"font-size:12.0pt;line-height:normal;\">Our
+        consideration\nof the Funds&#8217; internal control over financial reporting
+        was for the limited\npurpose described in the first paragraph and would not
+        necessarily disclose all\ndeficiencies in internal control that might be material
+        weaknesses under\nstandards established by the PCAOB. However, we noted no
+        deficiencies in the Funds&#8217;\ninternal control over financial reporting
+        and its operation, including controls\nover safeguarding securities that we
+        consider to be a material weakness as\ndefined above as of November\n30, 2025.</font></p>\n\n<p
+        style=\"margin-bottom:0in;margin-left:0in;margin-right:0in;margin-top:0in;text-align:justify;text-justify:inter-ideograph;\"><font
+        face=\"times new roman\" lang=EN-US style=\"font-size:12.0pt;line-height:normal;\">&nbsp;</font></p>\n\n<p
+        style=\"margin-bottom:0in;margin-left:0in;margin-right:0in;margin-top:0in;text-align:justify;text-justify:inter-ideograph;\"><font
+        face=\"times new roman\" lang=EN-US style=\"font-size:12.0pt;line-height:normal;\">This
+        report is intended solely for the information and\nuse of management and the
+        Board of Directors of the Funds and the Securities\nand Exchange Commission
+        and is not intended to be and should not be used by\nanyone other than these
+        specified parties.</font></p>\n\n<p style=\"margin-bottom:0in;margin-left:0in;margin-right:0in;margin-top:0in;\"><font
+        face=\"times new roman\" lang=EN-US style=\"font-size:12.0pt;line-height:normal;\">&nbsp;</font></p>\n\n<p
+        align=right style=\"margin-bottom:0in;margin-left:0in;margin-right:0in;margin-top:0in;text-align:right;\"><font
+        face=\"times new roman\" lang=EN-US style=\"font-size:12.0pt;line-height:normal;\">/s/Ernst\n&amp;
+        Young LLP</font></p>\n\n<p style=\"margin-bottom:0in;margin-left:0in;margin-right:0in;margin-top:0in;\"><font
+        face=\"times new roman\" lang=EN-US style=\"font-size:12.0pt;line-height:normal;\">&nbsp;</font></p>\n\n<p
+        style=\"margin-bottom:0in;margin-left:0in;margin-right:0in;margin-top:0in;\"><font
+        face=\"times new roman\" lang=EN-US style=\"font-size:12.0pt;line-height:normal;\">&nbsp;</font></p>\n\n<p
+        style=\"margin-bottom:0in;margin-left:0in;margin-right:0in;margin-top:0in;\"><font
+        face=\"times new roman\" lang=EN-US style=\"font-size:12.0pt;line-height:normal;\">New
+        York, New York</font></p>\n\n<p style=\"margin-bottom:0in;margin-left:0in;margin-right:0in;margin-top:0in;\"><font
+        face=\"times new roman\" lang=EN-US style=\"font-size:12.0pt;line-height:normal;\">January
+        28, 2026</font></p>\n\n\n\n\n</DIV>\n</BODY>\n\n</HTML>\n\n</TEXT>\n</DOCUMENT>\n</SEC-DOCUMENT>\n"
+    headers:
+      Accept-Ranges:
+      - bytes
+      Connection:
+      - keep-alive
+      Content-Type:
+      - text/plain
+      Date:
+      - Tue, 10 Mar 2026 12:49:43 GMT
+      ETag:
+      - '"b8cea972c84d7d2b18023fcdd9e42ff5-gzip"'
+      Last-Modified:
+      - Thu, 12 Feb 2026 16:13:05 GMT
+      Strict-Transport-Security:
+      - max-age=31536000 ; includeSubDomains ; preload
+      Vary:
+      - Accept-Encoding
+      X-Content-Type-Options:
+      - nosniff
+      X-Frame-Options:
+      - SAMEORIGIN
+      X-XSS-Protection:
+      - 1; mode=block
+      content-length:
+      - '112238'
+      x-amz-id-2:
+      - tb66D5TRejzSGb0c5m1w08DfrQvy6zHoJKTgdrZKofTwizKlWAcGbp59jxf4Bzjt8DCiCDkYH2o=
+      x-amz-meta-mode:
+      - '33188'
+      x-amz-replication-status:
+      - COMPLETED
+      x-amz-request-id:
+      - 3N15783DC0Y87AMN
+      x-amz-server-side-encryption:
+      - AES256
+      x-amz-version-id:
+      - BYsibxT_CRaTeKZZc6bXxC2htDTKvVDw
+    status:
+      code: 200
+      message: OK
+version: 1

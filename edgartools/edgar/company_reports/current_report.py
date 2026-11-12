@@ -1,0 +1,997 @@
+"""Form 8-K and 6-K current report classes."""
+import re
+from datetime import date, datetime
+from functools import cached_property
+from typing import List, Optional
+
+from rich import box, print
+from rich.console import Group, Text
+from rich.panel import Panel
+from rich.table import Table
+
+from edgar._filings import Attachments
+from edgar.company_reports._base import CompanyReport, report_lookup_miss
+from edgar.company_reports._structures import ItemOnlyFilingStructure, extract_items_from_sections
+from edgar.documents import HTMLParser, ParserConfig
+from edgar.richtools import repr_rich, rich_to_text
+from edgar.sgml.text_extraction import attachment_html_to_text
+
+__all__ = ['CurrentReport', 'EightK']
+
+
+def _normalize_item_number(item_str: str) -> str:
+    """
+    Normalize item string to standard format (e.g., '2.02').
+
+    Handles:
+    - "Item 2.02" -> "2.02"
+    - "Item 2. 02" -> "2.02"  (Apple-style spacing)
+    - "ITEM 2.02" -> "2.02"   (case variation)
+    - "Item 2" -> "2"         (legacy single-digit)
+
+    Args:
+        item_str: Raw item string from text extraction
+
+    Returns:
+        Normalized item number string
+    """
+    # Remove "Item" prefix (case insensitive)
+    cleaned = re.sub(r'^item\s+', '', item_str.lower().strip())
+
+    # Remove spaces around dots: "2. 02" -> "2.02"
+    cleaned = re.sub(r'\s*\.\s*', '.', cleaned)
+
+    # Remove trailing dots: "2.02." -> "2.02"
+    cleaned = cleaned.rstrip('.')
+
+    return cleaned
+
+
+# An item header is anchored either at the start of a line, or immediately after a
+# horizontal rule of 5 or more rule characters on the same line. 2005-era filings that
+# are plain text wrapped in minimal HTML glue the two together with no line break
+# ("------------Item 4.02 Non-Reliance on..."), which a line-start-only anchor misses.
+# The anchor stays deliberately narrow: anything looser would promote mid-sentence
+# references ("as described in Item 8.01") into items. (edgartools-l6cl)
+_ITEM_ANCHOR = r'(?:^[ \t]*|[-=_─–—]{5,}[ \t]*)'
+
+# The label before an item number. Filers write "Item 5.02", "Item - 5.02" (0000710782-24-000005),
+# "Item: 5.02" and "Item–5.02" alike, so a dash, en dash, em dash or colon is optional. Finding an
+# item, starting it and ending it all use this label, so the three cannot disagree.
+_ITEM_LABEL = r'Item\s*[-–—:]?\s*'
+
+# An 8-K item number: "2.02", "9. 01" (Apple-style spacing) or a legacy bare "1"-"9". The whole
+# number must match, so "ITEM 2024 performance awards" and "Item 401(k)" are not items and do not
+# end the item before them. Every item parser uses this pattern (GH #1772, #1773).
+_ITEM_NUMBER = r'[1-9](?:\s*\.\s*\d{1,2})?(?!\d)'
+
+
+def _extract_items_from_text(text: str) -> List[str]:
+    """
+    Extract 8-K item numbers from filing text using pattern matching.
+
+    This is a fallback extraction method for legacy SGML filings (1999-2001)
+    where SEC metadata is incomplete. Research validated 100% accuracy across
+    all filing eras on filing.text().
+
+    Pattern matches:
+    - Modern: "Item 2.02", "ITEM 2.02", "Item 2. 02"
+    - Dash heading: "Item - 2.02", "Item – 2.02", "Item: 2.02"
+    - Legacy: "Item 1", "Item 4"
+    - Case insensitive, handles line breaks
+
+    Handles range notation (e.g., "Item 1-Item 4") by only including items
+    that have actual standalone headers. Intermediate items that only appear
+    in ranges are excluded to maintain consistency between item detection
+    and item content access.
+
+    Args:
+        text: Full text content from filing.text()
+
+    Returns:
+        List of normalized item numbers sorted (e.g., ['1', '4', '5'])
+
+    References:
+        - Research: scripts/research_8k_parser_findings.md
+        - GitHub Issue: #462
+        - Beads Issue: edgartools-k1k
+    """
+    # Extract items that appear at the start of lines (with optional leading whitespace)
+    # or immediately after a horizontal rule. This ensures consistency with
+    # _extract_item_content_from_text, which uses the same anchor for content extraction.
+    #
+    # Pattern matches "Item X" or "Item X.XX" at an item-header anchor
+    # This will match:
+    # - "Item 1" (standalone)
+    # - "  Item 1" (indented — common in HTML-to-text conversion)
+    # - "Item 1-Item 4" (only Item 1, since it's at line start)
+    # - "Item 2.02" (modern format)
+    # - "--------Item 4.02" (glued onto a horizontal rule)
+    #
+    # This will NOT match:
+    # - "Item 1-Item 4" (Item 4, only one dash — not a rule, not at line start)
+    # - Mid-sentence references to items
+    pattern = re.compile(
+        _ITEM_ANCHOR + _ITEM_LABEL + '(' + _ITEM_NUMBER + ')',
+        re.IGNORECASE | re.MULTILINE
+    )
+    matches = pattern.findall(text)
+
+    # Normalize and deduplicate
+    items = []
+    seen = set()
+
+    for match in matches:
+        normalized = _normalize_item_number(match)
+        if normalized and normalized not in seen:
+            items.append(normalized)
+            seen.add(normalized)
+
+    return sorted(items)
+
+
+def _format_item_for_display(item_num: str) -> str:
+    """
+    Format normalized item number for display (e.g., '2.02' -> 'Item 2.02').
+
+    Args:
+        item_num: Normalized item number
+
+    Returns:
+        Display format string
+    """
+    return f"Item {item_num}"
+
+
+def _canonical_item(item: str) -> str:
+    """
+    Collapse any item spelling to a canonical 'Item X.YY' form.
+
+    Handles case, spacing ("Item 9. 01"), and prefix variations so that the
+    same item detected by different parsers de-duplicates to a single entry.
+    """
+    return _format_item_for_display(_normalize_item_number(item))
+
+
+def _item_sort_key(item: str):
+    """Sort items numerically ('Item 1.05' before 'Item 9.01', 'Item 5' before 'Item 5.02')."""
+    num = _normalize_item_number(item)
+    try:
+        return tuple(int(part) for part in num.split('.') if part != '')
+    except ValueError:
+        return (999,)
+
+
+def _parse_period_of_report(period_of_report) -> Optional[date]:
+    """
+    Normalize a filing header's period_of_report to a ``datetime.date``.
+
+    The header value is usually an ISO 'YYYY-MM-DD' string, but defensive
+    parsing also accepts already-parsed date/datetime objects and a couple of
+    human-readable fallbacks so callers always receive a ``date`` (or ``None``
+    when absent) rather than a mix of types. (edgartools-83gh)
+    """
+    if not period_of_report:
+        return None
+    if isinstance(period_of_report, datetime):
+        return period_of_report.date()
+    if isinstance(period_of_report, date):
+        return period_of_report
+    for fmt in ("%Y-%m-%d", "%B %d, %Y", "%b %d, %Y"):
+        try:
+            return datetime.strptime(str(period_of_report).strip(), fmt).date()
+        except (ValueError, TypeError):
+            continue
+    return None
+
+
+def _extract_item_content_from_text(filing_text: str, item_name: str) -> Optional[str]:
+    """
+    Extract content for a specific item from legacy SGML filing text.
+
+    This is a fallback extraction method for legacy SGML filings (1999-2001)
+    where HTML is unavailable but text content exists. Used by __getitem__ when
+    the document parser finds nothing.
+
+    Handles:
+    - Input normalization: "Item 9", "9", "item 9" -> "Item 9"
+    - Flexible item headers: "Item 9", "Item 9.", "Item 9:", etc.
+    - End detection: next item or SIGNATURES section
+
+    Args:
+        filing_text: Full text content from filing.text()
+        item_name: Item identifier (e.g., "Item 9", "9", "Item 2.02", "2.02")
+
+    Returns:
+        Item content as string, or None if not found
+
+    References:
+        - GitHub Issue: #462
+        - Beads Issue: edgartools-k1k
+    """
+    # Step 1: Normalize input to extract item number
+    # "Item 9" or "9" -> "9"
+    # "Item 2.02" or "2.02" -> "2.02"
+    item_num = _normalize_item_number(item_name)
+    if not item_num:
+        return None
+
+    # Step 2: Find item header in text
+    # Pattern matches: "Item 9", "Item 9.", "Item 9:", "Item 9.02", etc.
+    # Must sit at an item-header anchor (line start, or after a horizontal rule)
+    # to avoid matching mid-sentence references
+    # The number found must be the whole item number asked for, so "Item 5" does not start at
+    # "Item 5.02".
+    item_pattern = re.compile(
+        rf'{_ITEM_ANCHOR}({_ITEM_LABEL}({_ITEM_NUMBER})[\s\.:\-]*)',
+        re.IGNORECASE | re.MULTILINE
+    )
+
+    match = next((m for m in item_pattern.finditer(filing_text)
+                  if _normalize_item_number(m.group(2)) == item_num), None)
+    if not match:
+        return None
+
+    # Content starts at the header itself, not at the rule or indentation the
+    # anchor consumed.
+    start_pos = match.start(1)
+
+    # Step 3: Find end position
+    # Look for next "Item X" pattern
+    next_item_pattern = re.compile(
+        _ITEM_ANCHOR + _ITEM_LABEL + _ITEM_NUMBER + r'[\s\.:\-]',
+        re.IGNORECASE | re.MULTILINE
+    )
+    next_match = next_item_pattern.search(filing_text, match.end(1))
+
+    if next_match:
+        end_pos = next_match.start()
+    else:
+        # Look for SIGNATURES section
+        sig_pattern = re.compile(
+            r'\n\s*SIGNATURES?\s*\n',
+            re.IGNORECASE
+        )
+        sig_match = sig_pattern.search(filing_text[start_pos:])
+        if sig_match:
+            end_pos = start_pos + sig_match.start()
+        else:
+            end_pos = len(filing_text)
+
+    # Step 4: Extract and clean content
+    content = filing_text[start_pos:end_pos].strip()
+    return content if content else None
+
+
+class CurrentReport(CompanyReport):
+    structure = ItemOnlyFilingStructure({
+        "ITEM 1.01": {
+            "Title": "Entry into a Material Definitive Agreement",
+            "Description": "Reports any material agreement not made in the ordinary course of business."
+        },
+        "ITEM 1.02": {
+            "Title": "Termination of a Material Definitive Agreement",
+            "Description": "Reports the termination of any material agreement."
+        },
+        "ITEM 1.03": {
+            "Title": "Bankruptcy or Receivership",
+            "Description": "Reports any bankruptcy or receivership."
+        },
+        "ITEM 1.04": {
+            "Title": "Mine Safety Disclosures",
+            "Description": "Reports information required by Section 1503(a) of the Dodd-Frank Act."
+        },
+        "ITEM 1.05": {
+            "Title": "Material Cybersecurity Incidents",
+            "Description": "Reports material cybersecurity incidents as required by SEC rules effective December 2023."
+        },
+        "ITEM 2.01": {"Title": "Completion of Acquisition or Disposition of Assets",
+                      "Description": "Reports the completion of an acquisition or disposition of a significant " +
+                                     "amount of assets."},
+        "ITEM 2.02": {"Title": "Results of Operations and Financial Condition",
+                      "Description": "Reports on the company's results of operations and financial condition."},
+        "ITEM 2.03": {
+            "Title": "Creation of a Direct Financial Obligation or an Obligation under an Off-Balance Sheet " +
+                     "Arrangement of a Registrant",
+            "Description": "Reports the creation of a direct financial obligation."},
+        "ITEM 2.04": {
+            "Title": "Triggering Events That Accelerate or Increase a Direct Financial Obligation or an Obligation "
+                     + "under an Off-Balance Sheet Arrangement",
+            "Description": "Reports any triggering events."},
+        "ITEM 2.05": {"Title": "Costs Associated with Exit or Disposal Activities",
+                      "Description": "Reports costs related to exit or disposal activities."},
+        "ITEM 2.06": {"Title": "Material Impairments", "Description": "Reports on any material impairments."},
+        "ITEM 3.01": {
+            "Title": "Notice of Delisting or Failure to Satisfy a Continued Listing Rule or Standard; " +
+                     "Transfer of Listing",
+            "Description": "Reports on delisting or failure to satisfy listing rules."},
+        "ITEM 3.02": {"Title": "Unregistered Sales of Equity Securities",
+                      "Description": "Reports on the sale of unregistered equity securities."},
+        "ITEM 3.03": {"Title": "Material Modification to Rights of Security Holders",
+                      "Description": "Reports on any modifications to the rights of security holders."},
+        "ITEM 4.01": {"Title": "Changes in Registrant's Certifying Accountant",
+                      "Description": "Reports any change in the company's accountant."},
+        "ITEM 4.02": {
+            "Title": "Non-Reliance on Previously Issued Financial Statements or a Related Audit Report or " +
+                     "Completed Interim Review",
+            "Description": "Reports on non-reliance on previously issued financial statements."},
+        "ITEM 5.01": {"Title": "Changes in Control of Registrant",
+                      "Description": "Reports changes in control of the company."},
+        "ITEM 5.02": {
+            "Title": "Departure of Directors or Certain Officers; Election of Directors; Appointment of Certain " +
+                     "Officers",
+            "Description": "Compensatory Arrangements of Certain Officers: Reports any changes in the company's " +
+                           "directors or certain officers."},
+        "ITEM 5.03": {"Title": "Amendments to Articles of Incorporation or Bylaws; Change in Fiscal Year",
+                      "Description": "Reports on amendments to articles of incorporation or bylaws."},
+        "ITEM 5.04": {
+            "Title": "Temporary Suspension of Trading Under Registrant's Employee Benefit Plans",
+            "Description": "Reports on the temporary suspension of trading under the company's employee benefit plans."
+        },
+        "ITEM 5.05": {
+            "Title": "Amendment to the Registrant's Code of Ethics, or Waiver of a Provision of the Code of Ethics",
+            "Description": "Reports on amendments or waivers to the code of ethics."},
+        "ITEM 5.06": {"Title": "Change in Shell Company Status",
+                      "Description": "Reports a change in the company's shell company status."},
+        "ITEM 5.07": {"Title": "Submission of Matters to a Vote of Security Holders",
+                      "Description": "Reports on matters submitted to a vote of security holders."},
+        "ITEM 5.08": {"Title": "Shareholder Director Nominations",
+                      "Description": "Reports on shareholder director nominations."},
+        "ITEM 6.01": {"Title": "ABS Informational and Computational Material",
+                      "Description": "Reports ABS informational and computational material."},
+        "ITEM 6.02": {"Title": "Change of Servicer or Trustee",
+                      "Description": "Reports on the change of servicer or trustee."},
+        "ITEM 6.03": {"Title": "Change in Credit Enhancement or Other External Support",
+                      "Description": "Reports on changes in credit enhancement or external support."},
+        "ITEM 6.04": {"Title": "Failure to Make a Required Distribution",
+                      "Description": "Reports on the failure to make a required distribution."},
+        "ITEM 6.05": {"Title": "Securities Act Updating Disclosure",
+                      "Description": "Reports on Securities Act updating disclosure."},
+        "ITEM 7.01": {"Title": "Regulation FD Disclosure",
+                      "Description": "Reports information disclosed under Regulation FD."},
+        "ITEM 8.01": {"Title": "Other Events",
+                      "Description": "Reports any material events not specifically covered by other items."},
+        "ITEM 9.01": {
+            "Title": "Financial Statements and Exhibits",
+            "Description": "Reports financial statements and other exhibits related to the events reported in the 8-K."
+        }
+    })
+
+    def __init__(self, filing):
+        assert filing.form in ['8-K', '8-K/A'], f"This form should be an 8-K but was {filing.form}"
+        super().__init__(filing)
+        self._cached_filing_text = None
+
+    def _get_filing_text(self) -> Optional[str]:
+        """
+        Get filing text with caching to avoid redundant extraction.
+
+        This method caches the result of expensive filing.text() calls to improve
+        performance when both items property and __getitem__ method need text.
+
+        Returns:
+            Filing text as string, or None if extraction fails
+        """
+        if self._cached_filing_text is None:
+            try:
+                self._cached_filing_text = self._filing.text()
+            except (AttributeError, KeyError, ValueError, TypeError):
+                return None
+        return self._cached_filing_text
+
+    @cached_property
+    def document(self):
+        """
+        Parse 8-K using new HTMLParser with improved section detection (95% rate).
+
+        This uses the enhanced pattern-based section extractor that handles:
+        - All 33 8-K item patterns
+        - Bold paragraph fallback detection
+        - Table cell detection
+        - Space variations in item numbers (e.g., "Item 2. 02")
+
+        Returns:
+            Document object from edgar.documents module with sections property
+        """
+        html = self._filing.html()
+        if not html:
+            return None
+        config = ParserConfig(form='8-K')
+        parser = HTMLParser(config)
+        return parser.parse(html)
+
+    @property
+    def sections(self):
+        """
+        Get detected 8-K sections using new parser (95% detection rate).
+
+        Returns a Sections dictionary mapping section names to Section objects.
+        Section names are normalized (e.g., 'item_502' for Item 5.02).
+
+        Example:
+            >>> eight_k.sections
+            {'item_502': Section(...), 'item_901': Section(...)}
+            >>> eight_k.sections['item_502'].text()
+            'Item 5.02 - Departure of Directors...'
+        """
+        if self.document:
+            return self.document.sections
+        return {}
+
+    @cached_property
+    def content_type(self) -> str:
+        """
+        Classify this 8-K by its primary purpose.
+
+        Returns one of: 'earnings', 'director_change', 'shareholder_vote',
+        'material_agreement', 'regulation_fd', 'debt_offering', 'restructuring',
+        'governance', 'cybersecurity', 'asset_change', 'auditor_change', 'other'
+        """
+        items_set = set()
+        for item in self.items:
+            num = item.replace('Item ', '').strip()
+            items_set.add(num)
+
+        if '2.02' in items_set:
+            return 'earnings'
+        if '1.05' in items_set:
+            return 'cybersecurity'
+        if '2.05' in items_set or '2.06' in items_set:
+            return 'restructuring'
+        if '2.01' in items_set:
+            return 'asset_change'
+        if '4.01' in items_set or '4.02' in items_set:
+            return 'auditor_change'
+        if '5.07' in items_set:
+            return 'shareholder_vote'
+        if '1.01' in items_set:
+            return 'material_agreement'
+        if '5.02' in items_set:
+            return 'director_change'
+        if any(i in items_set for i in ('5.03', '5.05', '5.06')):
+            return 'governance'
+        # For 7.01 and 8.01, check exhibit types for debt offering signals
+        if '7.01' in items_set or '8.01' in items_set:
+            exhibit_types = {att.document_type for att in self._filing.attachments if att.document_type}
+            if 'EX-1.1' in exhibit_types or any(t.startswith('EX-4.') for t in exhibit_types):
+                return 'debt_offering'
+            if '7.01' in items_set:
+                return 'regulation_fd'
+            return 'other'
+        return 'other'
+
+    @property
+    def is_amendment(self) -> bool:
+        """True if this is an 8-K/A amendment."""
+        return self._filing.form == '8-K/A'
+
+    def get_exhibit(self, exhibit_type: str):
+        """
+        Get a specific exhibit by type (e.g., 'EX-99.1', 'EX-10.1').
+
+        Returns:
+            Attachment object or None
+        """
+        for att in self._filing.attachments:
+            if att.document_type == exhibit_type:
+                return att
+        return None
+
+    def get_exhibits(self, prefix: str = None):
+        """
+        Get content exhibits, optionally filtered by type prefix (e.g., 'EX-99').
+
+        Excludes XBRL infrastructure files, graphics, and the primary 8-K document.
+        """
+        skip_prefixes = ('EX-101', 'GRAPHIC', 'HTML', 'JS', 'CSS', 'XML', 'JSON', 'ZIP')
+        result = []
+        for att in self._filing.attachments:
+            dt = att.document_type
+            if not dt or dt.startswith(skip_prefixes):
+                continue
+            if dt in ('8-K', '8-K/A'):
+                continue
+            if prefix and not dt.startswith(prefix):
+                continue
+            result.append(att)
+        return result
+
+    @property
+    def has_press_release(self):
+        """True if this filing has a press release exhibit tied to an earnings event.
+
+        For Item 7.01-only filings (Reg FD), EX-99 attachments are typically
+        investor presentations, not press releases.
+        """
+        if not any('2.02' in item for item in self.items):
+            return False
+        return self.press_releases is not None
+
+    @property
+    def has_earnings(self) -> bool:
+        """
+        Check if this 8-K contains parseable earnings data.
+
+        Returns True only if both conditions are met:
+        1. Item 2.02 (Results of Operations and Financial Condition) is present
+        2. An EX-99.1 press release exhibit exists with financial tables
+
+        This ensures consistency with the `earnings` property - if `has_earnings`
+        is True, then `earnings` will return a valid EarningsRelease object.
+
+        For semantic "is this an earnings announcement" check, use:
+            '2.02' in eight_k.items
+
+        Returns:
+            True if this filing has both Item 2.02 and a parseable EX-99.1 exhibit
+        """
+        return any('2.02' in item for item in self.items) and self.earnings is not None
+
+    @cached_property
+    def earnings(self):
+        """
+        Get parsed earnings data from EX-99.1 exhibit.
+
+        Parses financial tables from the earnings press release attachment,
+        providing structured access to income statements, balance sheets,
+        cash flow statements, and other financial data.
+
+        Returns:
+            EarningsRelease object with properties like:
+            - income_statement: Parsed income statement DataFrame
+            - balance_sheet: Parsed balance sheet DataFrame
+            - cash_flow_statement: Parsed cash flow DataFrame
+            - segment_data: Business segment breakdown
+            - financial_tables: All parsed tables
+
+            None if no EX-99 earnings exhibit found.
+
+        Example:
+            >>> eight_k = filing.obj()
+            >>> if eight_k.earnings:
+            ...     df = eight_k.earnings.income_statement.dataframe
+            ...     print(df['Net revenue'])
+        """
+        from edgar.earnings import EarningsRelease
+        return EarningsRelease.from_filing(self._filing)
+
+    @property
+    def income_statement(self):
+        """
+        Shortcut to get income statement from earnings release.
+
+        Returns:
+            FinancialTable with income statement data, or None
+
+        Note:
+            Check for None before accessing .dataframe, or use
+            get_income_statement() for safe access with empty DataFrame default.
+        """
+        if self.earnings:
+            return self.earnings.income_statement
+        return None
+
+    @property
+    def balance_sheet(self):
+        """
+        Shortcut to get balance sheet from earnings release.
+
+        Returns:
+            FinancialTable with balance sheet data, or None
+
+        Note:
+            Check for None before accessing .dataframe, or use
+            get_balance_sheet() for safe access with empty DataFrame default.
+        """
+        if self.earnings:
+            return self.earnings.balance_sheet
+        return None
+
+    @property
+    def cash_flow_statement(self):
+        """
+        Shortcut to get cash flow statement from earnings release.
+
+        Returns:
+            FinancialTable with cash flow data, or None
+
+        Note:
+            Check for None before accessing .dataframe, or use
+            get_cash_flow_statement() for safe access with empty DataFrame default.
+        """
+        if self.earnings:
+            return self.earnings.cash_flow_statement
+        return None
+
+    def get_income_statement(self, default=None):
+        """
+        Safely get income statement DataFrame.
+
+        Args:
+            default: Value to return if no income statement found.
+                     If None (default), returns empty DataFrame.
+
+        Returns:
+            pandas DataFrame with income statement data, or default value.
+
+        Example:
+            >>> df = eight_k.get_income_statement()  # Empty DataFrame if missing
+            >>> df = eight_k.get_income_statement(default=my_fallback_df)
+        """
+        import pandas as pd
+        if self.income_statement:
+            return self.income_statement.dataframe
+        return default if default is not None else pd.DataFrame()
+
+    def get_balance_sheet(self, default=None):
+        """
+        Safely get balance sheet DataFrame.
+
+        Args:
+            default: Value to return if no balance sheet found.
+                     If None (default), returns empty DataFrame.
+
+        Returns:
+            pandas DataFrame with balance sheet data, or default value.
+        """
+        import pandas as pd
+        if self.balance_sheet:
+            return self.balance_sheet.dataframe
+        return default if default is not None else pd.DataFrame()
+
+    def get_cash_flow_statement(self, default=None):
+        """
+        Safely get cash flow statement DataFrame.
+
+        Args:
+            default: Value to return if no cash flow statement found.
+                     If None (default), returns empty DataFrame.
+
+        Returns:
+            pandas DataFrame with cash flow data, or default value.
+        """
+        import pandas as pd
+        if self.cash_flow_statement:
+            return self.cash_flow_statement.dataframe
+        return default if default is not None else pd.DataFrame()
+
+    @property
+    def press_releases(self):
+        from edgar.company_reports.press_release import PressReleases
+
+        attachments: Attachments = self._filing.attachments
+        # This query for press release currently includes EX-99, EX-99.1, EX-99.01 but not EX-99.2
+        # Here is what we think so far
+        html_document = "document.endswith('.htm')"
+        named_release = "re.match('.*RELEASE', description)"
+        type_ex_99 = "document_type in ['EX-99.1', 'EX-99', 'EX-99.01']"
+        press_release_query = f"{html_document} and ({named_release} or {type_ex_99})"
+        press_release_results = attachments.query(press_release_query)
+        if press_release_results:
+            return PressReleases(press_release_results)
+
+    @property
+    def items(self) -> List[str]:
+        """
+        List of detected item names (consistent with sections property).
+
+        Unions two detection strategies, both reading the primary document:
+        1. New parser's section detection (95% accuracy for modern filings)
+        2. Text-based pattern extraction (all eras including SGML)
+
+        The text-based strategy handles legacy SGML filings (1999-2001) where
+        SEC metadata is incomplete (GitHub issue #462).
+
+        Returns:
+            List of item titles for backward compatibility (e.g., ['Item 5.02', 'Item 9.01'])
+        """
+        # Two strategies, unioned rather than tried in order. The new parser
+        # (strategy 1) is high-precision but narrow: it reads the parsed section
+        # tree, which is empty on filings whose primary document is plain text in
+        # minimal HTML. The text strategy reads the same primary document (no
+        # exhibit text, so no false positives from press releases), which is what
+        # makes it safe to union rather than merely to fall back to.
+        item_set = set()
+
+        # Strategy 1: new parser section detection (95% rate for modern filings)
+        if self.sections:
+            item_pattern = re.compile(r'(Item\s+\d+\.\s*\d+)', re.IGNORECASE)
+            # Exclude named sections (e.g. Signatures) — they are not 8-K items.
+            item_sections = {k: v for k, v in self.sections.items() if v.kind == 'item'}
+            parser_items = extract_items_from_sections(item_sections, item_pattern)
+            # Validate: modern 8-K items should have decimal points (e.g., "Item 8.01").
+            # If none contain a dot, the parser likely misidentified them
+            # (e.g., Amazon-style "ITEM 8.01." parsed as "Item 8") — discard.
+            if parser_items and any('.' in item for item in parser_items):
+                item_set.update(_canonical_item(item) for item in parser_items)
+
+        # Strategy 2: text-based pattern extraction. It is the only source for legacy
+        # SGML filings (1999-2001, no usable HTML) and for 2005-era filings that are
+        # plain text in minimal HTML, where strategy 1 returns nothing at all — on
+        # Cimarex 0001047469-05-006981 both of the items present come from here.
+        # It is unioned in rather than used only when strategy 1 comes up empty
+        # because a partial section tree is not the same as an absent one.
+        # (edgartools-l6cl)
+        filing_text = self._get_filing_text()
+        if filing_text:
+            # Format for display consistency: ['2.02', '9.01'] -> ['Item 2.02', 'Item 9.01']
+            item_set.update(
+                _format_item_for_display(item)
+                for item in _extract_items_from_text(filing_text)
+            )
+
+        return sorted(item_set, key=_item_sort_key)
+
+    def __getitem__(self, item_name: str):
+        """
+        Get section/item text by name or number.
+
+        Uses multi-tier fallback strategy:
+        1. New parser's section detection (95% accuracy for modern filings)
+        2. Text-based pattern extraction (100% accuracy, all eras including SGML)
+
+        The text-based fallback handles legacy SGML filings (1999-2001) where
+        HTML is unavailable (GitHub issue #462).
+
+        Supports multiple lookup formats:
+        - Section key: 'item_502'
+        - Item number: 'Item 5.02', '5.02'
+        - Natural language: 'Item 5.02 - Departure of Directors'
+
+        Args:
+            item_name: Section identifier in various formats
+
+        Returns:
+            Section text content as string, or None if not found
+        """
+        # Strategy 1: Try new parser sections first (95% detection rate)
+        if self.sections:
+            # Direct key lookup
+            if item_name in self.sections:
+                return self.sections[item_name].text()
+
+            # Try fuzzy matching for different formats
+            # Normalize: "Item 5.02" → "item_502", "5.02" → "502"
+            normalized_input = item_name.lower().replace(' ', '_').replace('.', '').replace('-', '_')
+            normalized_input = normalized_input.replace('item_', '')
+
+            for key, section in self.sections.items():
+                # Normalize section key: "item_502" → "502"
+                normalized_key = key.replace('item_', '').replace('_', '')
+                if normalized_key == normalized_input:
+                    return section.text()
+
+        # Strategy 2: Text-based fallback for legacy SGML filings
+        # This handles filings where HTML is unavailable but text exists
+        # Use cached text extraction to improve performance
+        filing_text = self._get_filing_text()
+        if filing_text:
+            content = _extract_item_content_from_text(filing_text, item_name)
+            if content:
+                return content
+
+        report_lookup_miss(self, item_name)
+        return None
+
+    def view(self, item_or_part: str):
+        """Get the Item or Part from the filing document. e.g. Item 1 Business from 10-K or Part I from 10-Q"""
+        item_text = self[item_or_part]
+        if item_text:
+            print(item_text)
+
+    @property
+    def date_of_report(self) -> Optional[date]:
+        """The period of report (event date) for this filing as a ``datetime.date``.
+
+        Always returns a ``date`` (or ``None`` when the header has no period of
+        report) so callers don't have to defensively parse mixed string/date
+        types. (edgartools-83gh)
+        """
+        return _parse_period_of_report(self._filing.header.period_of_report)
+
+    def _get_exhibit_content(self, exhibit) -> Optional[str]:
+        """
+        Get the content of the exhibit
+        """
+        # For old filings the exhibit might not have a document. So we need to get the full text content
+        # from the sgml content
+        if exhibit.empty:
+            # Download the SGML document
+            sgml_document = self._filing.sgml().get_document_by_sequence(exhibit.sequence_number)
+            if sgml_document:
+                exhibit_content = sgml_document.text()
+                return exhibit_content
+        else:
+            html_content = exhibit.download()
+            if html_content:
+                # The same rule Attachment.text() and Filing.text() apply, so an
+                # exhibit reads the same here as it does from the attachment.
+                return attachment_html_to_text(html_content)
+
+    def _content_renderables(self):
+        """Get the content of the exhibits as renderables"""
+        renderables = []
+        for exhibit in self._filing.exhibits:
+            # Skip binary files
+            if exhibit.is_binary():
+                continue
+            exhibit_content = self._get_exhibit_content(exhibit)
+
+            if exhibit_content:
+                # Remove text like [/she] and replace with (she) to prevent it being treated as rich markup
+                cleaned_content = re.sub(r'\[(/[^]]*)]', r'(\1)',exhibit_content)
+                title = Text.assemble(("Exhibit ", "bold gray54"), (exhibit.document_type, "bold green"))
+                renderables.append(Panel(cleaned_content,
+                                         title=title,
+                                         subtitle=Text(exhibit.description, style="gray54"),
+                                         box=box.SIMPLE))
+        return Group(*renderables)
+
+    def text(self):
+        """Get the text of the EightK filing
+           This includes the text content of all the exhibits
+        """
+        return rich_to_text(self._content_renderables())
+
+    def __rich__(self):
+
+        # Renderables for the panel.
+        renderables = []
+
+        # List the exhibits as a table
+        exhibit_table = Table("", "Type", "Description",
+                      title="Exhibits", show_header=True, header_style="bold", box=box.ROUNDED)
+        renderables.append(exhibit_table)
+        for exhibit in self._filing.exhibits:
+            exhibit_table.add_row(exhibit.sequence_number, exhibit.document_type, exhibit.description)
+
+        dor = self.date_of_report
+        dor_display = dor.strftime("%B %d, %Y") if dor else ""
+        panel_title = Text.assemble(
+            (f"{self.company}", "bold deep_sky_blue1"),
+            (" ", ""),
+            (f"{self.form}", "bold green"),
+            (" ", ""),
+            (dor_display, "bold yellow")
+        )
+
+        # Add the content of the exhibits
+        renderables.append(self._content_renderables())
+
+        return Panel(
+            Group(*renderables),
+            title=panel_title,
+            box=box.SIMPLE
+        )
+
+    def __str__(self):
+        dor = self.date_of_report
+        dor_display = dor.strftime("%B %d, %Y") if dor else ""
+        return f"{self.company} {self.form} {dor_display}".rstrip()
+
+    def to_context(self, detail: str = 'standard') -> str:
+        """
+        AI-optimized context string.
+
+        Args:
+            detail: 'minimal' (~100 tokens), 'standard' (~300 tokens), 'full' (~500+ tokens)
+        """
+        lines = []
+
+        # === IDENTITY ===
+        form_upper = self.form.replace('-', '').replace('/', '').upper()
+        lines.append(f"{form_upper}: {self.company} Current Report")
+        lines.append("")
+
+        # === CORE METADATA ===
+        lines.append(f"Filed: {self.filing_date}")
+        try:
+            dor = self.date_of_report
+            if dor:
+                lines.append(f"Event Date: {dor}")
+        except Exception:
+            pass
+
+        # Content type
+        try:
+            lines.append(f"Content Type: {self.content_type}")
+        except Exception:
+            pass
+
+        if self.is_amendment:
+            lines.append("Amendment: Yes (8-K/A)")
+
+        # Items reported
+        try:
+            items = self.items
+            if items:
+                # Build item descriptions from structure
+                item_desc = []
+                for item in items:
+                    item_num = item.replace("Item ", "").strip()
+                    struct_item = self.structure.get_item(item)
+                    if struct_item:
+                        item_desc.append(f"{item_num} ({struct_item.get('Title', '')})")
+                    else:
+                        item_desc.append(item_num)
+                lines.append(f"Items: {', '.join(item_desc)}")
+        except Exception:
+            pass
+
+        if detail == 'minimal':
+            return "\n".join(lines)
+
+        # === STANDARD ===
+        lines.append(f"Form: {self.form}")
+        lines.append(f"CIK: {str(self._filing.cik).zfill(10)}")
+
+        # Flags
+        flags = []
+        try:
+            if self.has_press_release:
+                flags.append("has_press_release")
+        except Exception:
+            pass
+        try:
+            if self.has_earnings:
+                flags.append("has_earnings")
+        except Exception:
+            pass
+        if flags:
+            lines.append(f"Flags: {', '.join(flags)}")
+
+        # Items with full descriptions
+        try:
+            items = self.items
+            if items:
+                lines.append("")
+                lines.append("ITEMS:")
+                for item in items:
+                    item_num = item.replace("Item ", "").strip()
+                    struct_item = self.structure.get_item(item)
+                    title = struct_item.get('Title', '') if struct_item else ''
+                    lines.append(f"  {item_num}: {title}")
+        except Exception:
+            pass
+
+        # Available actions — context-aware
+        lines.append("")
+        lines.append("AVAILABLE ACTIONS:")
+        lines.append("  [item_number]            Get text for specific item")
+        lines.append("  .items                   All reported item numbers")
+        lines.append("  .content_type            Filing classification")
+        if self.content_type == 'earnings':
+            lines.append("  .press_releases          Press release attachments")
+            lines.append("  .earnings                Parsed earnings release")
+            lines.append("  .income_statement        Income statement (from earnings)")
+            lines.append("  .balance_sheet           Balance sheet (from earnings)")
+        lines.append("  .get_exhibit(type)       Get exhibit by type (e.g., 'EX-99.1')")
+        lines.append("  .text()                  Full filing text content")
+
+        if detail == 'standard':
+            return "\n".join(lines)
+
+        # === FULL ===
+        # Exhibit list
+        try:
+            attachments = self._filing.attachments
+            if attachments and len(attachments) > 0:
+                lines.append("")
+                lines.append("EXHIBITS:")
+                for att in list(attachments)[:10]:
+                    doc_type = getattr(att, 'document_type', '') or ''
+                    desc = getattr(att, 'description', '') or ''
+                    if doc_type or desc:
+                        lines.append(f"  {doc_type}: {desc}" if desc else f"  {doc_type}")
+                if len(attachments) > 10:
+                    lines.append(f"  ... ({len(attachments) - 10} more)")
+        except Exception:
+            pass
+
+        return "\n".join(lines)
+
+    def __repr__(self):
+        return repr_rich(self.__rich__())
+
+# Alias for the current report
+EightK = CurrentReport

@@ -1,0 +1,400 @@
+import asyncio
+import logging.config
+import os
+import random
+import re
+import sys
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
+from functools import lru_cache, partial, wraps
+from typing import Callable, Iterable, List, Optional, Tuple, TypeVar, Union
+
+import pandas as pd
+import pyarrow as pa
+from rich.logging import RichHandler
+
+from edgar.datatools import PagingState
+
+log = logging.getLogger(__name__)
+
+def parse_pandas_version():
+    """Parse pandas version without external dependencies"""
+    version_parts = pd.__version__.split('.')
+    major = int(version_parts[0])
+    minor = int(version_parts[1]) if len(version_parts) > 1 else 0
+    # Handle dev versions, rc versions, and build metadata
+    patch_str = version_parts[2] if len(version_parts) > 2 else '0'
+    patch = int(patch_str.split('+')[0].split('rc')[0].split('dev')[0])
+    return (major, minor, patch)
+
+pandas_version = parse_pandas_version()
+
+# sys version
+python_version = tuple(map(int, sys.version.split()[0].split('.')))
+
+__all__ = [
+    'log',
+    'get_bool',
+    'IntString',
+    'python_version',
+    'strtobool',
+    'listify',
+    'decode_content',
+    'cache_except_none',
+    'text_extensions',
+    'binary_extensions',
+    'run_async_or_sync',
+    'is_probably_html',
+    'has_html_content',
+    'PagingState',
+    'Years',
+    'Quarters',
+    'YearAndQuarter',
+    'YearAndQuarters',
+    'quarters_in_year',
+    'parallel_thread_map',
+    'pandas_version'
+]
+
+IntString = Union[str, int]
+quarters_in_year: List[int] = list(range(1, 5))
+
+YearAndQuarter = Tuple[int, int]
+YearAndQuarters = List[YearAndQuarter]
+Years = Union[int, List[int], range]
+Quarters = Union[int, List[int], range]
+
+# Date patterns
+YYYY_MM_DD = "\\d{4}-\\d{2}-\\d{2}"
+DATE_PATTERN = re.compile(YYYY_MM_DD)
+DATE_RANGE_PATTERN = re.compile(f"^({YYYY_MM_DD}(:({YYYY_MM_DD})?)?|:({YYYY_MM_DD}))$")
+
+# Settings and identity live in edgar/settings.py. 6.0 removed the re-exports
+# that kept `from edgar.core import get_identity` working (edgartools-07lk.22.1).
+from edgar.settings import default_page_size as _default_page_size  # noqa: E402
+
+
+def strtobool (val:str):
+    """Convert a string representation of truth to true (1) or false (0).
+
+    True values are case insensitive 'y', 'yes', 't', 'true', 'on', and '1'.
+    false values are case insensitive 'n', 'no', 'f', 'false', 'off', and '0'.
+    Raises ValueError if 'val' is anything else.
+    """
+    if not val:
+        return False
+    val = val.lower()
+    if val in ('y', 'yes', 't', 'true', 'on', '1'):
+        return True
+    elif val in ('n', 'no', 'f', 'false', 'off', '0'):
+        return False
+    else:
+        return False
+        #raise ValueError("invalid truth value %r" % (val,))
+
+
+def decode_content(content: bytes):
+    try:
+        return content.decode('utf-8')
+    except UnicodeDecodeError:
+        return content.decode('latin-1')
+
+
+# Extension tables. Entries MUST be lowercase and dot-prefixed: membership is tested against
+# a normalized extension (see Attachment.is_text/is_binary), so a bare or uppercase entry here
+# can never match. Two such entries ("png", "XML") silently classified nothing for years, which
+# is how a .PDF primary document reached a UTF-8 decode and raised (edgartools-dzwm).
+text_extensions = (".txt", ".htm", ".html", ".xsd", ".xml", ".json", ".idx", ".paper", ".css", ".js")
+binary_extensions = (".pdf", ".jpg", ".jpeg", ".png", ".gif", ".tif", ".tiff", ".bmp", ".ico", ".svg", ".webp",
+                     ".avif", ".apng", ".xlsx", ".xls", ".zip", ".docx", ".pptx")
+
+
+def get_bool(value: Optional[str] = None) -> Optional[bool]:
+    """Convert the value to a boolean"""
+    return value in [1, "1", "Y", "true", "True", "TRUE"]
+
+
+def get_resource(file: str):
+    import importlib
+
+    import edgar
+    return importlib.resources.as_file(importlib.resources.files(edgar).joinpath(file))
+
+
+
+
+
+class DataPager:
+    def __init__(self,
+                 data: Union[pa.Table, pd.DataFrame],
+                 page_size=_default_page_size):
+        self.data: Union[pa.Table, pd.DataFrame] = data
+        self.page_size = page_size
+        self.total_pages = (len(self.data) // page_size) + 1
+        self.current_page = 1
+
+    def has_next(self):
+        return self.current_page < self.total_pages
+
+    def has_previous(self):
+        return self.current_page > 1
+
+    def next(self):
+        """Get the next page of data"""
+        if self.has_next():
+            self.current_page += 1
+            return self.current()
+        else:
+            return None
+
+    def previous(self):
+        """Get the previous page of data"""
+        if self.has_previous():
+            self.current_page -= 1
+            return self.current()
+        else:
+            return None
+
+    @property
+    def _current_range(self) -> Tuple[int, int]:
+        """Get the current start and end index for the data"""
+        start_index = (self.current_page - 1) * self.page_size
+        end_index = min(len(self.data), start_index + self.page_size)
+        return start_index, end_index
+
+    def current(self) -> pa.Table:
+        """
+        Get the current data page as a pyarrow Table
+        :return:
+        """
+        start_index = (self.current_page - 1) * self.page_size
+        end_index = start_index + self.page_size
+        if isinstance(self.data, pa.Table):
+            return self.data.slice(offset=start_index, length=self.page_size)
+        else:
+            return self.data.iloc[start_index:end_index]
+
+    @property
+    def start_index(self):
+        return (self.current_page - 1) * self.page_size
+
+    @property
+    def end_index(self):
+        return self.start_index + self.page_size
+
+
+@dataclass
+class PagingState:
+    page_start: int
+    num_records: int
+
+
+def sample_table(table, n=None, frac=None, replace=False, random_state=None):
+    """Take a sample from a pyarrow Table"""
+    if random_state:
+        random.seed(random_state)
+
+    if frac is not None:
+        n = int(len(table) * frac)
+
+    if n is not None:
+        if replace:
+            indices = [random.randint(0, len(table) - 1) for _ in range(n)]
+        else:
+            indices = random.sample(range(len(table)), min(n, len(table)))
+    else:
+        indices = random.sample(range(len(table)), len(table))
+
+    return table.take(indices)
+
+
+def run_async_or_sync(coroutine):
+    """Run a coroutine to completion from synchronous code and return its result.
+
+    With no event loop running in this thread, this is asyncio.run(). Inside one,
+    as in Jupyter, asyncio.run() refuses, so the coroutine runs on a fresh loop in
+    a worker thread and this call waits for it. Our coroutines share no state with
+    the caller's loop, so a private loop needs no re-entrancy patching (the
+    archived nest-asyncio did that by patching the running loop).
+    Exceptions from the coroutine propagate unchanged.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coroutine)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        return executor.submit(asyncio.run, coroutine).result()
+
+
+def listify(value):
+    """
+    Convert the input to a list if it's not already a list.
+
+    Args:
+    value: Any type of input
+
+    Returns:
+    list: The input as a list
+    """
+    if isinstance(value, list):
+        return value
+    elif isinstance(value, range):
+        return list(value)
+    else:
+        return [value]
+
+
+
+
+def cache_except_none(maxsize=128):
+    """
+    A decorator that caches the result of a function, but only if the result is not None.
+    """
+    def decorator(func):
+        cache = lru_cache(maxsize=maxsize)
+
+        @cache
+        def cached_func(*args, **kwargs):
+            result = func(*args, **kwargs)
+            if result is None:
+                # Clear this result from the cache
+                cached_func.cache_clear()
+            return result
+
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            return cached_func(*args, **kwargs)
+
+        # Preserve cache methods
+        wrapper.cache_info = cached_func.cache_info
+        wrapper.cache_clear = cached_func.cache_clear
+        return wrapper
+
+    return decorator
+
+def is_probably_html(content: str) -> bool:
+    """Does it have html tags"""
+    if isinstance(content, bytes):
+        content = content.decode('utf-8', errors='ignore')
+
+    # Check for common HTML tags. Lowercase once: `content` can be hundreds of MB and
+    # doing it inside the generator allocated a fresh copy for every tag tried.
+    html_tags = ['<html>', '<body>', '<head>', '<title>', '<div', '<span', '<p>']
+    lowered = content.lower()
+    return any(tag in lowered for tag in html_tags)
+
+def has_html_content(content: str) -> bool:
+    """
+    Check if the content is HTML or inline XBRL HTML
+    """
+    if content is None:
+        return False
+
+    if isinstance(content, bytes):
+        content = content.decode('utf-8', errors='ignore')
+
+    # Strip only leading whitespace and get first 200 chars for doctype check
+    content = content.lstrip()
+    first_200_lower = content[:200].lower()
+
+    # Check for XHTML doctype declarations
+    if '<!doctype html public "-//w3c//dtd xhtml' in first_200_lower or \
+            '<!doctype html system "http://www.w3.org/tr/xhtml1/dtd/' in first_200_lower or \
+            '<!doctype html public "-//w3c//dtd html 4.01 transitional//en"' in first_200_lower:
+        return True
+
+    # Look for common XML/HTML indicators in first 1000 chars
+    first_1000 = content[:1000]
+
+    # Check for standard XHTML namespace
+    if 'xmlns="http://www.w3.org/1999/xhtml"' in first_1000:
+        return True
+
+    # Check for HTML root element
+    if '<html' in first_1000:
+        # Check for common inline XBRL namespaces
+        if ('xmlns:xbrli' in first_1000 or
+                'xmlns:ix' in first_1000 or
+                'xmlns:html' in first_1000):
+            return True
+
+        # If we have an <html> tag, it's likely HTML content
+        # This catches cases like <html style="..."> that don't have XBRL namespaces
+        return True
+
+    # Just check for straightforward HTML
+    if first_200_lower.startswith('<html>') and content[-7:].lower().startswith('</html>'):
+        return True
+
+    return False
+
+
+T = TypeVar('T')
+R = TypeVar('R')
+
+def parallel_thread_map(func: Callable[[T], R],
+                        items: Iterable[T],
+                        **kwargs) -> List[R]:
+    """
+    Run a function in parallel across multiple items using ThreadPoolExecutor.
+
+    This is a replacement for fastcore's parallel function, supporting only the threadpool
+    execution mode. It does not include progress bars.
+
+    Args:
+        func: The function to apply to each item
+        items: The items to process
+        **kwargs: Additional keyword arguments to pass to func
+
+    Returns:
+        List of results from applying func to each item
+    """
+    # Default to min(32, cores+4) which is a good balance for I/O-bound tasks
+    max_workers = kwargs.pop('n_workers', None) or min(32, (os.cpu_count() or 1) + 4)
+
+    # Convert items to a list for easier handling
+    items_list = list(items)
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        if kwargs:
+            # If there are kwargs, create a partial function
+            partial_func = partial(func, **kwargs)
+            results = list(executor.map(partial_func, items_list))
+        else:
+            results = list(executor.map(func, items_list))
+
+    return results
+
+
+def initialize_rich_logging():
+    # Rich logging
+    logging.basicConfig(
+        level="INFO",
+        format="%(message)s",
+        datefmt="[%X]",
+        handlers=[RichHandler(rich_tracebacks=True)]
+    )
+
+    # Third-party loggers already suppressed at module level
+
+
+# Suppress noisy third-party loggers by default.
+# Users can override after import: logging.getLogger("httpx2").setLevel(logging.DEBUG)
+_NOISY_LOGGERS = {
+    # Our HTTP client. httpx2 logs every request at INFO under its own name, so
+    # quieting "httpx" alone stopped applying when we moved off httpx.
+    "httpx2": logging.WARNING,
+    # Plain httpx is no longer ours, but edgartools[ai] still installs it (the
+    # MCP SDK depends on it), and its request log is just as noisy.
+    "httpx": logging.WARNING,
+    "httpxthrottlecache": logging.WARNING,
+    "pyrate_limiter": logging.CRITICAL,  # Emits spurious "async" messages at WARNING
+}
+for _logger_name, _level in _NOISY_LOGGERS.items():
+    _lg = logging.getLogger(_logger_name)
+    if _lg.level == logging.NOTSET:  # Only set if user hasn't already configured
+        _lg.setLevel(_level)
+
+# Turn on rich logging if the environment variable is set
+if os.getenv('EDGAR_USE_RICH_LOGGING', '0') == '1':
+    initialize_rich_logging()

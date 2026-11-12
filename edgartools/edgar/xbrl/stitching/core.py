@@ -1,0 +1,1338 @@
+"""
+XBRL Statement Stitching - Core Functionality
+
+This module contains the core StatementStitcher class and related functionality
+for combining multiple XBRL statements across different time periods.
+"""
+
+from collections import defaultdict
+from datetime import datetime, timedelta
+from enum import Enum
+from typing import Any, Dict, List, Optional, Set, Tuple, Union
+
+from edgar.xbrl.core import decimals_for_scaling, format_date, parse_date
+from edgar.exceptions import StatementNotFoundError
+from edgar.xbrl.standardization import standardize_statement
+from edgar.xbrl.stitching.ordering import StatementOrderingManager
+from edgar.xbrl.stitching.periods import determine_optimal_periods
+from edgar.xbrl.stitching.presentation import VirtualPresentationTree
+
+# Standard concepts that represent the same economic item but have different names
+# in the standardization map (e.g., balance sheet vs cash flow variants of "cash").
+# Groups containing concepts from equivalent standards are merged without the
+# variant-name check — value agreement on overlapping periods is still enforced.
+_EQUIVALENT_STANDARD_CONCEPTS = [
+    ('CashAndCashEquivalents', 'CashAndMarketableSecurities'),
+]
+
+# Build a lookup for fast access: standard_concept -> canonical representative
+_EQUIV_MAP: dict[str, str] = {}
+for _group in _EQUIVALENT_STANDARD_CONCEPTS:
+    _canonical = _group[0]
+    for _sc in _group:
+        _EQUIV_MAP[_sc] = _canonical
+
+# Known concept renames: bare concept name pairs where a company switched from
+# one XBRL concept to another across filing years to represent the same line item.
+# These are NOT taxonomically equivalent — they may have different meanings in the
+# XBRL taxonomy, but a specific company used them interchangeably.
+#
+# The stitcher merges these in a separate pass after standard-concept merging.
+# Value agreement on overlapping periods is still enforced as a safety check.
+#
+# Each entry: (old_bare_name, new_bare_name) with a comment noting company + year.
+_KNOWN_CONCEPT_RENAMES = [
+    # PG switched pre-tax income concept at FY2024 (Issue #711)
+    ('IncomeLossFromContinuingOperationsBeforeIncomeTaxes',
+     'IncomeLossIncludingPortionAttributableToNoncontrollingInterest'),
+]
+
+# Build fast lookup: bare_concept_name -> canonical (first in pair)
+_RENAME_MAP: dict[str, str] = {}
+for _pair in _KNOWN_CONCEPT_RENAMES:
+    _canonical = _pair[0]
+    for _name in _pair:
+        _RENAME_MAP[_name] = _canonical
+
+
+class StatementStitcher:
+    """
+    Combines multiple statements across time periods into a unified view.
+
+    This class handles the complexities of combining financial statements
+    from different periods, including:
+    - Normalizing concepts that change over time
+    - Aligning periods correctly
+    - Handling missing data points
+    - Providing both standardized and company-specific views
+    """
+
+    class PeriodType(str, Enum):
+        """Types of period views available for stitched statements"""
+        RECENT_PERIODS = "Most Recent Periods"
+        RECENT_YEARS = "Recent Years"
+        THREE_YEAR_COMPARISON = "Three-Year Comparison"
+        THREE_QUARTERS = "Three Recent Quarters"
+        ANNUAL_COMPARISON = "Annual Comparison"
+        QUARTERLY_TREND = "Quarterly Trend"
+        ALL_PERIODS = "All Available Periods"
+
+    def __init__(self, industry: Optional[str] = None):
+        """
+        Initialize a StatementStitcher instance.
+
+        Args:
+            industry: Optional Fama-French 48 industry code (e.g., "Banks")
+                      for industry-specific standardization overrides.
+        """
+        self.industry = industry
+
+        # Initialize data structures
+        self.periods = []  # Ordered list of period identifiers
+        self.period_dates = {}  # Maps period ID to display dates
+        self.period_sources = {}  # Maps period ID to the index of the filing it came from
+        self.data = defaultdict(dict)  # {concept: {period: value}}
+        self.concept_metadata = {}  # Metadata for each concept (level, etc.)
+        self.ordering_manager = None  # Will be initialized during stitching
+        self.original_statement_order = []  # Track original order for hierarchy context
+        self.concept_to_label_map = {}  # Maps concept IDs to label keys (persists across statements)
+        # Every value each filing reports for a concept, comparative columns
+        # included, so merges can check that two lines are the same amount (GH #1685)
+        self.value_evidence = defaultdict(dict)  # {concept: {period: value}}
+
+    def stitch_statements(
+        self,
+        statements: List[Dict[str, Any]],
+        period_type: Union[PeriodType, str] = PeriodType.RECENT_PERIODS,
+        max_periods: Optional[int] = None,
+        standard: bool = True,
+        discrete_quarters: bool = False
+    ) -> Dict[str, Any]:
+        """
+        Stitch multiple statements into a unified view.
+
+        Args:
+            statements: List of statement data from different filings
+            period_type: Type of period view to generate
+            max_periods: Maximum number of periods to include
+            standard: Whether to use standardized concept labels
+            discrete_quarters: If True and statement is CashFlowStatement, convert
+                              YTD cumulative periods into discrete quarter values
+
+        Returns:
+            Dictionary with stitched statement data
+        """
+        # Reset state
+        self.periods = []
+        self.period_dates = {}
+        self.period_sources = {}  # Maps period ID to the index of the filing it came from
+        self.data = defaultdict(dict)
+        self.concept_metadata = {}
+        self.original_statement_order = []
+        self.concept_to_label_map = {}  # Reset concept-to-label mapping for each stitch
+        self.value_evidence = defaultdict(dict)
+
+        # Initialize ordering manager for this statement type
+        statement_type = statements[0].get('statement_type', 'IncomeStatement') if statements else 'IncomeStatement'
+        self.ordering_manager = StatementOrderingManager(statement_type)
+
+        # Capture original statement order from the most recent (first) statement for hierarchy context
+        if statements:
+            reference_statement = statements[0]
+            self.original_statement_order = []
+            for item in reference_statement.get('data', []):
+                concept = item.get('concept')
+                if concept and concept not in self.original_statement_order:
+                    self.original_statement_order.append(concept)
+
+        # Extract and sort all periods
+        all_periods = self._extract_periods(statements)
+
+        # Set max_periods if not provided
+        max_periods = max_periods or len(statements) + 2 # Allow for the last statement to have 3 periods
+
+        # Select appropriate periods based on period_type
+        selected_periods = self._select_periods(all_periods, period_type, max_periods)
+        self.periods = selected_periods
+
+        # Process each statement
+        for _i, statement in enumerate(statements):
+            # Only process statements that have periods in our selection
+            statement_periods = set(statement['periods'].keys())
+            relevant_periods = statement_periods.intersection(set(selected_periods))
+
+            if not relevant_periods:
+                continue
+
+            # Standardize the statement if needed
+            if standard:
+                processed_data = self._standardize_statement_data(statement)
+            else:
+                processed_data = statement['data']
+
+            # Store data for each item
+            self._integrate_statement_data(processed_data, statement['periods'], relevant_periods)
+
+        # Merge duplicate rows that map to the same standard_concept
+        self._merge_duplicate_standard_concepts()
+
+        # Merge known concept renames (Issue #711): handles cases where a company
+        # switched to a completely different concept name across filing years.
+        self._merge_known_concept_renames()
+
+        # Merge a line the company retagged between filings (GH #1802): same
+        # label, no stitched period in common, and the filings' comparatives
+        # show both tags carrying the same amount.
+        self._merge_retagged_lines()
+
+        # Unaccumulate YTD cash flow periods into discrete quarters.
+        # SEC requires only YTD cash flows in 10-Q filings (Q2 = 6-month cumulative,
+        # Q3 = 9-month cumulative). This step derives the discrete quarter values
+        # by subtracting adjacent YTD periods.
+        if discrete_quarters and statement_type == 'CashFlowStatement':
+            self._unaccumulate_cashflow_ytd()
+
+        # Format the stitched data
+        return self._format_output_with_ordering(statements)
+
+    def _extract_periods(self, statements: List[Dict[str, Any]]) -> List[Tuple[str, datetime]]:
+        """
+        Extract and sort all periods from the statements, de-duplicating periods with the same date.
+
+        Args:
+            statements: List of statement data
+
+        Returns:
+            List of (period_id, end_date) tuples, sorted by date (newest first)
+        """
+        # Use a dictionary to track unique periods by their end date
+        # This will handle cases where different period_ids reference the same date
+        unique_periods = {}  # key: normalized period, value: (period_id, datetime, statement_index, source_index)
+
+        for i, statement in enumerate(statements):
+            # Use statement index (i) to prioritize more recent filings
+            # Lower index = more recent filing
+            # The filing this statement came from, as a position in the caller's
+            # xbrl_list. It is not i: the optimal-periods path passes one filtered
+            # statement per selected period, so a 10-Q contributing a quarter and a
+            # YTD column is two statements here, and a filing that lacks the
+            # statement is skipped. Enumerating gave ORCL's six-month column the
+            # index of the next filing and its Q1 an index past the end (GH #1837).
+            source_index = statement.get('source_index', i)
+            for period_id, period_info in statement['periods'].items():
+                # Extract end date for sorting
+                try:
+                    # Initialize normalized_key to silence the type checker
+                    normalized_key = ""
+
+                    if period_id.startswith('instant_'):
+                        date_str = period_id.split('_')[1]
+                        # Format the date consistently with single statements
+                        try:
+                            date_obj = parse_date(date_str)
+                            display_date = format_date(date_obj)
+                        except ValueError:
+                            # Fall back to original label if parsing fails
+                            display_date = period_info['label']
+                        period_type = 'instant'
+                        # For instant periods, create a normalized key with just the date
+                        normalized_key = f"{period_type}_{date_str}"
+                    else:  # duration
+                        # For durations, extract both start and end dates
+                        parts = period_id.split('_')
+                        if len(parts) >= 3:
+                            start_date_str = parts[1]
+                            end_date_str = parts[2]
+                            start_date = parse_date(start_date_str)
+                            end_date = parse_date(end_date_str)
+                            date_str = end_date_str  # Use end date for sorting
+
+                            # Format end date consistently - for stitched statements,
+                            # we only need the end date for duration periods as that's what users compare
+                            display_date = format_date(end_date)
+                            period_type = 'duration'
+                            # Create a normalized key that combines period type, start date, and end date
+                            normalized_key = f"{period_type}_{format_date(start_date)}_{format_date(end_date)}"
+                        else:
+                            # Skip malformed period IDs
+                            continue
+
+                    # Parse the end date for sorting
+                    end_date = parse_date(date_str)
+
+                    # Check if we already have this period (by normalized key)
+                    if normalized_key in unique_periods:
+                        existing_idx = unique_periods[normalized_key][2]
+                        # Only replace if this statement is from a more recent filing
+                        if i < existing_idx:
+                            unique_periods[normalized_key] = (period_id, end_date, i, source_index)
+                            # Use the enhanced label from period_info if available, otherwise fall back to display_date
+                            self.period_dates[period_id] = period_info.get('label', display_date)
+                    else:
+                        # Add new period
+                        unique_periods[normalized_key] = (period_id, end_date, i, source_index)
+                        # Use the enhanced label from period_info if available, otherwise fall back to display_date
+                        self.period_dates[period_id] = period_info.get('label', display_date)
+
+                except (ValueError, TypeError, IndexError):
+                    # Skip periods with invalid dates
+                    continue
+
+        # Retain which filing each surviving period came from. The rule that picks
+        # it lives here -- lower index wins, above -- and the query layer needs the
+        # same answer to attribute a stitched fact to its source filing. Recomputing
+        # it there would be a second copy of this rule, free to drift from it
+        # (bead edgartools-qbm7).
+        self.period_sources = {period_id: source_index
+                               for period_id, _, _, source_index in unique_periods.values()}
+
+        # Extract and sort the unique periods
+        all_periods = [(period_id, end_date) for period_id, end_date, _, _ in unique_periods.values()]
+
+        # Sort by date, newest first
+        return sorted(all_periods, key=lambda x: x[1], reverse=True)
+
+    def _select_periods(
+        self,
+        all_periods: List[Tuple[str, Union[str,datetime]]],
+        period_type: Union[PeriodType, str],
+        max_periods: int
+    ) -> List[str]:
+        """
+        Select appropriate periods based on period_type.
+
+        Args:
+            all_periods: List of (period_id, end_date) tuples
+            period_type: Type of period view to generate
+            max_periods: Maximum number of periods to include
+
+        Returns:
+            List of selected period IDs
+        """
+        if isinstance(period_type, str):
+            try:
+                period_type = StatementStitcher.PeriodType(period_type)
+            except ValueError:
+                # Default to recent periods if string doesn't match enum
+                period_type = StatementStitcher.PeriodType.RECENT_PERIODS
+
+        # Extract period types (instant vs duration)
+        instants = [(pid, date) for pid, date in all_periods if pid.startswith('instant_')]
+        durations = [(pid, date) for pid, date in all_periods if not pid.startswith('instant_')]
+
+        # Apply different selection logic based on period_type
+        if period_type == StatementStitcher.PeriodType.RECENT_PERIODS:
+            # Just take the most recent periods up to max_periods
+            return [pid for pid, _ in all_periods[:max_periods]]
+
+        elif period_type == StatementStitcher.PeriodType.THREE_YEAR_COMPARISON:
+            # For balance sheets, find year-end instants
+            year_ends = []
+            years_seen = set()
+
+            for pid, date in instants:
+                year = parse_date(date).year
+                if year not in years_seen and len(year_ends) < max_periods:
+                    year_ends.append(pid)
+                    years_seen.add(year)
+
+            return year_ends
+
+        elif period_type == StatementStitcher.PeriodType.THREE_QUARTERS:
+            # Find the most recent quarters (for income statements)
+            quarterly_periods = []
+
+            for pid, _date in durations:
+                # Check if this appears to be a quarterly period
+                if not pid.startswith('duration_'):
+                    continue
+
+                start_date_str = pid.split('_')[1]
+                end_date_str = pid.split('_')[2]
+
+                try:
+                    start_date = parse_date(start_date_str)
+                    end_date = parse_date(end_date_str)
+                    days = (end_date - start_date).days
+
+                    # Assuming quarterly is around 90 days
+                    if 80 <= days <= 95:
+                        quarterly_periods.append(pid)
+                        if len(quarterly_periods) >= max_periods:
+                            break
+                except (ValueError, TypeError, IndexError):
+                    continue
+
+            return quarterly_periods
+
+        elif period_type == StatementStitcher.PeriodType.ANNUAL_COMPARISON:
+            # Find annual periods (for income statements)
+            annual_periods = []
+
+            for pid, _date in durations:
+                # Check if this appears to be an annual period
+                if not pid.startswith('duration_'):
+                    continue
+
+                start_date_str = pid.split('_')[1]
+                end_date_str = pid.split('_')[2]
+
+                try:
+                    start_date = parse_date(start_date_str)
+                    end_date = parse_date(end_date_str)
+                    days = (end_date - start_date).days
+
+                    # Assuming annual is around 365 days
+                    if 350 <= days <= 380:
+                        annual_periods.append(pid)
+                        if len(annual_periods) >= max_periods:
+                            break
+                except (ValueError, TypeError, IndexError):
+                    continue
+
+            return annual_periods
+
+        elif period_type == StatementStitcher.PeriodType.ALL_PERIODS:
+            # Return all periods, newest first, up to max_periods
+            return [pid for pid, _ in all_periods[:max_periods]]
+
+        # Default to recent periods
+        return [pid for pid, _ in all_periods[:max_periods]]
+
+    def _standardize_statement_data(self, statement: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """
+        Standardize the statement data using the concept mapper.
+
+        Args:
+            statement: Statement data
+
+        Returns:
+            Standardized statement data
+        """
+        # Add statement type to context for better mapping
+        statement_type = statement.get('statement_type', '')
+        statement_data = statement['data']
+
+        for item in statement_data:
+            item['statement_type'] = statement_type
+
+        # Apply standardization using the reverse index (concept_mapper not needed)
+        return standardize_statement(statement_data, None, industry=self.industry)
+
+    def _integrate_statement_data(
+        self,
+        statement_data: List[Dict[str, Any]],
+        period_map: Dict[str, Dict[str, str]],
+        relevant_periods: Set[str]
+    ) -> None:
+        """
+        Integrate statement data from one statement into the stitched view.
+
+        Args:
+            statement_data: Statement data
+            period_map: Map of period IDs to period information
+            relevant_periods: Set of periods from this statement to include
+        """
+        # Use instance variable concept_to_label_map to track concepts by their underlying concept ID
+        # This helps merge rows that represent the same concept but have different labels across statements
+
+        for item in statement_data:
+            concept = item.get('concept')
+            label = item.get('label')
+
+            # Skip items without concept or label
+            if not concept or not label:
+                continue
+
+            # Skip abstract items with no children (headers without data)
+            if item.get('is_abstract', False) and not item.get('children'):
+                continue
+
+            # Skip dimension items (taxonomy structural items)
+            if any(bracket in label for bracket in ['[Axis]', '[Domain]', '[Member]', '[Line Items]', '[Table]', '[Abstract]']):
+                continue
+
+            # Skip dimensional segment rows — they share the same concept name as
+            # their parent total row, so the last segment overwrites the correct
+            # total value (e.g., Goodwill segment 650M replacing total 7,970M).
+            # This applies even when include_dimensions=True because the stitcher
+            # uses concept as a dict key and cannot yet differentiate segments.
+            # Note: parent total rows do NOT have is_dimension=True; only child
+            # segment rows do, so this skip never drops total-level values.
+            if item.get('is_dimension', False):
+                continue
+
+            # Use concept as the primary key for identifying the same financial line item
+            # This is more reliable than labels which may vary across filings
+
+            # If we've already seen this concept, use the existing key
+            # This ensures we merge rows that represent the same concept
+            if concept in self.concept_to_label_map:
+                concept_key = self.concept_to_label_map[concept]
+            else:
+                # Use concept as key to avoid collisions when different concepts share labels
+                # (e.g. "Other, net" used by both operating and financing activities)
+                concept_key = concept
+                # Remember this mapping for future occurrences
+                self.concept_to_label_map[concept] = concept_key
+
+            # Store metadata about the concept (level, abstract status, etc.)
+            # If we've already seen this concept, only update metadata if it's from a more recent period
+            # This ensures we use labels from the most recent filing when merging rows
+            if concept_key not in self.concept_metadata:
+                self.concept_metadata[concept_key] = {
+                    'level': item.get('level', 0),
+                    'is_abstract': item.get('is_abstract', False),
+                    'is_total': item.get('is_total', False) or 'total' in label.lower(),
+                    'original_concept': concept,
+                    'latest_label': label,  # Store the original label too
+                    'standard_concept': item.get('standard_concept'),
+                    'preferred_sign': self._extract_preferred_sign(item),
+                }
+            else:
+                # For existing concepts, update the label to use the most recent one
+                # We determine which periods are most recent based on position in self.periods
+                # (earlier indices are more recent periods)
+
+                # Update label to the most recent filing's label for display
+                statement_periods = [p for p in relevant_periods if p in self.periods]
+                if statement_periods:
+                    most_recent_period = min(statement_periods, key=lambda p: self.periods.index(p))
+                    most_recent_idx = self.periods.index(most_recent_period)
+
+                    existing_periods = [p for p in self.data[concept_key].keys() if p in self.periods]
+                    if existing_periods:
+                        earliest_existing_idx = min(self.periods.index(p) for p in existing_periods)
+
+                        # If this statement has more recent data, update the display label
+                        if most_recent_idx < earliest_existing_idx:
+                            self.concept_metadata[concept_key]['latest_label'] = label
+
+                    # Propagate standard_concept from newer filing if available
+                    new_standard = item.get('standard_concept')
+                    if new_standard and not self.concept_metadata[concept_key].get('standard_concept'):
+                        self.concept_metadata[concept_key]['standard_concept'] = new_standard
+
+                    # Propagate preferred_sign from newer filing if not set
+                    if self.concept_metadata[concept_key].get('preferred_sign') is None:
+                        ps = self._extract_preferred_sign(item)
+                        if ps is not None:
+                            self.concept_metadata[concept_key]['preferred_sign'] = ps
+
+            # Keep every reported value, selected or not, as merge evidence.
+            # Statements arrive newest first, so the first value seen wins.
+            for period_id, value in (item.get('values') or {}).items():
+                if value is not None:
+                    self.value_evidence[concept_key].setdefault(period_id, value)
+
+            # Store values for relevant periods
+            for period_id in relevant_periods:
+                if period_id in self.periods:  # Only include selected periods
+                    value = item.get('values', {}).get(period_id)
+                    if value is not None:
+                        self.data[concept_key][period_id] = {
+                            'value': value,
+                            # Stitched entries feed arithmetic (discrete-quarter
+                            # subtraction) and an integer-typed facts frame, so
+                            # the 'INF' sentinel is coerced here (GH #1229).
+                            'decimals': decimals_for_scaling(item.get('decimals', {}).get(period_id))
+                        }
+
+    @staticmethod
+    def _extract_preferred_sign(item: Dict[str, Any]) -> Optional[int]:
+        """Extract concept-level preferred_sign from a statement item.
+
+        preferred_signs is a dict of {period_id: sign_value} but the sign is the same
+        for all periods (it's a concept-level attribute), so we just take the first value.
+        """
+        preferred_signs = item.get('preferred_signs', {})
+        if preferred_signs:
+            return next(iter(preferred_signs.values()))
+        return None
+
+    @staticmethod
+    def _bare_concept_name(concept_key: str) -> str:
+        """Strip namespace prefix from a concept key to get the bare concept name.
+
+        'us-gaap_NetCashProvidedByUsedInOperatingActivities' → 'NetCashProvidedByUsedInOperatingActivities'
+        """
+        # Handle both us-gaap_Concept and us-gaap:Concept formats
+        for sep in ('_', ':'):
+            idx = concept_key.find(sep)
+            if idx != -1:
+                return concept_key[idx + 1:]
+        return concept_key
+
+    @staticmethod
+    def _are_concept_name_variants(key_a: str, key_b: str) -> bool:
+        """Check if two concept keys are name variants of the same line item.
+
+        Two concepts are considered variants when one bare name contains the other.
+        This catches common XBRL aliasing patterns like:
+          - NetCashProvidedByUsedInOperatingActivities
+          - NetCashProvidedByUsedInOperatingActivitiesContinuingOperations
+          - StockholdersEquity
+          - StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest
+
+        But NOT unrelated sub-items like:
+          - NetCashProvidedByUsedInOperatingActivities
+          - CashProvidedByUsedInOperatingActivitiesDiscontinuedOperations
+        """
+        a = StatementStitcher._bare_concept_name(key_a)
+        b = StatementStitcher._bare_concept_name(key_b)
+        return a in b or b in a
+
+    @staticmethod
+    def _values_agree(pv, sv) -> bool:
+        """Equal, or within the 0.1% rounding tolerance."""
+        return pv == sv or (pv != 0 and abs((pv - sv) / pv) < 0.001)
+
+    def _evidence_for(self, concept_key: str) -> Dict[str, Any]:
+        """All reported values for a concept: stitched cells plus comparative columns."""
+        evidence = dict(self.value_evidence.get(concept_key, {}))
+        for period_id, value_data in self.data.get(concept_key, {}).items():
+            if value_data.get('value') is not None:
+                evidence[period_id] = value_data['value']
+        return evidence
+
+    def _shown_to_be_same_amount(self, key_a: str, key_b: str) -> bool:
+        """True only when the filings report both lines for at least one common
+        period and every such period agrees.
+
+        Having no period in common is not evidence that two lines are the same
+        measure: cash and cash equivalents, cash plus short-term investments and
+        available-for-sale securities all standardize to one bucket (GH #1685).
+        """
+        a = self._evidence_for(key_a)
+        b = self._evidence_for(key_b)
+        shared = [p for p in a if p in b]
+        if not shared:
+            return False
+        return all(self._values_agree(a[p], b[p]) for p in shared)
+
+    @staticmethod
+    def _activity_stem(bare_name: str, suffix: str) -> Optional[str]:
+        """'NetCashProvidedByUsedInOperatingActivitiesContinuingOperations' ->
+        'CashProvidedByUsedInOperatingActivities' (suffix and leading 'Net' removed)."""
+        if not bare_name.endswith(suffix):
+            return None
+        stem = bare_name[:-len(suffix)]
+        return stem[3:] if stem.startswith('Net') else stem
+
+    def _continuing_differs_from_total(self, key_a: str, key_b: str) -> bool:
+        """True when one key is an activity's continuing-operations amount and the
+        filing reports nonzero discontinued-operations cash for that activity in
+        a period the continuing amount would fill (GH #1690).
+
+        There the continuing amount is not the total, so merging it into the
+        total row would understate the total by the discontinued amount.
+        """
+        suffix = 'ContinuingOperations'
+        bare_a, bare_b = self._bare_concept_name(key_a), self._bare_concept_name(key_b)
+        if bare_a.endswith(suffix) == bare_b.endswith(suffix):
+            return False
+        continuing_key = key_a if bare_a.endswith(suffix) else key_b
+        stem = self._activity_stem(self._bare_concept_name(continuing_key), suffix)
+        continuing_periods = set(self.data.get(continuing_key, {}))
+        for other_key in set(self.data) | set(self.value_evidence):
+            other_bare = self._bare_concept_name(other_key)
+            other_stem = self._activity_stem(other_bare, 'DiscontinuedOperations')
+            # The aggregate line does not say which activity it belongs to, so a
+            # nonzero aggregate blocks every activity's merge.
+            if other_bare != 'CashProvidedByUsedInDiscontinuedOperations' and other_stem != stem:
+                continue
+            discontinued = self._evidence_for(other_key)
+            if any(discontinued.get(p) for p in continuing_periods):
+                return True
+        return False
+
+    @staticmethod
+    def _overlap_values_agree(primary_data: Dict, secondary_data: Dict, overlap_periods: Set) -> bool:
+        """Check whether overlapping period values agree (same economic line item).
+
+        When a company switches XBRL concept names between filings (e.g.,
+        NetCashProvidedByUsedInOperatingActivities → *ContinuingOperations),
+        the newer filing's comparative data creates overlapping periods with the
+        older filing's primary data.  If the values match, they're the same line
+        item and should be merged.  If they differ, they're genuinely different
+        breakdowns and must stay separate.
+        """
+        for period_id in overlap_periods:
+            pv = primary_data[period_id]['value']
+            sv = secondary_data[period_id]['value']
+            if pv is None or sv is None:
+                continue
+            # Allow a small relative tolerance for rounding differences
+            if pv == sv:
+                continue
+            if pv != 0 and abs((pv - sv) / pv) < 0.001:
+                continue
+            # Values disagree — these are genuinely different line items
+            return False
+        return True
+
+    def _merge_into(self, primary_key: str, secondary_key: str):
+        """Merge secondary concept data and metadata into primary, then remove secondary."""
+        secondary_data = self.data.get(secondary_key, {})
+        for period_id, value_data in secondary_data.items():
+            if period_id not in self.data[primary_key]:
+                self.data[primary_key][period_id] = value_data
+        # Propagate preferred_sign from secondary if primary doesn't have one
+        if secondary_key in self.concept_metadata:
+            if self.concept_metadata[primary_key].get('preferred_sign') is None:
+                secondary_ps = self.concept_metadata[secondary_key].get('preferred_sign')
+                if secondary_ps is not None:
+                    self.concept_metadata[primary_key]['preferred_sign'] = secondary_ps
+        # Carry the secondary's evidence so later merges in a chain can use it
+        for period_id, value in self.value_evidence.pop(secondary_key, {}).items():
+            self.value_evidence[primary_key].setdefault(period_id, value)
+        # Remove the secondary entry
+        if secondary_key in self.data:
+            del self.data[secondary_key]
+        if secondary_key in self.concept_metadata:
+            del self.concept_metadata[secondary_key]
+
+    def _merge_duplicate_standard_concepts(self):
+        """Merge concept entries that map to the same standard_concept.
+
+        Handles the common case where a company switches between related XBRL
+        concept variants across filings (e.g., us-gaap:NetCashProvidedByUsedIn
+        OperatingActivities vs *ContinuingOperations).  Both map to the same
+        standard concept and represent the same economic line item.
+
+        Two concepts are merged only when:
+        1. Their bare concept names are variants (one contains the other), AND
+        2. Any overlapping period values agree (or there is no overlap).
+
+        This prevents unrelated sub-items that happen to map to the same standard
+        concept from being incorrectly merged (Issue #642). A continuing-operations
+        amount is not merged into its total where the filing reports nonzero
+        discontinued-operations cash for that activity and period (GH #1690).
+
+        Additionally, concepts whose standard concepts are declared equivalent
+        (via _EQUIVALENT_STANDARD_CONCEPTS) are grouped together and merged
+        without the variant-name check (Issue #610). Because that bucket holds
+        distinct measures (cash, cash plus short-term investments, securities),
+        such a pair merges only when the filings report both for a common period
+        with agreeing values; no common period is not enough (GH #1685).
+        """
+        standard_to_keys = defaultdict(list)
+        for concept_key, metadata in self.concept_metadata.items():
+            sc = metadata.get('standard_concept')
+            if sc:
+                standard_to_keys[sc].append(concept_key)
+
+        # Merge equivalent standard concept groups (e.g., CashAndCashEquivalents
+        # and CashAndMarketableSecurities) into a single group.
+        equivalence_merged: set[str] = set()
+        for sc in list(standard_to_keys.keys()):
+            canonical = _EQUIV_MAP.get(sc)
+            if canonical and canonical != sc:
+                standard_to_keys[canonical].extend(standard_to_keys.pop(sc))
+                equivalence_merged.add(canonical)
+
+        for standard_concept, keys in standard_to_keys.items():
+            if len(keys) <= 1:
+                continue
+            skip_variant_check = standard_concept in equivalence_merged
+            # Pairwise merge: iteratively find compatible pairs until no more merges
+            merged = True
+            while merged:
+                merged = False
+                # Rebuild the live key list (some may have been deleted by prior merges)
+                live_keys = [k for k in keys if k in self.data]
+                if len(live_keys) <= 1:
+                    break
+                # Sort so the concept with the most data is tried first as primary
+                live_keys.sort(key=lambda k: (-len(self.data.get(k, {})), k))
+                for i in range(len(live_keys)):
+                    if merged:
+                        break
+                    for j in range(i + 1, len(live_keys)):
+                        a_key, b_key = live_keys[i], live_keys[j]
+                        # For equivalent-merged groups the equivalence declaration
+                        # is the identity signal; skip the variant name check.
+                        # For regular groups, require name containment (Issue #642).
+                        if not skip_variant_check and not self._are_concept_name_variants(a_key, b_key):
+                            continue
+                        if skip_variant_check and not self._shown_to_be_same_amount(a_key, b_key):
+                            continue
+                        if self._continuing_differs_from_total(a_key, b_key):
+                            continue
+                        a_data = self.data.get(a_key, {})
+                        b_data = self.data.get(b_key, {})
+                        overlap = set(a_data.keys()) & set(b_data.keys())
+                        if overlap and not self._overlap_values_agree(a_data, b_data, overlap):
+                            continue
+                        # Compatible — merge b into a (a has more or equal data)
+                        self._merge_into(a_key, b_key)
+                        merged = True
+                        break
+
+    def _merge_known_concept_renames(self):
+        """Merge concepts from known cross-filing renames.
+
+        Handles the case where a company switches to a completely different XBRL
+        concept name across filing years — not a variant (one containing the
+        other) but a genuine rename.  For example, PG renamed their pre-tax
+        income concept at the FY2024 boundary (Issue #711).
+
+        Unlike _merge_duplicate_standard_concepts which groups by standard_concept,
+        this method uses the _KNOWN_CONCEPT_RENAMES pairs.  Value agreement on
+        overlapping periods is still enforced.
+        """
+        if not _RENAME_MAP:
+            return
+
+        # Group concept keys by their canonical equivalent bare name
+        canonical_to_keys: dict[str, list[str]] = defaultdict(list)
+        for concept_key in list(self.data.keys()):
+            bare = self._bare_concept_name(concept_key)
+            canonical = _RENAME_MAP.get(bare)
+            if canonical:
+                canonical_to_keys[canonical].append(concept_key)
+
+        for canonical, keys in canonical_to_keys.items():
+            if len(keys) <= 1:
+                continue
+            # Sort so the concept with the most data is primary
+            keys.sort(key=lambda k: (-len(self.data.get(k, {})), k))
+            primary = keys[0]
+            for secondary in keys[1:]:
+                if secondary not in self.data:
+                    continue
+                a_data = self.data.get(primary, {})
+                b_data = self.data.get(secondary, {})
+                overlap = set(a_data.keys()) & set(b_data.keys())
+                if overlap and not self._overlap_values_agree(a_data, b_data, overlap):
+                    continue
+                self._merge_into(primary, secondary)
+
+    @staticmethod
+    def _label_key(label: Optional[str]) -> str:
+        return ' '.join((label or '').lower().split())
+
+    def _shown_to_be_same_nonzero_amount(self, key_a: str, key_b: str) -> bool:
+        """Like _shown_to_be_same_amount, but a shared zero is not evidence:
+        two unrelated lines both report 0 often enough to look identical."""
+        if not self._shown_to_be_same_amount(key_a, key_b):
+            return False
+        a, b = self._evidence_for(key_a), self._evidence_for(key_b)
+        return any(a[p] != 0 for p in a if p in b)
+
+    def _merge_retagged_lines(self):
+        """Merge a line item the company moved to a different XBRL concept.
+
+        Sprouts tagged net income as ``ProfitLoss`` through FY2023 and as
+        ``NetIncomeLoss`` from FY2024, and its two operating-lease lines moved
+        from ``sfm:`` extensions to ``us-gaap`` concepts. Neither pair is a name
+        variant or shares a standard concept, so each line stitched as two
+        half-empty rows (GH #1802).
+
+        Two rows merge only when all of these hold:
+
+        1. They carry the same label in the filings.
+        2. No stitched period has a value in both. A filer that presents both
+           lines in one statement (``ProfitLoss`` and ``NetIncomeLoss`` with a
+           non-controlling interest) fills both in the same periods, so its
+           rows never merge, even where the amounts are equal.
+        3. Some filing reports both concepts for a common period, every common
+           period agrees, and at least one agreeing amount is nonzero. This is
+           the same evidence rule as GH #1685, so a shared label alone (two
+           "Other" lines) is never enough.
+        4. A continuing-operations amount is not being folded into its total
+           where the filing reports discontinued cash (GH #1690).
+        """
+        label_to_keys: dict[str, list[str]] = defaultdict(list)
+        for concept_key in list(self.data.keys()):
+            metadata = self.concept_metadata.get(concept_key, {})
+            if metadata.get('is_abstract'):
+                continue
+            label = self._label_key(metadata.get('latest_label'))
+            if label:
+                label_to_keys[label].append(concept_key)
+
+        for keys in label_to_keys.values():
+            if len(keys) <= 1:
+                continue
+            merged = True
+            while merged:
+                merged = False
+                live_keys = [k for k in keys if k in self.data]
+                # The row with the most recent period is primary, so the merged
+                # row keeps the concept the company files today.
+                live_keys.sort(key=lambda k: (min((self.periods.index(p) for p in self.data[k]
+                                                   if p in self.periods), default=len(self.periods)),
+                                              -len(self.data[k]), k))
+                for i in range(len(live_keys)):
+                    if merged:
+                        break
+                    for j in range(i + 1, len(live_keys)):
+                        a_key, b_key = live_keys[i], live_keys[j]
+                        if set(self.data[a_key]) & set(self.data[b_key]):
+                            continue
+                        if not self._shown_to_be_same_nonzero_amount(a_key, b_key):
+                            continue
+                        if self._continuing_differs_from_total(a_key, b_key):
+                            continue
+                        self._merge_into(a_key, b_key)
+                        merged = True
+                        break
+
+    # ------------------------------------------------------------------
+    # YTD → discrete quarter unaccumulation (CashFlowStatement only)
+    # ------------------------------------------------------------------
+
+    def _unaccumulate_cashflow_ytd(self):
+        """Convert cumulative YTD cash flow periods into discrete quarters.
+
+        SEC 10-Q filings report cash flow on a year-to-date basis:
+          Q1: 3-month (discrete, ~90 days)
+          Q2: 6-month cumulative from fiscal year start (~180 days)
+          Q3: 9-month cumulative from fiscal year start (~270 days)
+          FY: 12-month annual (~365 days)
+
+        This method identifies YTD duration periods that share the same fiscal
+        year start date and derives discrete quarter values:
+          Q2_discrete = YTD_6M - Q1
+          Q3_discrete = YTD_9M - YTD_6M
+          Q4_discrete = FY - YTD_9M
+
+        Each YTD period is replaced by its discrete quarter, re-keyed to the
+        quarter's own dates (GH #1697).
+        """
+        from edgar.core import log
+
+        # 1. Parse duration periods into structured records
+        parsed = self._parse_duration_periods()
+        if not parsed:
+            return
+
+        # 2. Group by fiscal year start date so we can find YTD sequences
+        by_start = defaultdict(list)
+        for p in parsed:
+            by_start[p['start_date']].append(p)
+
+        # 3. For each fiscal year start, sort by duration and derive discrete quarters
+        for start_date, group in by_start.items():
+            # Sort shortest to longest (Q1 → Q2 YTD → Q3 YTD → FY)
+            group.sort(key=lambda p: p['duration_days'])
+
+            # Need at least 2 periods to unaccumulate
+            if len(group) < 2:
+                continue
+
+            # Work from longest to shortest, subtracting the next-shorter period
+            for i in range(len(group) - 1, 0, -1):
+                longer = group[i]
+                shorter = group[i - 1]
+
+                longer_pid = longer['period_id']
+                shorter_pid = shorter['period_id']
+
+                # Classify the longer period to determine what discrete quarter it yields
+                discrete_label = self._classify_discrete_quarter(longer, shorter)
+                if not discrete_label:
+                    continue
+
+                log.debug(
+                    f"Unaccumulating {discrete_label}: "
+                    f"{longer_pid} ({longer['duration_days']}d) - "
+                    f"{shorter_pid} ({shorter['duration_days']}d)"
+                )
+
+                # Subtract shorter from longer for every concept
+                self._subtract_periods(longer_pid, shorter_pid, discrete_label)
+
+    def _parse_duration_periods(self) -> List[Dict[str, Any]]:
+        """Parse duration period IDs into structured records with start/end dates and duration."""
+        parsed = []
+        for period_id in self.periods:
+            if not period_id.startswith('duration_'):
+                continue
+            parts = period_id.split('_')
+            if len(parts) < 3:
+                continue
+            try:
+                start_date = parse_date(parts[1])
+                end_date = parse_date(parts[2])
+                duration_days = (end_date - start_date).days
+                parsed.append({
+                    'period_id': period_id,
+                    'start_date': parts[1],  # keep as string for grouping
+                    'end_date': parts[2],
+                    'start_dt': start_date,
+                    'end_dt': end_date,
+                    'duration_days': duration_days,
+                })
+            except (ValueError, TypeError):
+                continue
+        return parsed
+
+    @staticmethod
+    def _classify_discrete_quarter(
+        longer: Dict[str, Any], shorter: Dict[str, Any]
+    ) -> Optional[str]:
+        """Determine what discrete quarter results from subtracting shorter from longer.
+
+        Uses duration ranges to classify:
+          Q1 ~80-100d, Q2 YTD ~170-200d, Q3 YTD ~250-290d, FY ~350-380d
+
+        Returns a label like 'Q2', 'Q3', 'Q4' or None if the pair doesn't
+        represent a valid YTD subtraction.
+        """
+        ld = longer['duration_days']
+        sd = shorter['duration_days']
+
+        # Q2 discrete: ~180d YTD minus ~90d Q1
+        if 170 <= ld <= 200 and 80 <= sd <= 100:
+            return 'Q2'
+        # Q3 discrete: ~270d YTD minus ~180d YTD
+        if 250 <= ld <= 290 and 170 <= sd <= 200:
+            return 'Q3'
+        # Q4 discrete: ~365d FY minus ~270d YTD
+        if 350 <= ld <= 380 and 250 <= sd <= 290:
+            return 'Q4'
+        return None
+
+    def _subtract_periods(
+        self,
+        longer_pid: str,
+        shorter_pid: str,
+        discrete_label: str,
+    ):
+        """Subtract shorter YTD values from longer YTD values in-place.
+
+        For each concept that has values in both the longer and shorter periods,
+        computes: discrete_value = longer_value - shorter_value.
+
+        The discrete values then move from the longer period's key to the
+        quarter's own key, ``duration_<day after shorter end>_<longer end>``,
+        with a label that names the quarter (GH #1697).
+        """
+        for concept_key in list(self.data.keys()):
+            longer_entry = self.data[concept_key].get(longer_pid)
+            shorter_entry = self.data[concept_key].get(shorter_pid)
+
+            if longer_entry is None:
+                continue
+
+            longer_val = longer_entry.get('value')
+            shorter_val = shorter_entry.get('value') if shorter_entry is not None else None
+
+            # Nothing to subtract: the concept is absent from the shorter period, or
+            # either side is missing or non-numeric. Keeping the longer value would
+            # leave a CUMULATIVE figure sitting under a discrete-quarter label, because
+            # the period is relabelled below whether or not this concept was converted.
+            # Meta's FY2024 "Deferred income taxes" is the case: the 10-K tags it
+            # DeferredIncomeTaxesAndTaxCredits while the Q3 10-Q uses
+            # DeferredIncomeTaxExpenseBenefit, so the 9-month operand is filed under a
+            # different concept and the unchanged 12-month $(4.738)B was presented as
+            # Q4 (GH #1179). A quarter that cannot be derived is dropped, so the cell
+            # reads empty instead of wrong.
+            derivable = (
+                shorter_entry is not None
+                and isinstance(longer_val, (int, float))
+                and isinstance(shorter_val, (int, float))
+            )
+            if not derivable:
+                del self.data[concept_key][longer_pid]
+                continue
+
+            discrete_val = longer_val - shorter_val
+
+            # Update the longer period entry in-place with the discrete value
+            self.data[concept_key][longer_pid] = {
+                'value': discrete_val,
+                'decimals': longer_entry.get('decimals', 0),
+            }
+
+        # The values now cover the quarter, so the period is re-keyed to the
+        # quarter's own dates: the day after the shorter cumulative period ends,
+        # to the longer period's end (GH #1697).
+        quarter_start = datetime.strptime(shorter_pid.split('_')[2], '%Y-%m-%d') + timedelta(days=1)
+        quarter_end = datetime.strptime(longer_pid.split('_')[2], '%Y-%m-%d')
+        new_label = self._discrete_quarter_label(
+            self.period_dates.get(longer_pid, ''), discrete_label, quarter_start, quarter_end)
+        self._rekey_derived_quarter(
+            longer_pid, f"duration_{quarter_start:%Y-%m-%d}_{quarter_end:%Y-%m-%d}", new_label)
+
+    @staticmethod
+    def _discrete_quarter_label(old_label: str, discrete_label: str,
+                                quarter_start: datetime, quarter_end: datetime) -> str:
+        """The display label of a quarter derived from a cumulative period's label."""
+        if 'YTD' in old_label:
+            # "Q3 YTD Jun 27, 2026" -> "Q3 Jun 27, 2026", the form a reported quarter takes
+            return old_label.replace('YTD ', '')
+        if old_label.startswith('FY '):
+            # "FY Sep 30, 2023" -> "Q4 Sep 30, 2023": the value is no longer the fiscal year
+            return f"{discrete_label} {old_label[3:]}"
+        if ' to ' in old_label.partition(': ')[2]:
+            # A filing's own label, "Nine Months: September 28, 2025 to June 27,
+            # 2026", names the cumulative range, so the label names the quarter's
+            # range instead (GH #1697). The prefix keeps it distinct from a reported
+            # "Quarterly: ..." column for the same dates.
+            return (f"{discrete_label} Quarterly: {quarter_start:%B %d, %Y} "
+                    f"to {quarter_end:%B %d, %Y}")
+        return f"{discrete_label} {old_label}" if old_label else discrete_label
+
+    def _rekey_derived_quarter(self, cumulative_pid: str, quarter_pid: str, label: str):
+        """Move a derived quarter from its cumulative period key to its own key.
+
+        The values of ``cumulative_pid`` are the quarter's once subtracted, so the
+        key ``duration_<fiscal start>_<end>`` would claim a cumulative interval for
+        them. Everything keyed by period id moves: the values, the label, the source
+        filing and the position in the period order.
+
+        A filing can also carry three-month facts for the same dates (with
+        ``include_quarterly=True`` or ``use_optimal_periods=False``), which made a
+        second column for the same quarter. The two merge into one column, and where
+        both have a cell the reported fact is kept: it is the filer's own number for
+        that interval, while the derived one can mix a restated cumulative figure
+        with an original earlier quarter (MSFT's Q2 FY2026 investment gains: $9,931M
+        reported, $5,017M derived against the unrestated Q1). A derived cell fills a
+        concept the filing did not report for the quarter.
+        """
+        if quarter_pid == cumulative_pid:
+            return
+        for values in self.data.values():
+            derived = values.pop(cumulative_pid, None)
+            if derived is not None and quarter_pid not in values:
+                values[quarter_pid] = derived
+        cumulative_source = self.period_sources.pop(cumulative_pid, None)
+        cumulative_label = self.period_dates.pop(cumulative_pid, None)
+        if quarter_pid in self.periods:
+            self.periods = [pid for pid in self.periods if pid != cumulative_pid]
+        else:
+            self.periods = [quarter_pid if pid == cumulative_pid else pid for pid in self.periods]
+        self.period_dates[quarter_pid] = label or cumulative_label or quarter_pid
+        if cumulative_source is not None:
+            self.period_sources[quarter_pid] = cumulative_source
+
+    def _format_output_with_ordering(self, statements: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        Format the stitched data for rendering with intelligent ordering using virtual presentation tree.
+
+        Args:
+            statements: Original statements for ordering reference
+
+        Returns:
+            Stitched statement data in the expected format
+        """
+        # Get unified ordering for all concepts using the ordering manager
+        concept_ordering = {}
+        if self.ordering_manager:
+            concept_ordering = self.ordering_manager.determine_ordering(statements)
+
+        # Build virtual presentation tree to preserve hierarchy while applying semantic ordering
+        presentation_tree = VirtualPresentationTree(self.ordering_manager)
+        ordered_nodes = presentation_tree.build_tree(
+            concept_metadata=self.concept_metadata,
+            concept_ordering=concept_ordering,
+            original_statement_order=self.original_statement_order
+        )
+
+        # Convert nodes back to the expected format
+        ordered_concepts = [(node.concept, node.metadata) for node in ordered_nodes]
+
+        # Build the output structure
+        result = {
+            'periods': [(pid, self.period_dates.get(pid, pid)) for pid in self.periods],
+            'period_sources': {pid: self.period_sources[pid]
+                               for pid in self.periods if pid in self.period_sources},
+            'statement_data': []
+        }
+
+        for concept, metadata in ordered_concepts:
+            # Create an item for each concept
+            item = {
+                # Use the latest label if available, otherwise fall back to the concept key
+                'label': metadata.get('latest_label', concept),
+                'level': metadata['level'],
+                'is_abstract': metadata['is_abstract'],
+                'is_total': metadata['is_total'],
+                'concept': metadata['original_concept'],
+                'standard_concept': metadata.get('standard_concept'),
+                'values': {},
+                'decimals': {}
+            }
+
+            # Add values for each period
+            for period_id in self.periods:
+                if period_id in self.data[concept]:
+                    item['values'][period_id] = self.data[concept][period_id]['value']
+                    item['decimals'][period_id] = self.data[concept][period_id]['decimals']
+
+            # Add preferred_signs for rendering and DataFrame sign application
+            preferred_sign = metadata.get('preferred_sign')
+            if preferred_sign is not None:
+                item['preferred_signs'] = {pid: preferred_sign for pid in item['values']}
+            else:
+                item['preferred_signs'] = {}
+
+            # Set has_values flag based on whether there are any values
+            item['has_values'] = len(item['values']) > 0
+
+            # Only include items with values or abstract items
+            if item['has_values'] or item['is_abstract']:
+                result['statement_data'].append(item)
+
+        return result
+
+    def _format_output(self) -> Dict[str, Any]:
+        """
+        Backward compatibility method - calls the new ordering-aware method.
+
+        Returns:
+            Stitched statement data in the expected format
+        """
+        # For backward compatibility, call the new method with empty statements
+        # This will use alphabetical ordering as before
+        return self._format_output_with_ordering([])
+
+
+def stitch_statements(
+    xbrl_list: List[Any],
+    statement_type: str = 'IncomeStatement',
+    period_type: Union[StatementStitcher.PeriodType, str] = StatementStitcher.PeriodType.RECENT_PERIODS,
+    max_periods: int = 3,
+    standard: bool = True,
+    use_optimal_periods: bool = True,
+    include_dimensions: bool = False,
+    industry: Optional[str] = None,
+    discrete_quarters: bool = False,
+    include_quarterly: bool = False
+) -> Dict[str, Any]:
+    """
+    Stitch together statements from multiple XBRL objects.
+
+    Args:
+        xbrl_list: List of XBRL objects, should be from the same company and ordered by date
+        statement_type: Type of statement to stitch ('IncomeStatement', 'BalanceSheet', etc.)
+        period_type: Type of period view to generate
+        max_periods: Maximum number of periods to include (default: 3)
+        standard: Whether to use standardized concept labels (default: True)
+        use_optimal_periods: Whether to use the entity info to determine optimal periods (default: True)
+        include_dimensions: Whether to include dimensional segment data (default: False for stitching)
+        industry: Optional Fama-French 48 industry code (e.g., "Banks").
+                  If None, auto-detected from the first XBRL object's standardization cache.
+        discrete_quarters: If True and statement_type is CashFlowStatement, convert
+                          YTD cumulative periods into discrete quarter values (default: False)
+        include_quarterly: If True, surface discrete-quarter periods alongside YTD/annual
+            periods so 10-Qs contribute both 90-day and YTD columns and 10-Ks contribute
+            both annual and Q4 columns (GH #780). Default False preserves existing
+            YTD/annual-only behavior. Ignored for BalanceSheet (instant periods only).
+
+    Returns:
+        Stitched statement data
+    """
+    # Auto-detect industry from first XBRL if not provided
+    if industry is None and xbrl_list:
+        first_xbrl = xbrl_list[0]
+        if hasattr(first_xbrl, 'standardization'):
+            industry = first_xbrl.standardization.industry
+
+    # Initialize the stitcher
+    stitcher = StatementStitcher(industry=industry)
+
+    # Collect statements of the specified type from each XBRL object
+    statements = []
+
+    # If using optimal periods based on entity info
+    if use_optimal_periods:
+        # Use our utility function to determine the best periods
+        optimal_periods = determine_optimal_periods(
+            xbrl_list, statement_type, max_periods=max_periods,
+            include_quarterly=include_quarterly,
+        )
+
+        # Limit to max_periods if needed
+        if len(optimal_periods) > max_periods:
+            optimal_periods = optimal_periods[:max_periods]
+
+        # Extract the XBRL objects that contain our optimal periods
+        for period_metadata in optimal_periods:
+            xbrl_index = period_metadata['xbrl_index']
+            xbrl = xbrl_list[xbrl_index]
+
+            # Get the statement and period info — skip filings that lack
+            # this statement type (e.g., some VALE 20-F filings have no
+            # cash flow presentation role).  Issue #683.
+            try:
+                statement = xbrl.get_statement_by_type(statement_type, include_dimensions=include_dimensions)
+            except StatementNotFoundError:
+                continue
+            if statement:
+                # Only include the specific period from this statement
+                period_key = period_metadata['period_key']
+
+                # Check if this period exists in the statement
+                if period_key in statement['periods']:
+                    # Create a filtered version of the statement with just this period
+                    filtered_statement = {
+                        'role': statement['role'],
+                        'definition': statement['definition'],
+                        'statement_type': statement['statement_type'],
+                        'periods': {period_key: statement['periods'][period_key]},
+                        'data': statement['data'],
+                        'source_index': xbrl_index,
+                    }
+
+                    # Update the period label to include information from entity_info
+                    display_date = period_metadata['display_date']
+                    meta_period_type = period_metadata['period_type']
+                    fiscal_period = period_metadata.get('fiscal_period')
+
+                    # Create a more informative label
+                    if meta_period_type == 'instant':
+                        if fiscal_period == 'FY':
+                            period_label = f"FY {display_date}"
+                        else:
+                            period_label = display_date
+                    else:  # duration
+                        # For duration periods, add fiscal quarter/year info if available
+                        # Also indicate if it's YTD (cumulative) vs quarterly (Issue #475)
+                        if fiscal_period == 'FY':
+                            period_label = f"FY {display_date}"
+                        elif fiscal_period in ['Q1', 'Q2', 'Q3', 'Q4']:
+                            # Check if this is a YTD period (longer duration) vs quarterly
+                            # Threshold: 100 days (Q1≈90d, Q2 YTD≈180d, Q3 YTD≈270d)
+                            duration_days = period_metadata.get('duration_days')
+                            if duration_days and duration_days > 100:
+                                # YTD period (cumulative from fiscal year start)
+                                period_label = f"{fiscal_period} YTD {display_date}"
+                            else:
+                                # Regular quarterly period
+                                period_label = f"{fiscal_period} {display_date}"
+                        else:
+                            period_label = display_date
+
+                    # Update the period label
+                    filtered_statement['periods'][period_key] = {
+                        'label': period_label,
+                        'original_label': statement['periods'][period_key]['label']
+                    }
+
+                    statements.append(filtered_statement)
+    # Traditional approach without using entity info
+    else:
+        for xbrl_index, xbrl in enumerate(xbrl_list):
+            # Get statement data for the specified type.  This must be
+            # get_statement_by_type() and not find_statement(): the latter
+            # returns a (statements, role, statement_type) tuple of index
+            # entries, which carries neither 'periods' nor 'data' and which
+            # StatementStitcher cannot read.  Skip filings that lack this
+            # statement type, matching the optimal-periods path above.
+            try:
+                statement = xbrl.get_statement_by_type(
+                    statement_type, include_dimensions=include_dimensions
+                )
+            except StatementNotFoundError:
+                continue
+            if statement:
+                # A copy, so the caller's statement dict is not tagged in place
+                statements.append({**statement, 'source_index': xbrl_index})
+
+    # Stitch the statements
+    return stitcher.stitch_statements(statements, period_type, max_periods, standard,
+                                       discrete_quarters=discrete_quarters)

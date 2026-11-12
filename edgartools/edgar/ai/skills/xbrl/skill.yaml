@@ -1,0 +1,190 @@
+id: edgartools-xbrl
+name: EdgarTools XBRL
+version: "1.1"
+
+# See also: sharp-edges.yaml for production gotchas
+
+identity: XBRL specialist. Low-level access to facts, concepts, and taxonomy. Use Financials skill for simpler needs.
+
+patterns:
+  - name: Get XBRL Object
+    when: Need low-level XBRL access
+    code: |
+      xbrl = company.get_filings(form="10-K")[0].xbrl()  # Returns XBRL or None
+
+      xbrl.entity_name                  # Company name
+      xbrl.entity_info["fiscal_year"]   # e.g., "2024" (a string)
+      xbrl.entity_info["fiscal_period"] # FY, Q1, Q2, Q3, Q4
+
+  - name: Statements
+    when: Get financial statements from XBRL
+    code: |
+      xbrl.statements.income_statement()
+      xbrl.statements.balance_sheet()
+      xbrl.statements.cash_flow_statement()
+
+      list(xbrl.statements.statement_by_type)  # ['IncomeStatement', 'BalanceSheet', ...]
+
+  - name: Facts Access
+    when: Query individual facts or search concepts
+    code: |
+      facts = xbrl.facts
+
+      facts.get_facts_by_concept("Revenue")                     # Pattern match (substring)
+      facts.get_facts_by_concept("us-gaap:Assets", exact=True)  # Exact match: needs the prefix, "Assets" alone returns 0 rows
+      facts.get_facts_with_dimensions()               # Segment breakdowns
+      facts.get_facts_by_fiscal_period(2024, "FY")    # Specific period
+
+  - name: Multi-Period Stitched Statements
+    when: Compare statements across multiple filings
+    code: |
+      from edgar.xbrl import XBRLS
+      filings = company.get_filings(form="10-K").head(3)
+      xbrls = XBRLS.from_filings(filings)
+
+      income = xbrls.statements.income_statement()                 # standard view
+      income = xbrls.statements.income_statement(view="detailed")  # with dimensional breakdowns
+      df = income.to_dataframe()
+
+      # Stitched 10-Qs are year-to-date by default; include_quarterly=True adds the
+      # three-month column. period_columns="interval" names each column by its exact
+      # dates ("2023-04-02 to 2023-07-01") instead of the bare end date.
+      q = XBRLS.from_filings(company.get_filings(form="10-Q").head(4))
+      df = q.statements.income_statement(include_quarterly=True).to_dataframe(period_columns="interval")
+
+  - name: Concept History
+    when: Track a value over time
+    code: |
+      # Name the concept the filer tagged, with its prefix ("Revenue" alone returns 0 rows)
+      history = xbrl.facts.facts_history("us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax")
+      # DataFrame: label, period_end, numeric_value, unit_ref, fiscal_period, fiscal_year.
+      # Segment rows are included without their axis or member; use by_dimension() for those.
+
+  - name: Raw Fact Details
+    when: Need fact metadata (units, decimals, context)
+    code: |
+      all_facts = xbrl.facts.get_facts()  # List of enriched dicts
+      # Each fact: concept, value, numeric_value, unit_ref, currency, decimals, context_ref,
+      #   period_start + period_end (duration) or period_instant (instant),
+      #   is_dimensioned (dimensioned facts add dimension, member and dim_<axis> keys)
+      #   is_nil (True when the filer marked the item xsi:nil; value '' and numeric_value None,
+      #   which an empty non-nil element also has. It is not zero.)
+      # unit_ref is the filing's unit id ("usd", "shares", "number"); currency is "USD" for
+      # money and None otherwise.
+
+  - name: Fact Footnotes
+    when: Need the footnote a filer attached to a fact (e.g. "Excludes amortization ...")
+    code: |
+      # XBRL path: xbrl.footnotes is {footnote id: Footnote(text, lang, role, related_fact_ids)}
+      notes = xbrl.get_footnotes_for_fact("f-57")   # by the fact's filed id
+
+      # Inline HTML path: the same ids and the same Footnote model
+      from edgar.documents import parse_html
+      doc = parse_html(filing.html())
+      for fact in doc.xbrl_facts:
+          texts = [doc.xbrl_footnotes[fid].text for fid in fact.footnotes]
+      # fact.fact_id is the filed id (None when none is filed); fact.footnotes is [] when none.
+      # Only fact-footnote relationships attach; other arcroles are not ordinary footnotes.
+
+  - name: Calculation Linkbase as DataFrame
+    when: Need per-filer concept hierarchy, extension → us-gaap mapping, or signed weights
+    code: |
+      calc = xbrl.calculation_linkbase()
+      # Columns: concept, concept_taxonomy, parent_concept, parent_taxonomy,
+      #          weight, role_uri, role_short, menucat, is_abstract, label
+      # weight is SIGNED (+1.0 / -1.0) — do not flatten
+
+      # Find extensions that roll up to a us-gaap parent
+      extensions = calc[
+          (calc.concept_taxonomy.isin(['jpm', 'tsla', 'met']) == False) &
+          (~calc.concept_taxonomy.isin(['us-gaap', 'dei', 'srt']))
+      ]
+
+      # Children of a specific parent — e.g., bank revenue components
+      noninterest = calc[calc.parent_concept == 'NoninterestIncome']
+
+      # Filter to face statements only (Statements, Details, Notes, Tables, Policies, Cover)
+      face = calc[calc.menucat == 'Statements']
+
+  - name: Extension Facts Dropped From a Statement
+    when: A filer has extension concepts in the calc linkbase that are missing from render() output
+    code: |
+      stmt = xbrl.statements.cash_flow_statement()
+
+      # Structural — just the metadata
+      for arc in stmt.extension_arcs():
+          print(f"{arc.concept_taxonomy}:{arc.concept} "
+                f"-> {arc.parent_concept} w={arc.weight:+.1f}")
+
+      # With instance values — one ExtensionArc per (concept, context)
+      for arc in stmt.extension_arcs(include_values=True):
+          print(arc.concept, arc.period_key, arc.value)
+
+      # Note: calling extension_arcs() does NOT change render() output.
+      # It's an opt-in additive view on top of the existing statement.
+
+  - name: Standard Concept of a Tag (e.g. Crypto Assets)
+    when: Find which standard concept a filed element maps to, or find crypto rows across filers
+    code: |
+      from edgar.xbrl.standardization.reverse_index import get_reverse_index
+
+      result = get_reverse_index().lookup("us-gaap:CryptoAssetFairValueNoncurrent")
+      result.primary_concept       # 'CryptoAssetsNoncurrent'
+      result.primary_display_name  # 'Crypto Assets, Noncurrent'
+      result.comment               # definition; excludes crypto held for platform users
+
+      # Rows of a statement by standard concept
+      df = xbrl.statements.balance_sheet().render(standard=True).to_dataframe()
+      crypto = df[df["standard_concept"].isin(["CryptoAssets", "CryptoAssetsCurrent", "CryptoAssetsNoncurrent"])]
+
+      # Crypto concepts (ASU 2023-08), one us-gaap element each:
+      # CryptoAssets, CryptoAssetsCurrent, CryptoAssetsNoncurrent (balance sheet; three
+      # different measures, never add them), CryptoUnrealizedGainLoss, CryptoGainLoss
+      # (income), CryptoPurchases, CryptoSaleProceeds (investing), CryptoConversionProceeds
+      # (operating)
+
+  - name: Cash Income Taxes Paid by Jurisdiction
+    when: Federal, state and local, or foreign cash taxes paid, gross payments, or refunds (ASU 2023-09)
+    code: |
+      df = xbrl.statements.cash_flow_statement().render(standard=True).to_dataframe()
+      paid = df[~df["dimension"] & df["standard_concept"].isin(
+          ["IncomeTaxesPaidFederal", "IncomeTaxesPaidStateLocal", "IncomeTaxesPaidForeign"])]
+      # ServiceNow FY2025: 46M + 83M + 154M = 283M, net of refunds
+
+      # Also: IncomeTaxesPaidFederalGross / ...StateLocalGross / ...ForeignGross (before
+      # refunds) and IncomeTaxRefundsFederal / ...StateLocal / ...Foreign (refunds received).
+      # "Federal" = federal or national jurisdiction. Components only, never tax expense;
+      # state/country rows (dimension=True) are inside these totals, so do not add them.
+      # Some filers put these in the income tax note, not the cash flow statement.
+      # The total stays unmapped: use facts.get_concept("income_taxes_paid") (EntityFacts).
+
+  - name: BDC Revenue and Net Investment Income
+    when: Revenue, expenses or net investment income of a BDC or other investment company
+    code: |
+      df = xbrl.statements.income_statement().to_dataframe(standard=True)
+      plain = df[~df["dimension"]]
+      plain[plain["standard_concept"].isin(["Revenue", "InvestmentExpenses", "NetInvestmentIncome"])]
+      # Revenue = total investment income (GrossInvestmentIncomeOperating); Main Street FY2025: 566.4M
+      # InvestmentExpenses = total expenses; NetInvestmentIncome = income less expenses (366.7M), never Revenue
+      from edgar.financials import Financials
+      Financials(xbrl).get_revenue()   # total investment income for a BDC
+      # An insurer's NetInvestmentIncome is one line inside Revenues; its Revenue is the filed total.
+
+when_to_use:
+  appropriate:
+    - Segment/dimensional breakdowns
+    - Company-specific concept names
+    - Full fact metadata (units, decimals)
+    - Concepts not in Financials API
+    - Per-filer concept hierarchy (extension → us-gaap parent mapping)
+    - Signed calculation weights for rollup math
+    - Extension concepts dropped from rendered statements
+  inappropriate:
+    - Simple metrics (revenue, net income) → use get_financials()
+    - Report sections → use reports skill
+
+avoid:
+  - pattern: "xbrl.statements.balance_sheet()"
+    when: Just need total assets
+    fix: "company.get_financials().get_total_assets()"
+    why: Financials API is simpler for common metrics

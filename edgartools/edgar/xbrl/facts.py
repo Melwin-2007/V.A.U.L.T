@@ -1,0 +1,2361 @@
+"""
+Facts module for querying XBRL facts.
+
+This module provides a powerful interface for querying XBRL facts based on various
+attributes including concept, value, dimension, dates, statement, and more.
+It enables convenient retrieval of facts as pandas DataFrames for analysis.
+"""
+
+from __future__ import annotations
+
+import re
+from decimal import Decimal
+
+from textwrap import dedent
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
+
+import pandas as pd
+from rich import box
+from rich.console import Group
+from rich.markdown import Markdown
+from rich.panel import Panel
+from rich.table import Column, Table
+from rich.text import Text
+
+from edgar.exceptions import ValidationError
+
+from edgar.datatools import STR_DTYPE, null_column as _null_column
+from edgar.richtools import repr_rich
+from edgar.xbrl.core import STANDARD_LABEL, iso4217_code, parse_date, unit_currency
+from edgar.xbrl.models import NIL_MEMBER_LABEL, is_negated_label_role, select_display_label
+
+
+# Probed once in edgar.datatools, where the entity path's declared schema reads it
+# too — the string dtype's pandas-3.0 change is one rule, so it gets one definition.
+_STR_DTYPE = STR_DTYPE
+
+# Columns FactQuery.to_dataframe() declares, in the order it emits them.
+#
+# The rule (see engineering/decisions/facts-dataframe-schema.md, edgartools-rsyt):
+# the column set is a function of the query's *configuration*, never of the rows
+# that came back. Narrowing a query chooses fewer rows, not a different table
+# shape, so a column no returned row happened to populate is materialized as null
+# rather than silently vanishing.
+#
+# Dtypes here are applied to columns that had to be materialized, and to the
+# populated columns in _PINNED. `preferred_sign` (-1, 1 or absent) and
+# `fiscal_year` are integers that can be absent, so they are nullable Int64 with
+# pd.NA, not float64 with NaN. Before 6.0 they were inferred per query, float64
+# when a returned row lacked one and int64 when none did (edgartools-rsyt.2, GH #1100).
+_CORE_COLUMNS: Dict[str, Any] = {
+    'concept': _STR_DTYPE,
+    'label': _STR_DTYPE,
+    'balance': _STR_DTYPE,
+    'preferred_sign': 'Int64',
+    'weight': 'float64',
+    'value': _STR_DTYPE,
+    'numeric_value': 'float64',
+    'period_key': _STR_DTYPE,  # emitted for time series analysis (Issue #464)
+    'period_start': _STR_DTYPE,
+    'period_end': _STR_DTYPE,
+    'period_instant': _STR_DTYPE,
+    # Nullable, though _build_facts always populates it: an empty *numpy* bool
+    # column materializes as True, and fabricating "this fact is dimensioned"
+    # is exactly the kind of silent wrong answer this schema exists to prevent.
+    'is_dimensioned': 'boolean',
+    'decimals': _STR_DTYPE,
+    'statement_type': _STR_DTYPE,
+    'statement_name': _STR_DTYPE,
+    'fact_id': _STR_DTYPE,
+    'context_ref': _STR_DTYPE,
+    'unit_ref': _STR_DTYPE,
+    'currency': _STR_DTYPE,
+    'period_type': _STR_DTYPE,
+    'entity_identifier': _STR_DTYPE,
+    'entity_scheme': _STR_DTYPE,
+    'fiscal_period': _STR_DTYPE,
+    'fiscal_year': 'Int64',
+    # Last, so existing core positions hold (GH #1254). Nullable: a derived
+    # aggregate row is not a source fact and gets no invented nil state.
+    'is_nil': 'boolean',
+}
+
+# Declared dtype applied to populated columns too, so it holds whichever rows match.
+# `is_dimensioned` is always populated as a bool; pinning it to `boolean` keeps an
+# empty result, which must declare a nullable dtype, identical to a populated one.
+_PINNED = frozenset({'preferred_sign', 'fiscal_year', 'is_dimensioned', 'is_nil'})
+
+# Dropped by include_contexts=False.
+_CONTEXT_COLUMNS = frozenset(
+    {'context_ref', 'entity_identifier', 'entity_scheme', 'period_type'})
+
+# Added by include_dimensions=True. The per-axis `dim_<axis>` columns are NOT
+# declared: their names depend on which axes the filer used, so two filings
+# legitimately differ and a diff across them carries no information.
+_DIMENSION_COLUMNS: Dict[str, Any] = {
+    'dimension': _STR_DTYPE,
+    'member': _STR_DTYPE,
+    'dimension_label': _STR_DTYPE,
+    'dimension_member_label': _STR_DTYPE,
+    'full_dimension_label': _STR_DTYPE,
+}
+
+# Never emitted, whatever the configuration.
+# Present on the enriched fact dicts, deliberately not columns of the frame.
+# statement_types/statement_roles carry a fact's full statement membership for
+# by_statement_type() to test against (gh #1242); they are list-valued, and the
+# frame's schema is declared rather than inferred (edgartools-rsyt), so they
+# stay off it rather than widening the contract with two list cells.
+_SKIP_COLUMNS = frozenset({'fact_key', 'original_label',
+                           'statement_types', 'statement_roles'})
+
+
+# The fact identity used for de-duplication, in one place: `_deduplicate_facts`
+# applies it, and `to_dataframe()`'s early projection has to keep these columns
+# in the frame long enough for it to run (gh #1181). Two spellings of one rule is
+# the bug this file has produced most often, so both read these names.
+_DEDUP_REQUIRED = ('concept', 'context_ref', 'value', 'decimals')
+# `is_nil` is in it because a filed nil item and an empty non-nil element share
+# every other identity field; without it the frame kept whichever came first
+# (GH #1254). Two nil items, or two empty ones, still collapse.
+_DEDUP_OPTIONAL = ('unit_ref', 'is_nil')
+
+
+def _source_column_presence(results: List[Dict[str, Any]], names) -> set:
+    """Which of `names` at least one source row actually carries.
+
+    Stops as soon as every name has been seen, so the common case costs one row.
+    Presence is read from the source dicts rather than from a constructed frame
+    because `pd.DataFrame(rows, columns=[...])` fabricates a null column for a
+    name no row has, which would make an absent column look present.
+    """
+    remaining = set(names)
+    present = set()
+    for row in results:
+        if not remaining:
+            break
+        hit = remaining.intersection(row.keys())
+        if hit:
+            present |= hit
+            remaining -= hit
+    return present
+
+
+def _deduplicate_facts(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Remove true duplicate facts from a DataFrame.
+
+    SEC XBRL instance documents often contain the same fact tagged multiple times
+    (e.g. in the financial statements and again in the notes). This drops rows that
+    are identical on concept, context_ref, value, decimals and unit — keeping the
+    first occurrence. Rows that share concept+context but differ in value or decimals
+    are preserved, as they represent genuinely different taggings (e.g. precise vs
+    rounded).
+
+    The unit is part of that identity because XBRL 2.1 §4.10 requires unit equality
+    before two numeric items can be called duplicates. Without it, equal numbers were
+    enough: Aebi Schmidt reports a CHF 10,000,000 and a EUR 10,000,000 shareholder
+    loan in one context, and the EUR fact — a separate economic observation, with its
+    own translated amount in the filing — was deleted as a duplicate of the CHF one
+    (gh #1282). `execute()` returned all four facts; only the frame lost two.
+
+    Deduplicating on `unit_ref` rather than on the resolved measure is deliberate:
+    it is the identity the row actually carries, and it cannot merge two currencies.
+    Its one cost is under-deduplication if a filing declares the same measure under
+    two unit IDs, which keeps a redundant row rather than deleting a real one — the
+    safe direction, and not observed across the fixture corpus.
+    """
+    dedup_cols = list(_DEDUP_REQUIRED)
+    if all(col in df.columns for col in dedup_cols):
+        # Repeated tags of one fact still collapse (gh #769): they share a unit.
+        dedup_cols.extend(col for col in _DEDUP_OPTIONAL if col in df.columns)
+        df = df.drop_duplicates(subset=dedup_cols, keep='first')
+    return df
+
+
+# The unit-currency rule lives in edgar.xbrl.core, where every consumer can
+# reach it. These names are kept as the module-local spelling used throughout
+# this file and by existing tests.
+_iso4217_code = iso4217_code
+_unit_currency = unit_currency
+
+
+def _concept_spellings(concept: str) -> tuple:
+    """The ways a caller may legitimately write a concept.
+
+    The QName as parsed ('us-gaap:Revenues') and its element-id form
+    ('us-gaap_Revenues'), which is how the same concept is spelled in element ids
+    and in most SEC tooling. Only the NAMESPACE separator differs between them; a
+    local name keeps whatever underscores the filer declared.
+    """
+    if ':' in concept:
+        return (concept, concept.replace(':', '_', 1))
+    return (concept,)
+
+
+def _sort_key(value: Any) -> tuple:
+    """A total order for a fact column, which is neither dense nor single-typed.
+
+    Facts come from a filing rather than a schema, so one column routinely holds
+    numbers, strings and ``None`` at once -- a 10-K measured at 1,733 numeric and
+    111 non-numeric facts. Comparing those directly raised
+    ``TypeError: '<' not supported between instances of 'NoneType' and 'float'``,
+    so ``sort_by('numeric_value')`` failed on most real filings.
+
+    The leading rank keeps ``<`` from ever seeing two different types: numbers
+    sort before strings, and missing values sort last on an ascending sort.
+    """
+    if value is None:
+        return (2, 0.0, '')
+    if isinstance(value, bool):
+        return (0, float(value), '')
+    if isinstance(value, (int, float, Decimal)):
+        return (0, float(value), '')
+    return (1, 0.0, str(value))
+
+
+def _apply_transformations(results: List[Dict[str, Any]],
+                           transformations: List[Callable[[Any], Any]]) -> List[Dict[str, Any]]:
+    """Apply a transform chain to each fact, on the field that actually holds its value.
+
+    A parsed fact carries the filed string in ``value`` and the parsed float in
+    ``numeric_value``, and ``numeric_value is None`` is what marks a fact as
+    non-numeric (a TextBlock, a string). Measured over a 1,131-fact AAPL 10-K:
+    ``value`` is a ``str`` on every single fact, and ``numeric_value`` is a float
+    on 976 of them and ``None`` on the other 155.
+
+    Transforms used to be handed ``value`` for every fact. Numeric transforms
+    therefore did nothing at all: ``scale()``'s ``value / scale_factor`` hit its
+    own ``isinstance(value, (int, float, Decimal))`` guard, fell through to
+    ``return value``, and handed back the untouched string — while
+    ``numeric_value``, which is what every consumer actually reads, was never
+    transformed on any path (GH #1187).
+
+    So a numeric fact is transformed on its NUMERIC value, and both fields are
+    written back together so they cannot disagree. ``numeric_value`` is the
+    authoritative one; ``value`` is its string rendering, which keeps the
+    all-strings contract that ``value`` has always had.
+
+    A non-numeric fact is still transformed on ``value``, because ``transform()``
+    is a general-purpose hook and text transforms were always able to use it.
+    ``scale()`` leaves those facts alone on its own, via the same isinstance
+    guard — now doing the job it was written for instead of swallowing
+    everything.
+    """
+    if not transformations:
+        return results
+
+    transformed = []
+    for fact in results:
+        numeric = fact.get('numeric_value')
+        if numeric is not None:
+            fact = dict(fact)
+            for transform_fn in transformations:
+                numeric = transform_fn(numeric)
+            fact['numeric_value'] = numeric
+            fact['value'] = str(numeric) if isinstance(numeric, (int, float, Decimal)) else numeric
+        elif fact.get('value') is not None:
+            fact = dict(fact)
+            for transform_fn in transformations:
+                fact['value'] = transform_fn(fact['value'])
+        transformed.append(fact)
+    return transformed
+
+
+class FactQuery:
+    """
+    A query builder for XBRL facts that enables filtering by various attributes.
+
+    This class provides a fluent interface for building queries against XBRL facts,
+    allowing filtering by concept, value, period, dimensions, and other attributes.
+    """
+
+    def __init__(self, facts_view: FactsView):
+        """
+        Initialize a new fact query.
+
+        Args:
+            facts_view: The FactsView instance to query against
+        """
+        self._facts_view = facts_view
+        self._filters = []
+        self._transformations = []
+        self._aggregations = []
+        self._include_dimensions = False
+        self._include_contexts = True
+        self._include_element_info = True
+        self._sort_by = None
+        self._sort_ascending = True
+        self._limit = None
+        self._statement_type = None
+        self._requested_dimension = None  # GH-607: Track requested dimension for accurate member_label
+
+    def by_concept(self, pattern: str, exact: bool = False) -> FactQuery:
+        """
+        Filter facts by concept name.
+
+        Args:
+            pattern: Pattern to match against concept names
+            exact: If True, require exact match; otherwise, use regex pattern matching
+
+        Returns:
+            Self for method chaining
+        """
+        # The pattern is matched against the concept written both ways rather than
+        # being rewritten itself. Rewriting every '_' to ':' let 'us-gaap_Revenues'
+        # find 'us-gaap:Revenues', but a local name may contain a literal underscore
+        # -- YUM files yum:YUM_LesseeOperatingLeaseLeaseNotYetCommenced... -- and
+        # rewriting that produced a second colon, so the concept could not be matched
+        # in either spelling, exact or regex.
+        if exact:
+            self._filters.append(lambda f: pattern in _concept_spellings(f['concept']))
+        else:
+            regex = re.compile(pattern, re.IGNORECASE)
+            self._filters.append(
+                lambda f: any(regex.search(s) for s in _concept_spellings(f['concept'])))
+        return self
+
+    def by_label(self, pattern: str, exact: bool = False) -> FactQuery:
+        """
+        Filter facts by element label.
+
+        This method searches across different label fields, including both the standardized label
+        (if standardization was applied) and the original label. This ensures you can query by either
+        the standardized label or the original company-specific label.
+
+        Args:
+            pattern: Pattern to match against element labels
+            exact: If True, require exact match; otherwise, use regex pattern matching
+
+        Returns:
+            Self for method chaining
+        """
+        if exact:
+            # Try multiple label fields with exact matching
+            self._filters.append(lambda f:
+                                 ('label' in f and f['label'] == pattern) or
+                                 ('element_label' in f and f['element_label'] == pattern) or
+                                 # Also check original_label (present when standardization has been applied)
+                                 ('original_label' in f and f['original_label'] == pattern)
+                                 )
+        else:
+            # Use regex pattern matching across multiple label fields
+            regex = re.compile(pattern, re.IGNORECASE)
+            self._filters.append(lambda f:
+                                 ('label' in f and f['label'] is not None and bool(regex.search(str(f['label'])))) or
+                                 ('element_label' in f and f['element_label'] is not None and
+                                  bool(regex.search(str(f['element_label'])))) or
+                                 # Also check original_label with regex
+                                 ('original_label' in f and f['original_label'] is not None and
+                                  bool(regex.search(str(f['original_label']))))
+                                 )
+        return self
+
+    def by_value(self, value_filter: Union[Callable, str, int, float, list, tuple]) -> FactQuery:
+        """
+        Filter facts by value.
+
+        Args:
+            value_filter: Can be:
+                - A callable predicate that takes a value and returns bool
+                - A specific value to match exactly
+                - A tuple or list of (min, max) for range filtering
+
+        Returns:
+            Self for method chaining
+        """
+        if callable(value_filter):
+            def numeric_value_filter(f):
+                return ('numeric_value' in f and
+                        f['numeric_value'] is not None and
+                        value_filter(f['numeric_value']))
+
+            self._filters.append(numeric_value_filter)
+        elif isinstance(value_filter, (list, tuple)) and len(value_filter) == 2:
+            min_val, max_val = value_filter
+
+            def numeric_range_filter(f):
+                return ('numeric_value' in f and
+                        f['numeric_value'] is not None and
+                        min_val <= f['numeric_value'] <= max_val)
+
+            self._filters.append(numeric_range_filter)
+        else:
+            def numeric_equality_filter(f):
+                return ('numeric_value' in f and
+                        f['numeric_value'] is not None and
+                        f['numeric_value'] == value_filter)
+
+            self._filters.append(numeric_equality_filter)
+        return self
+
+    def by_period_type(self, period_type: str) -> FactQuery:
+        """
+        Filter facts by period type ('instant' or 'duration').
+
+        Args:
+            period_type: Period type to filter by
+
+        Returns:
+            Self for method chaining
+        """
+
+        def period_type_filter(f):
+            return 'period_type' in f and f['period_type'] == period_type
+
+        self._filters.append(period_type_filter)
+        return self
+
+    def by_period_key(self, period_key: str) -> FactQuery:
+        """
+        Filter facts by a specific period key.
+
+        Args:
+            period_key: Period key to filter by (e.g., "instant_2023-12-31")
+
+        Returns:
+            Self for method chaining
+        """
+        self._filters.append(lambda f: 'period_key' in f and f['period_key'] == period_key)
+        return self
+
+    def by_period_keys(self, period_keys: List[str]) -> FactQuery:
+        """
+        Filter facts by a list of period keys.
+
+        The keys are captured when this method is called. Later edits to the
+        caller's list do not change this filter. To use an edited selection,
+        start a new query; another call on this query adds an AND constraint.
+
+        Args:
+            period_keys: List of period keys to filter by
+
+        Returns:
+            Self for method chaining
+        """
+        selected_period_keys = tuple(period_keys)
+        self._filters.append(lambda f: 'period_key' in f and f['period_key'] in selected_period_keys)
+        return self
+
+    def by_instant_date(self, date_str: str, exact: bool = True) -> FactQuery:
+        """
+        Filter facts by instant date.
+
+        Args:
+            date_str: Date string in YYYY-MM-DD format
+            exact: If True, require exact match; if False, match facts with date less than or equal to date_str
+
+        Returns:
+            Self for method chaining
+        """
+        if exact:
+            self._filters.append(lambda f: 'period_instant' in f and f['period_instant'] == date_str)
+        else:
+            date_obj = parse_date(date_str)
+            self._filters.append(lambda f: 'period_instant' in f and
+                                           parse_date(f['period_instant']) <= date_obj)
+        return self
+
+    def by_date_range(self, start_date: Optional[str] = None,
+                      end_date: Optional[str] = None,
+                      exact: bool = False) -> FactQuery:
+        """
+        Filter facts by date range.
+
+        Args:
+            start_date: Optional start date string in YYYY-MM-DD format
+            end_date: Optional end date string in YYYY-MM-DD format
+            exact: If True, match dates exactly (== instead of >=/<= comparisons)
+
+        Returns:
+            Self for method chaining
+        """
+        if start_date and end_date:
+            start_obj = parse_date(start_date)
+            end_obj = parse_date(end_date)
+            if exact:
+                self._filters.append(lambda f:
+                                     ('period_start' in f and 'period_end' in f and
+                                      parse_date(f['period_start']) == start_obj and
+                                      parse_date(f['period_end']) == end_obj))
+            else:
+                # Match duration facts that fall within the date range
+                self._filters.append(lambda f:
+                                     ('period_start' in f and 'period_end' in f and
+                                      parse_date(f['period_start']) >= start_obj and
+                                      parse_date(f['period_end']) <= end_obj))
+        elif start_date:
+            start_obj = parse_date(start_date)
+            if exact:
+                self._filters.append(lambda f:
+                                     ('period_start' in f and
+                                      parse_date(f['period_start']) == start_obj))
+            else:
+                # Match duration facts that start on or after start_date
+                self._filters.append(lambda f:
+                                     ('period_start' in f and
+                                      parse_date(f['period_start']) >= start_obj))
+        elif end_date:
+            end_obj = parse_date(end_date)
+            if exact:
+                self._filters.append(lambda f:
+                                     ('period_end' in f and
+                                      parse_date(f['period_end']) == end_obj))
+            else:
+                # Match duration facts that end on or before end_date
+                self._filters.append(lambda f:
+                                     ('period_end' in f and
+                                      parse_date(f['period_end']) <= end_obj))
+        return self
+
+    def by_dimension(self, dimension: Optional[str], value: Optional[str] = None) -> FactQuery:
+        """
+        Filter facts by dimension with flexible matching.
+
+        This method provides intelligent matching for dimension names and values, handling
+        common XBRL formatting variations including:
+        - Namespace prefixes (us-gaap:, srt:, etc.)
+        - Underscore vs colon separators
+        - Partial dimension names
+
+        Args:
+            dimension: Dimension name (supports multiple formats), or None to filter for facts with no dimensions
+            value: Optional dimension value to filter by (supports multiple formats)
+
+        Returns:
+            Self for method chaining
+
+        Examples:
+            # These are all equivalent:
+            .by_dimension("srt_ProductOrServiceAxis", "us-gaap:ServiceMember")
+            .by_dimension("srt:ProductOrServiceAxis", "us-gaap_ServiceMember")
+            .by_dimension("ProductOrServiceAxis", "ServiceMember")
+        """
+        if dimension is None:
+            # Filter for facts with no dimensions
+            self._filters.append(lambda f: not any(key.startswith('dim_') for key in f.keys()))
+            return self
+
+        # GH-574: When filtering by dimension, automatically include dimension columns in output
+        # since the user is explicitly working with dimensional data
+        self._include_dimensions = True
+
+        # GH-607: Store the requested dimension for accurate member_label selection in to_dataframe()
+        self._requested_dimension = dimension
+
+        # Normalize the input dimension to match stored format
+        normalized_dim = self._normalize_dimension_key(dimension)
+
+        if value is not None:
+            # Normalize the value as well
+            normalized_value = self._normalize_dimension_value(value)
+
+            def dimension_filter_with_value(f):
+                # Try exact match first
+                if f'dim_{normalized_dim}' in f and f[f'dim_{normalized_dim}'] == normalized_value:
+                    return True
+
+                # Try flexible matching for dimensions
+                for dim_key, dim_value in f.items():
+                    if not dim_key.startswith('dim_'):
+                        continue
+
+                    # Check if this dimension key matches (flexible)
+                    if self._dimension_key_matches(dim_key, dimension):
+                        # Check if the value matches (flexible)
+                        if self._dimension_value_matches(dim_value, value):
+                            return True
+                return False
+
+            self._filters.append(dimension_filter_with_value)
+        else:
+            # Filter for facts that have this dimension (any value)
+            def dimension_filter_exists(f):
+                # Try exact match first
+                if f'dim_{normalized_dim}' in f:
+                    return True
+
+                # Try flexible matching
+                for dim_key in f.keys():
+                    if dim_key.startswith('dim_') and self._dimension_key_matches(dim_key, dimension):
+                        return True
+                return False
+
+            self._filters.append(dimension_filter_exists)
+
+        return self
+
+    def _normalize_dimension_key(self, dimension: str) -> str:
+        """Normalize dimension key to the format used internally (underscores)."""
+        # Replace colons with underscores (us-gaap:Axis -> us-gaap_Axis)
+        return dimension.replace(':', '_')
+
+    def _normalize_dimension_value(self, value: str) -> str:
+        """Normalize dimension value to the format used internally."""
+        # Replace underscores with colons for values (us-gaap_Member -> us-gaap:Member)
+        return value.replace('_', ':')
+
+    def _dimension_key_matches(self, stored_key: str, query_key: str) -> bool:
+        """
+        Check if a stored dimension key matches a query key with flexible matching.
+
+        Args:
+            stored_key: The dimension key as stored (e.g., 'dim_us-gaap_ProductAxis')
+            query_key: The dimension key from the query (e.g., 'ProductAxis' or 'us-gaap:ProductAxis')
+
+        Returns:
+            True if the keys match
+        """
+        # Remove 'dim_' prefix from stored key
+        stored_clean = stored_key[4:] if stored_key.startswith('dim_') else stored_key
+
+        # Normalize both keys
+        stored_normalized = stored_clean.replace(':', '_').replace('-', '_')
+        query_normalized = query_key.replace(':', '_').replace('-', '_')
+
+        # Try exact match
+        if stored_normalized == query_normalized:
+            return True
+
+        # Try partial match (query might be just the local name without namespace)
+        if '_' in stored_normalized:
+            # Extract local name (part after last underscore)
+            stored_local = stored_normalized.split('_')[-1]
+            query_local = query_normalized.split('_')[-1]
+            if stored_local == query_local:
+                return True
+
+        return False
+
+    def _dimension_value_matches(self, stored_value: str, query_value: str) -> bool:
+        """
+        Check if a stored dimension value matches a query value with flexible matching.
+
+        Args:
+            stored_value: The dimension value as stored (e.g., 'us-gaap:ServiceMember')
+            query_value: The dimension value from query (e.g., 'ServiceMember' or 'us-gaap_ServiceMember')
+
+        Returns:
+            True if the values match
+        """
+        if not stored_value or not query_value:
+            return stored_value == query_value
+
+        # Normalize both values (handle colon/underscore variations)
+        stored_normalized = stored_value.replace('_', ':').replace('-', '_')
+        query_normalized = query_value.replace('_', ':').replace('-', '_')
+
+        # Try exact match
+        if stored_normalized == query_normalized:
+            return True
+
+        # Try partial match (query might be just the local name without namespace)
+        if ':' in stored_normalized:
+            stored_local = stored_normalized.split(':')[-1]
+            query_local = query_normalized.split(':')[-1] if ':' in query_normalized else query_normalized
+            if stored_local == query_local:
+                return True
+
+        return False
+
+    def _get_member_label(self, member_value: str) -> str:
+        """
+        Look up human-readable label for a dimension member value.
+
+        GH-607: Extracted as helper to reduce duplication between get_facts() and
+        _update_dimension_fields_for_requested_dimension().
+
+        Args:
+            member_value: The dimension member value (e.g., 'us-gaap:BuildingMember')
+
+        Returns:
+            Human-readable label, or the original value if not found
+        """
+        if not member_value:
+            return member_value
+
+        # Normalize to match element catalog key format (colons -> underscores)
+        member_normalized = member_value.replace(':', '_')
+
+        if member_normalized in self._facts_view.xbrl.element_catalog:
+            mem_element = self._facts_view.xbrl.element_catalog[member_normalized]
+            # Try labels in order of preference
+            for role in ['http://www.xbrl.org/2003/role/verboseLabel',
+                         'http://www.xbrl.org/2003/role/terseLabel',
+                         'http://www.xbrl.org/2003/role/label']:
+                if role in mem_element.labels:
+                    label = mem_element.labels[role]
+                    # Clean up label (remove [Member], etc.)
+                    return label.replace('[Member]', '').strip()
+
+        return member_value
+
+    def _update_dimension_fields_for_requested_dimension(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Update dimension fields to reflect the specifically requested dimension.
+
+        GH-607: When by_dimension() is called with a specific dimension (e.g., "PropertyPlantAndEquipmentByTypeAxis"),
+        the dimension_member_label should show the member of THAT dimension, not an arbitrary first one.
+
+        For example, if a fact has both srt:RangeAxis=Minimum and us-gaap:PropertyPlantAndEquipmentByTypeAxis=Building,
+        and the user queries by PropertyPlantAndEquipmentByTypeAxis, they should see "Building" not "Minimum".
+
+        Note: This assumes dimension local names don't contain underscores (standard XBRL taxonomies use camelCase).
+
+        Args:
+            df: DataFrame with fact results
+
+        Returns:
+            DataFrame with updated dimension fields
+        """
+        if not self._requested_dimension or df.empty:
+            return df
+
+        # Find the dim_* column that matches the requested dimension
+        dim_cols = [col for col in df.columns if col.startswith('dim_')]
+        matching_col = None
+        for col in dim_cols:
+            if self._dimension_key_matches(col, self._requested_dimension):
+                matching_col = col
+                break
+
+        if not matching_col:
+            return df
+
+        # Extract the dimension name from the column
+        # e.g., 'dim_us-gaap_StatementBusinessSegmentsAxis' -> 'us-gaap:StatementBusinessSegmentsAxis'
+        # Note: We only replace the first underscore after removing 'dim_' prefix,
+        # since that's the namespace:localName separator. Standard XBRL uses camelCase for local names.
+        dim_col_name = matching_col[4:]  # Remove 'dim_' prefix
+
+        # Find the position of the namespace separator (first underscore after namespace prefix)
+        # Namespace prefixes like 'us-gaap', 'srt', 'dei' don't contain underscores
+        parts = dim_col_name.split('_', 1)  # Split on first underscore only
+        if len(parts) == 2:
+            dim_name = f"{parts[0]}:{parts[1]}"
+        else:
+            dim_name = dim_col_name
+
+        # Create a copy to avoid modifying the original
+        df = df.copy()
+
+        # Vectorized update: Get the member values from the matching dimension column
+        member_values = df[matching_col]
+
+        # Update dimension and member columns
+        df['dimension'] = dim_name
+        df['member'] = member_values
+
+        # Look up labels for each unique member value (more efficient than row-by-row)
+        unique_members = member_values.dropna().unique()
+        label_map = {m: self._get_member_label(m) for m in unique_members}
+
+        # Apply the label mapping
+        df['dimension_member_label'] = member_values.map(label_map)
+
+        # Also update the 'label' column to match (GH-597 behavior for dimensional data)
+        # Only update where we have a valid dimension_member_label
+        # A nil typed member's value is '' (GH #1751): it has no label to show.
+        mask = df['dimension_member_label'].notna() & (df['dimension_member_label'] != '')
+        df.loc[mask, 'label'] = df.loc[mask, 'dimension_member_label']
+
+        return df
+
+    def by_statement_type(self, statement_type: str) -> FactQuery:
+        """
+        Filter facts by statement type.
+
+        Args:
+            statement_type: Statement type ('BalanceSheet', 'IncomeStatement', etc.)
+
+        Returns:
+            Self for method chaining
+        """
+        # Membership, not equality: a concept presented in several statements
+        # carries all of them in 'statement_types'. Filtering on the scalar
+        # returned zero rows for a fact that is demonstrably in the requested
+        # statement, just not first in presentation order (gh #1242). The
+        # scalar is still honoured so a fact enriched by an older path, or one
+        # that carries no list, filters as before.
+        self._filters.append(
+            lambda f: statement_type in f.get('statement_types', [])
+            or f.get('statement_type') == statement_type
+        )
+        return self
+
+    def by_fiscal_period(self, fiscal_period: str) -> FactQuery:
+        """
+        Filter facts by fiscal period (FY, Q1, Q2, Q3, Q4).
+
+        Args:
+            fiscal_period: Fiscal period identifier
+
+        Returns:
+            Self for method chaining
+        """
+        self._filters.append(lambda f: 'fiscal_period' in f and f['fiscal_period'] == fiscal_period)
+        return self
+
+    def by_fiscal_year(self, fiscal_year: Union[int, str]) -> FactQuery:
+        """
+        Filter facts by fiscal year.
+
+        Args:
+            fiscal_year: Fiscal year to filter by
+
+        Returns:
+            Self for method chaining
+        """
+        self._filters.append(lambda f: 'fiscal_year' in f and str(f['fiscal_year']) == str(fiscal_year))
+        return self
+
+    def by_unit(self, unit: str) -> FactQuery:
+        """
+        Filter facts by unit reference.
+
+        Args:
+            unit: Unit reference to filter by
+
+        Returns:
+            Self for method chaining
+        """
+        self._filters.append(lambda f: 'unit_ref' in f and f['unit_ref'] == unit)
+        return self
+
+    def by_custom(self, filter_func: Callable) -> FactQuery:
+        """
+        Add a custom filter function.
+
+        Args:
+            filter_func: Custom filter function that takes a fact dict and returns bool
+
+        Returns:
+            Self for method chaining
+        """
+        self._filters.append(filter_func)
+        return self
+
+    def by_text(self, pattern: str) -> FactQuery:
+        """
+        Search across concept names, labels, and element names for a pattern.
+
+        This is a flexible search that looks for the pattern in all text fields, including
+        both standardized labels and original labels when standardization has been applied.
+
+        Args:
+            pattern: Pattern to search for in various text fields
+
+        Returns:
+            Self for method chaining
+        """
+        regex = re.compile(pattern, re.IGNORECASE)
+
+        def text_filter(f):
+            # Search in concept name
+            if 'concept' in f and f['concept'] is not None and regex.search(str(f['concept'])):
+                return True
+
+            # Search in label
+            if 'label' in f and f['label'] is not None and regex.search(str(f['label'])):
+                return True
+
+            # Search in element_label
+            if 'element_label' in f and f['element_label'] is not None and regex.search(str(f['element_label'])):
+                return True
+
+            # Search in element_name
+            if 'element_name' in f and f['element_name'] is not None and regex.search(str(f['element_name'])):
+                return True
+
+            # Search in original_label (present when standardization has been applied)
+            if 'original_label' in f and f['original_label'] is not None and regex.search(str(f['original_label'])):
+                return True
+
+            return False
+
+        self._filters.append(text_filter)
+        return self
+
+    def with_dimensions(self) -> 'FactQuery':
+        """
+        Include dimension axis and member columns in results.
+
+        Returns:
+            Self for method chaining
+        """
+        self._include_dimensions = True
+        return self
+
+    def exclude_dimensions(self) -> FactQuery:
+        """
+        Exclude dimension columns from results.
+
+        Returns:
+            Self for method chaining
+        """
+        self._include_dimensions = False
+        return self
+
+    def exclude_contexts(self) -> FactQuery:
+        """
+        Exclude context information from results.
+
+        Returns:
+            Self for method chaining
+        """
+        self._include_contexts = False
+        return self
+
+    def exclude_element_info(self) -> FactQuery:
+        """
+        Exclude element catalog information from results.
+
+        Returns:
+            Self for method chaining
+        """
+        self._include_element_info = False
+        return self
+
+    def sort_by(self, column: str, ascending: bool = True) -> FactQuery:
+        """
+        Set sorting for results.
+
+        Args:
+            column: Column name to sort by
+            ascending: Sort order (True for ascending, False for descending)
+
+        Returns:
+            Self for method chaining
+        """
+        self._sort_by = column
+        self._sort_ascending = ascending
+        return self
+
+    def limit(self, n: int) -> FactQuery:
+        """
+        Limit the number of results.
+
+        Args:
+            n: Maximum number of results to return
+
+        Returns:
+            Self for method chaining
+        """
+        self._limit = n
+        return self
+
+    def from_statement(self, statement_type: str) -> 'FactQuery':
+        """
+        Filter facts to only those from a specific statement.
+
+        Args:
+            statement_type: Type of statement (e.g., 'BalanceSheet', 'IncomeStatement')
+
+        Returns:
+            Self for method chaining
+        """
+        self._statement_type = statement_type
+        self._filters.append(lambda f: f.get('statement_type') == statement_type)
+        return self
+
+    def transform(self, transform_fn: Callable[[Any], Any]) -> 'FactQuery':
+        """
+        Transform fact values using a custom function.
+
+        Args:
+            transform_fn: Function to transform values
+
+        Returns:
+            Self for method chaining
+        """
+        self._transformations.append(transform_fn)
+        return self
+
+    def scale(self, scale_factor: int) -> 'FactQuery':
+        """
+        Scale numeric values by a factor.
+
+        Args:
+            scale_factor: The scaling factor (e.g., 1000 for thousands)
+
+        Returns:
+            Self for method chaining
+        """
+
+        def scale_transform(value):
+            if isinstance(value, (int, float, Decimal)):
+                return value / scale_factor
+            return value
+
+        return self.transform(scale_transform)
+
+    def aggregate(self, dimension: str, func: str = 'sum') -> 'FactQuery':
+        """
+        Aggregate values by a dimension.
+
+        Args:
+            dimension: The dimension to aggregate by
+            func: Aggregation function ('sum' or 'average')
+
+        Returns:
+            Self for method chaining
+        """
+        self._aggregations.append({
+            'dimension': dimension,
+            'function': func
+        })
+        return self
+
+    def execute(self) -> List[Dict[str, Any]]:
+        """
+        Execute the query and return matching facts.
+
+        Returns:
+            List of fact dictionaries
+        """
+        results = self._facts_view.get_facts()
+
+        # Apply filters
+        for filter_func in self._filters:
+            results = [f for f in results if filter_func(f)]
+
+        # Apply transformations.  _apply_transformations copies each row before
+        # writing to it: get_facts() hands back the rows from FactsView's shared
+        # cache, so transforming in place would scale the cache itself and
+        # compound on the next query.
+        results = _apply_transformations(results, self._transformations)
+
+        # Apply aggregations
+        if self._aggregations:
+            aggregated_results = {}
+            for agg in self._aggregations:
+                dimension = agg['dimension']
+                func = agg['function']
+
+                # Group facts by dimension
+                groups = {}
+                for fact in results:
+                    dim_value = fact.get(f'dim_{dimension}')
+                    # Aggregate the parsed number, not fact['value'] -- that is the
+                    # lexical string as filed ('298085000000'), and summing it raised
+                    # TypeError on any ordinary numeric fact. A fact with no
+                    # numeric_value is not a number and cannot be aggregated.
+                    numeric_value = fact.get('numeric_value')
+                    # A nil typed member is '' and still a group (GH #1751);
+                    # only a fact without the axis is left out.
+                    if dim_value is not None and numeric_value is not None:
+                        if dim_value not in groups:
+                            groups[dim_value] = []
+                        groups[dim_value].append(numeric_value)
+
+                # Apply aggregation function
+                for dim_value, values in groups.items():
+                    if func == 'sum':
+                        agg_value = sum(values)
+                    elif func == 'average':
+                        agg_value = sum(values) / len(values)
+
+                    key = (dimension, dim_value)
+                    if key not in aggregated_results:
+                        aggregated_results[key] = {'dimension': dimension, 'value': dim_value, 'values': {}}
+                    aggregated_results[key]['values'][func] = agg_value
+
+            results = list(aggregated_results.values())
+
+        # Apply sorting if specified.
+        #
+        # sorted() rather than results.sort(): with no filter and no transform the
+        # list here is still FactsView's cached list by reference, and sorting in
+        # place reordered the cache itself, so a later unrelated query returned
+        # different facts.
+        #
+        # The key is decided over every row, not results[0]: one fact being an
+        # instant (no period_end) used to skip the sort for the whole result set.
+        if results and self._sort_by and any(self._sort_by in f for f in results):
+            results = sorted(results, key=lambda f: _sort_key(f.get(self._sort_by)),
+                             reverse=not self._sort_ascending)
+
+        # Apply limit if specified
+        if self._limit is not None:
+            results = results[:self._limit]
+
+        return results
+
+    def _declared_columns(self) -> Dict[str, Any]:
+        """The column -> dtype mapping this query's *configuration* declares.
+
+        A function of the include_* flags only, so two queries configured the
+        same way describe the same table however few rows either returns.
+        """
+        declared = {name: dtype for name, dtype in _CORE_COLUMNS.items()
+                    if self._include_contexts or name not in _CONTEXT_COLUMNS}
+        if self._include_dimensions:
+            declared.update(_DIMENSION_COLUMNS)
+        return declared
+
+    def _df_cache_key(self, columns: tuple) -> tuple:
+        """Cache key for to_dataframe(), covering the query configuration and not just
+        the column projection.
+
+        FactQuery is a documented fluent MUTABLE builder: every filter method
+        appends to ``self`` and returns ``self``, so one object describes one
+        population at a time and describes a different one after each call. The
+        key used to be the ``columns`` tuple alone, so the first ``to_dataframe()``
+        answered every later one — narrowing a query left ``execute()`` seeing 2
+        rows while ``to_dataframe()`` still returned the original 1,075, with no
+        warning that the two disagreed (GH #1186).
+
+        The three chains are only ever appended to — there is no pop, clear,
+        reassignment or clone anywhere in this class — so their LENGTHS identify
+        the configuration exactly and cost nothing to compute. The flags go in by
+        value, since those can be set either way.
+        """
+        return (
+            columns,
+            len(self._filters),
+            len(self._transformations),
+            len(self._aggregations),
+            self._include_dimensions,
+            self._include_contexts,
+            self._include_element_info,
+            # limit() and sort_by() overwrite rather than append, so they go in by
+            # value; without them a cached frame ignored both (GH #1735).
+            self._limit,
+            self._sort_by,
+            self._sort_ascending,
+            # getattr, not attribute access: StitchedFactQuery does not call
+            # super().__init__() — it re-initialises the base attributes by hand
+            # and misses this one, so a plain read raises AttributeError there.
+            getattr(self, '_requested_dimension', None),
+        )
+
+    def _dataframe_cache(self) -> Dict[tuple, pd.DataFrame]:
+        """Acquire frames for the owner's current cache generation.
+
+        Owners without a generation retain configuration-only caching. Initialize
+        lazily because StitchedFactQuery does not call the base initializer.
+        """
+        generation = getattr(self._facts_view, '_cache_generation', None)
+        cache = getattr(self, '_df_cache', None)
+        if cache is None or (
+            generation is not None
+            and getattr(self, '_df_cache_generation', None) != generation
+        ):
+            cache = {}
+            self._df_cache = cache
+        if generation is not None:
+            self._df_cache_generation = generation
+        return cache
+
+    def _projection_source_columns(self, columns: tuple, results: List[Dict[str, Any]]):
+        """The source keys a projected `to_dataframe(*columns)` actually needs.
+
+        Returns None to mean "build the full frame", which is the old behaviour.
+
+        Asking for two columns used to cost the same as asking for all of them:
+        the full-width frame was built first and the caller's projection applied
+        only at the end, so a 2-column call on the JPM fixture allocated the same
+        7.6 MiB as a 103-column one (gh #1181). The columns are chosen here so the
+        steps between construction and projection still see everything they read:
+
+        - the de-duplication identity, so the row set does not change. `unit_ref`
+          is part of that identity and is easy to forget: without it two facts
+          that differ only by currency collapse into one (gh #1282).
+        - `statement_role`, which is what `statement_name` is derived from.
+
+        The include_* flags only ever DROP columns, and they run after
+        de-duplication, so they need nothing held open. The requested-dimension
+        rewrite is the one step whose reads cannot be predicted from `columns`,
+        so its presence falls back to the full frame rather than guessing.
+        """
+        if not columns:
+            return None
+        if getattr(self, '_requested_dimension', None) and self._include_dimensions:
+            return None
+
+        declared = self._declared_columns()
+        # A name no row carries must not be added: pandas would fabricate a null
+        # column for it, and an undeclared name that is absent is supposed to be
+        # dropped, not returned full of nulls.
+        undeclared_requested = [col for col in columns if col not in declared]
+        present = _source_column_presence(
+            results, set(_DEDUP_REQUIRED) | set(_DEDUP_OPTIONAL) | set(undeclared_requested))
+
+        needed = [col for col in (*_DEDUP_REQUIRED, *_DEDUP_OPTIONAL) if col in present]
+        if 'statement_name' in columns:
+            needed.append('statement_role')
+        for col in columns:
+            if col in declared or col in present:
+                needed.append(col)
+        return list(dict.fromkeys(needed))
+
+    def _build_deduplicated_frame(self, results: List[Dict[str, Any]],
+                                  columns: tuple) -> pd.DataFrame:
+        """The source rows as a frame, de-duplicated, no wider than this call needs.
+
+        Splitting this out of `to_dataframe()` keeps the projection decision in
+        one place and off that method's branch count.
+        """
+        frame_columns = self._projection_source_columns(columns, results)
+        if frame_columns is None:
+            return _deduplicate_facts(pd.DataFrame(results))
+
+        df = pd.DataFrame(results, columns=frame_columns)
+        # Only de-duplicate when the full-width frame would have. Constructing with
+        # an explicit column list fabricates any missing name as nulls, which would
+        # otherwise switch de-duplication ON for a source that is missing one of
+        # the identity columns.
+        if all(col in frame_columns for col in _DEDUP_REQUIRED):
+            df = _deduplicate_facts(df)
+        return df
+
+    def to_pandas(self, *args, **kwargs) -> pd.DataFrame:
+        """Alias of :meth:`to_dataframe`, taking the same arguments.
+
+        ``Filings``, ``XBRL`` and ``FilingSummary`` export with ``to_pandas()``, and
+        code written against them reaches for it here too (edgartools-m3jpa).
+        """
+        return self.to_dataframe(*args, **kwargs)
+
+    def to_dataframe(self, *columns) -> pd.DataFrame:
+        """
+        Execute the query and return results as a DataFrame.
+            :param columns: List of columns to include in the DataFrame
+
+        Returns:
+            pandas DataFrame with query results
+
+        The column set is determined by this query's configuration — the
+        ``include_*`` flags and any ``columns`` given here — and never by which
+        rows the query matched. Narrowing a query returns fewer rows, not a
+        different set of columns: a column no matching row populated comes back
+        null rather than disappearing, and an empty result still carries the
+        full set of columns so ``df['decimals']`` works on it.
+
+        The exception is the per-axis ``dim_<axis>`` columns added by
+        ``include_dimensions``, whose names depend on which axes the filer used.
+
+        See engineering/decisions/facts-dataframe-schema.md.
+        """
+        cache_key = self._df_cache_key(columns)
+        cache = self._dataframe_cache()
+        if cache_key in cache:
+            return cache[cache_key]
+        results = self.execute()
+
+        if not results:
+            # Zero rows, but the declared columns and their dtypes. A bare
+            # DataFrame() has no columns at all, so df['decimals'] raised
+            # KeyError on an empty result instead of yielding an empty column.
+            declared = self._declared_columns()
+            names = [c for c in columns if c in declared] if columns else list(declared)
+            return pd.DataFrame({name: _null_column(declared[name], pd.RangeIndex(0))
+                                 for name in names})
+
+        df = self._build_deduplicated_frame(results, columns)
+
+        # GH-607: When a specific dimension was requested via by_dimension(),
+        # update dimension fields to reflect that dimension's member info
+        if self._requested_dimension and self._include_dimensions:
+            df = self._update_dimension_fields_for_requested_dimension(df)
+
+        # Filter columns based on inclusion flags
+        if not self._include_dimensions:
+            # Exclude both dim_* columns (old style) and structured dimension columns (GH-574)
+            dimension_cols = {'dimension', 'member', 'dimension_label', 'member_label', 'full_dimension_label',
+                              'dimension_axis', 'dimension_member', 'dimension_member_label'}
+            df = df.loc[:, [col for col in df.columns
+                            if (not col.startswith('dim_') and col not in dimension_cols)
+                            or col == 'is_dimensioned']]
+
+        if not self._include_contexts:
+            df = df.loc[:, [col for col in df.columns if col not in _CONTEXT_COLUMNS]]
+
+        if not self._include_element_info:
+            element_cols = ['element_id', 'element_name', 'element_type', 'element_period_type',
+                            'element_balance', 'element_label']
+            df = df.loc[:, [col for col in df.columns if col not in element_cols]]
+
+        if 'statement_role' in df.columns:
+            # Change the statement_role to statement name
+            df['statement_name'] = df.statement_role.fillna('').apply(lambda s: s.split('/')[-1] if s else None)
+            # Remove statement_role column if it exists
+            if 'statement_role' in df.columns:
+                df = df.drop(columns=['statement_role'])
+
+        declared = self._declared_columns()
+
+        # Whatever is present but undeclared is the per-axis dim_<axis> tail.
+        # Sorted, because its order otherwise follows whichever returned row
+        # first introduced each axis.
+        extra = sorted(col for col in df.columns
+                       if col not in declared and col not in _SKIP_COLUMNS)
+        ordered = list(declared) + extra
+        if columns:
+            # A caller projection keeps the caller's order, and may name a
+            # declared column no row populated; unknown names are dropped as before.
+            ordered = [col for col in columns if col in declared or col in df.columns]
+
+        # reindex materializes the declared columns this query's rows left empty,
+        # so the shape stops depending on which rows happened to match.
+        result = df.reindex(columns=ordered)
+
+        # A declared column with no data in it gets its declared dtype. Inference
+        # has nothing to work with there and lands somewhere arbitrary — an
+        # all-None `decimals` infers as object/None rather than string/pd.NA — and
+        # before this change dropna() hid that by deleting the column outright.
+        # Populated columns keep their inferred dtype unless pinned.
+        for col in ordered:
+            if col not in declared:
+                continue
+            if result[col].isna().all():
+                result[col] = _null_column(declared[col], result.index)
+            elif col in _PINNED and result[col].dtype != declared[col]:
+                result[col] = result[col].astype(declared[col])
+
+        cache[cache_key] = result
+        self._df_cache = cache
+        return result
+
+    def __rich__(self):
+
+        title = Text.assemble(("Facts Query"),
+                              )
+        subtitle = Text.assemble((self._facts_view.entity_name, "bold deep_sky_blue1"),
+                                 " - ",
+                                 (self._facts_view.document_type)
+                                )
+        df = self.to_dataframe().fillna('')
+        columns = df.columns.tolist()
+        description = Markdown(
+            dedent(f"""
+            Use *to_dataframe(columns)* to get a DataFrame of the results.
+
+            e.g. `query.to_dataframe('concept', 'value', 'period_end')`
+
+            Available columns:
+            '{', '.join(columns)}'
+            """)
+        )
+
+
+        display_columns = [col for col in ['concept','label', 'value', 'period_start', 'period_end']
+                           if col in columns]
+        # What is the maximum width of the concept column? An empty result carries
+        # the declared columns, so `concept` is present with no rows to measure and
+        # .max() returns NaN — which rich accepts as a width and then fails to
+        # render ("can't multiply sequence by non-int of type 'float'").
+        max_width = df.concept.apply(len).max() if 'concept' in df.columns and not df.empty else 20
+        rich_columns = [Column('concept', width=max_width)] + display_columns[1:]
+        df = df[display_columns]
+        table = Table(*rich_columns, show_header=True, header_style="bold", box=box.SIMPLE)
+        for t in df.itertuples(index=False):
+            row = []
+            for i in t:
+                row.append(str(i))
+            table.add_row(*row)
+
+        panel = Panel(Group(description, table), title=title, subtitle=subtitle, box=box.ROUNDED)
+        return panel
+
+    def __repr__(self):
+        return repr_rich(self.__rich__())
+
+
+class FactsView:
+    """
+    A view over all facts in an XBRL instance, providing methods to query and analyze facts.
+    """
+
+    def __init__(self, xbrl):
+        """
+        Initialize the FactsView with an XBRL instance.
+
+        Args:
+            xbrl: XBRL instance containing facts, contexts, and elements
+        """
+        self.xbrl = xbrl
+        self._facts_cache = None
+        self._facts_df_cache = None
+        self._cache_generation = 0
+
+    def __len__(self):
+        return len(self.get_facts())
+
+    @property
+    def entity_name(self):
+        return self.xbrl.entity_name
+
+    @property
+    def document_type(self):
+        return self.xbrl.document_type
+
+    def get_facts(self) -> List[Dict[str, Any]]:
+        """
+        Get all facts with enriched context and element information.
+
+        Returns:
+            List of enriched fact dictionaries
+        """
+        # Return cached facts if available
+        if self._facts_cache is not None:
+            return self._facts_cache
+
+        # Prepare a mapping of roles to statement types for faster lookup
+        # This avoids repeated calls to get_all_statements() for each fact
+        role_to_statement_type = {}
+        statements = self.xbrl.get_all_statements()
+        for stmt in statements:
+            if stmt['role'] and stmt['type']:
+                role_to_statement_type[stmt['role']] = (stmt['type'], stmt['role'])
+
+        # Statement membership is a SET: us-gaap:NetIncomeLoss is presented in
+        # the income statement AND the cash flow statement, and often more.
+        # This used to be read per-fact from whichever presentation role the
+        # iteration happened to reach first and stored as a single scalar, so
+        # get_statement_facts('CashFlowStatement') returned zero rows for a
+        # concept by_concept() retrieves without trouble (gh #1242).
+        #
+        # Building the index once here is also strictly less work than the
+        # per-fact tree scan it replaces.
+        element_to_statements: Dict[str, List[Tuple[str, str]]] = {}
+        for role, tree in self.xbrl.presentation_trees.items():
+            entry = role_to_statement_type.get(role)
+            if entry is None:
+                continue
+            for node_id in tree.all_nodes:
+                memberships = element_to_statements.setdefault(node_id, [])
+                if entry not in memberships:
+                    memberships.append(entry)
+
+        # Prepare a mapping of period keys to fiscal info for faster lookup
+        period_to_fiscal_info = {}
+        for period in self.xbrl.reporting_periods:
+            if 'key' in period:
+                fiscal_info = {}
+                if 'fiscal_period' in period:
+                    fiscal_info['fiscal_period'] = period['fiscal_period']
+                if 'fiscal_year' in period:
+                    fiscal_info['fiscal_year'] = period['fiscal_year']
+                period_to_fiscal_info[period['key']] = fiscal_info
+
+        # Build enriched facts from raw facts, contexts, and elements
+        enriched_facts = []
+
+        # Resolve each fact's opaque unit_ref to its ISO 4217 currency once
+        # (e.g. "UNIT_STANDARD_HKD_..." -> "HKD"); see issue #850.
+        units = self.xbrl.units
+
+        for fact_key, fact in self.xbrl._facts.items():
+            # Create a dict with only necessary fields instead of full model_dump
+            fact_dict = {
+                'fact_key': fact_key,
+                'fact_id': fact.fact_id,
+                'concept': fact.element_id,
+                'context_ref': fact.context_ref,
+                'value': fact.value,
+                'unit_ref': fact.unit_ref,
+                'currency': _unit_currency(units.get(fact.unit_ref)) if fact.unit_ref else None,
+                'decimals': fact.decimals,
+                'numeric_value': fact.numeric_value,
+                'is_nil': fact.is_nil,
+            }
+
+            # Split element name from context for better concept display
+            # Don't override if element_id already has a namespace prefix with colon
+            if "_" in fact_key and ":" not in fact_dict['concept']:
+                parts = fact_key.split("_", 1)
+                if len(parts) == 2:
+                    fact_dict['concept'] = parts[0]
+
+            # Add context information
+            if fact.context_ref in self.xbrl.contexts:
+                context = self.xbrl.contexts[fact.context_ref]
+
+                # Add period information - extract only what we need
+                if context.period:
+                    # Handle both object and dict representations of period
+                    # (Model objects are converted to dicts in some contexts)
+                    if hasattr(context.period, 'type'):
+                        # Object access
+                        period_type = context.period.type
+                        fact_dict['period_type'] = period_type
+                        if period_type == 'instant':
+                            fact_dict['period_instant'] = context.period.instant
+                        elif period_type == 'duration':
+                            fact_dict['period_start'] = context.period.startDate
+                            fact_dict['period_end'] = context.period.endDate
+                    elif isinstance(context.period, dict):
+                        # Dict access
+                        period_type = context.period.get('type')
+                        fact_dict['period_type'] = period_type
+                        if period_type == 'instant':
+                            fact_dict['period_instant'] = context.period.get('instant')
+                        elif period_type == 'duration':
+                            fact_dict['period_start'] = context.period.get('startDate')
+                            fact_dict['period_end'] = context.period.get('endDate')
+
+                # Add entity information - extract only what we need
+                if context.entity:
+                    # Handle both object and dict representations of entity
+                    if hasattr(context.entity, 'identifier'):
+                        # Object access
+                        fact_dict['entity_identifier'] = context.entity.identifier
+                        fact_dict['entity_scheme'] = context.entity.scheme
+                    elif isinstance(context.entity, dict):
+                        # Dict access
+                        fact_dict['entity_identifier'] = context.entity.get('identifier')
+                        fact_dict['entity_scheme'] = context.entity.get('scheme')
+
+                # Add dimensions - handle both object and dict representation
+                if hasattr(context, 'dimensions') and context.dimensions:
+                    dimensions_dict = None
+                    if isinstance(context.dimensions, dict):
+                        dimensions_dict = context.dimensions
+                    elif hasattr(context.dimensions, 'items'):
+                        dimensions_dict = dict(context.dimensions.items())
+
+                    if dimensions_dict:
+                        # Add raw dim_ columns for backwards compatibility
+                        for dim_name, dim_value in dimensions_dict.items():
+                            dim_key = f"dim_{dim_name.replace(':', '_')}"
+                            fact_dict[dim_key] = dim_value
+
+                        # Issue #574: Add structured dimension fields (dimension, member, dimension_label)
+                        # Use the last dimension for member_label (most specific in multi-dimensional cases)
+                        dimension_metadata = []
+                        for dim_name, dim_value in dimensions_dict.items():
+                            dim_label = dim_name
+                            mem_label = dim_value
+
+                            # Look up human-readable dimension label from element catalog
+                            dim_name_normalized = dim_name.replace(':', '_')
+                            if dim_name_normalized in self.xbrl.element_catalog:
+                                dim_element = self.xbrl.element_catalog[dim_name_normalized]
+                                for role in ['http://www.xbrl.org/2003/role/terseLabel',
+                                             'http://www.xbrl.org/2003/role/label']:
+                                    if role in dim_element.labels:
+                                        dim_label = dim_element.labels[role]
+                                        break
+
+                            # Look up human-readable member label from element catalog
+                            dim_value_normalized = dim_value.replace(':', '_')
+                            if dim_value_normalized in self.xbrl.element_catalog:
+                                mem_element = self.xbrl.element_catalog[dim_value_normalized]
+                                for role in ['http://www.xbrl.org/2003/role/verboseLabel',
+                                             'http://www.xbrl.org/2003/role/terseLabel',
+                                             'http://www.xbrl.org/2003/role/label']:
+                                    if role in mem_element.labels:
+                                        mem_label = mem_element.labels[role]
+                                        break
+
+                            # Clean up labels (remove [Axis], [Member], etc.)
+                            dim_label = dim_label.replace('[Axis]', '').replace('[Domain]', '').strip()
+                            mem_label = (NIL_MEMBER_LABEL if dim_name in getattr(context, 'nil_dimensions', ())
+                                         else mem_label.replace('[Member]', '').strip())
+
+                            dimension_metadata.append({
+                                'dimension': dim_name,
+                                'member': dim_value,
+                                'dimension_label': dim_label,
+                                'member_label': mem_label
+                            })
+
+                        if dimension_metadata:
+                            # Use first dimension for axis/member (primary dimension)
+                            primary_dim = dimension_metadata[0]
+                            fact_dict['dimension'] = primary_dim['dimension']
+                            fact_dict['member'] = primary_dim['member']
+
+                            # Use last dimension's member_label for dimension_label (backward compat)
+                            last_dim = dimension_metadata[-1]
+                            fact_dict['dimension_label'] = last_dim['member_label']
+                            # GH-603: Use PRIMARY dimension's member_label for consistency with statements
+                            # e.g., for GOOGL "YouTube ads" should show "YouTube ads", not "Google Services"
+                            fact_dict['dimension_member_label'] = primary_dim['member_label']
+
+                            # Full dimension label for backwards compatibility
+                            # Format: "Axis Label: Member Label" for each dimension
+                            full_labels = [f"{d['dimension_label']}: {d['member_label']}" for d in dimension_metadata]
+                            fact_dict['full_dimension_label'] = ", ".join(full_labels)
+
+                        # GH-612: Mark fact as dimensioned
+                        fact_dict['is_dimensioned'] = True
+
+                # Get period key from context_period_map if available
+                period_key = self.xbrl.context_period_map.get(fact.context_ref)
+                if period_key:
+                    fact_dict['period_key'] = period_key
+                    # Add fiscal info if available
+                    if period_key in period_to_fiscal_info:
+                        fact_dict.update(period_to_fiscal_info[period_key])
+
+            # GH-612: Ensure is_dimensioned is always set (even for facts without matched contexts)
+            if 'is_dimensioned' not in fact_dict:
+                fact_dict['is_dimensioned'] = False
+
+            # Add element information and statement type
+            # Normalize element_id to match catalog keys (replace ':' with '_')
+            element_id = fact.element_id.replace(':', '_')
+            if element_id in self.xbrl.element_catalog:
+                element = self.xbrl.element_catalog[element_id]
+
+                # Statement membership comes from the index built above, which
+                # holds every role the element appears in rather than only the
+                # first one reached.
+                memberships = element_to_statements.get(element_id, [])
+                statement_type_found = memberships[0][0] if memberships else None
+                statement_role_found = memberships[0][1] if memberships else None
+
+                # A preferredLabel belongs to one presentation arc, so a fact
+                # assigned to a statement takes it from that statement's role,
+                # and has none when that role's arc names none. Taking the first
+                # role that had one gave OHI's income-statement interest expense
+                # a disclosure role's negatedLabel (GH #1677). A fact with no
+                # statement keeps the first preferred label found in any role.
+                preferred_label = None
+                statement_tree = (self.xbrl.presentation_trees.get(statement_role_found)
+                                  if statement_role_found else None)
+                if statement_tree is not None and element_id in statement_tree.all_nodes:
+                    preferred_label = statement_tree.all_nodes[element_id].preferred_label
+                else:
+                    for tree in self.xbrl.presentation_trees.values():
+                        if element_id in tree.all_nodes:
+                            pres_node = tree.all_nodes[element_id]
+                            if pres_node.preferred_label:
+                                preferred_label = pres_node.preferred_label
+                                break
+
+                # Add label using the same selection logic as display_label
+                # but including the preferred_label we found above
+                label = select_display_label(
+                    labels=element.labels,
+                    standard_label=element.labels.get(STANDARD_LABEL),
+                    preferred_label=preferred_label,  # May be None, which is handled by select_display_label
+                    element_id=element_id,
+                    element_name=element.name
+                )
+
+                fact_dict['label'] = label
+                # Store original label (will be used for standardization comparison)
+                fact_dict['original_label'] = label
+
+                # Issue #597: For dimensional facts, use dimension member label instead of concept label
+                # This makes Facts API consistent with Statement API behavior where dimensional
+                # breakdowns show the member label (e.g., "Equity Method Investment...") rather
+                # than the parent concept label (e.g., "Total Assets")
+                if 'dimension_member_label' in fact_dict and fact_dict['dimension_member_label']:
+                    fact_dict['label'] = fact_dict['dimension_member_label']
+
+                # Add balance from element catalog (Issue #463)
+                # Balance indicates accounting classification (debit/credit)
+                # Try element catalog first, then fall back to static US-GAAP mapping
+                balance = element.balance
+                if balance is None:
+                    # Import here to avoid circular dependencies
+                    from edgar.xbrl.parsers.concepts import get_balance_type
+                    # Try to get balance from static mapping using the original concept ID
+                    balance = get_balance_type(fact.element_id)
+                fact_dict['balance'] = balance  # "debit", "credit", or None
+
+                # Add preferred_sign from presentation linkbase (Issue #463)
+                # Convert preferredLabel to a numeric sign multiplier for display
+                # -1 means "negate for display", 1 means "use as-is", None means "not specified"
+                if preferred_label:
+                    # This used to be an exact-match whitelist of eight strings,
+                    # which missed the legacy xbrl.us roles entirely and the 2009
+                    # namespace's negatedTotalLabel/negatedNetLabel besides — so
+                    # the Facts API and the statement path disagreed about the
+                    # sign of the same fact. Both now read one matcher.
+                    fact_dict['preferred_sign'] = -1 if is_negated_label_role(preferred_label) else 1
+                else:
+                    fact_dict['preferred_sign'] = None
+
+                # The scalars keep their meaning - the primary statement, used
+                # for weight lookup and display - and the lists carry the full
+                # membership that by_statement_type() tests against.
+                if statement_type_found is not None:
+                    fact_dict['statement_type'] = statement_type_found
+                    fact_dict['statement_role'] = statement_role_found
+                    # Each list is distinct in its own right and the two are NOT
+                    # positionally paired: one statement type can be presented
+                    # through several roles (a filing carries a SegmentDisclosure
+                    # role per segment), so there are usually more roles than
+                    # types. Both preserve presentation order, so element [0] of
+                    # each is the primary that the scalars above report.
+                    seen_types = set()
+                    fact_dict['statement_types'] = [
+                        t for t, _ in memberships
+                        if not (t in seen_types or seen_types.add(t))
+                    ]
+                    fact_dict['statement_roles'] = [r for _, r in memberships]
+
+            # Add weight from calculation tree (Issue #463, GH-712)
+            # Weight indicates calculation role (1.0 = add, -1.0 = subtract)
+            # Note: Weight is role-specific, use primary statement role when available
+            statement_type = fact_dict.get('statement_type')
+            statement_role = fact_dict.get('statement_role')
+            fact_dict['weight'] = self._get_primary_weight(element_id, statement_type, statement_role)
+
+            enriched_facts.append(fact_dict)
+
+        # Cache the enriched facts
+        self._facts_cache = enriched_facts
+        return self._facts_cache
+
+    def query(self) -> FactQuery:
+        """
+        Start building a query against facts.
+
+        Returns:
+            FactQuery: A new query builder
+        """
+        return FactQuery(self)
+
+    def to_pandas(self, *args, **kwargs) -> pd.DataFrame:
+        """Alias of :meth:`to_dataframe`, taking the same arguments.
+
+        ``Filings``, ``XBRL`` and ``FilingSummary`` export with ``to_pandas()``, and
+        code written against them reaches for it here too (edgartools-m3jpa).
+        """
+        return self.to_dataframe(*args, **kwargs)
+
+    def to_dataframe(self) -> pd.DataFrame:
+        """
+        Convert all facts to a DataFrame.
+
+        Returns:
+            pandas DataFrame containing all facts
+        """
+        if self._facts_df_cache is not None:
+            return self._facts_df_cache
+
+        facts = self.get_facts()
+        df = pd.DataFrame(facts)
+        df = _deduplicate_facts(df)
+        self._facts_df_cache = df
+        return df
+
+    def get_statement_facts(self, statement_type: str) -> pd.DataFrame:
+        """
+        Get facts belonging to a specific statement.
+
+        Args:
+            statement_type: Type of statement ('BalanceSheet', 'IncomeStatement', etc.)
+
+        Returns:
+            pandas DataFrame with facts for the specified statement
+        """
+        return self.query().by_statement_type(statement_type).to_dataframe()
+
+    def get_facts_by_concept(self, concept_pattern: str, exact: bool = False) -> pd.DataFrame:
+        """
+        Get facts matching a concept name pattern.
+
+        Args:
+            concept_pattern: Pattern to match against concept names
+            exact: If True, perform exact matching; otherwise, use regex
+
+        Returns:
+            pandas DataFrame with matching facts
+        """
+        return self.query().by_concept(concept_pattern, exact).to_dataframe()
+
+    def search_facts(self, text_pattern: str) -> pd.DataFrame:
+        """
+        Search for facts containing a text pattern in any text field.
+
+        This is a flexible search that looks across concept names, labels,
+        and element names for matching text.
+
+        Args:
+            text_pattern: Text pattern to search for
+
+        Returns:
+            pandas DataFrame with matching facts
+        """
+        return self.query().by_text(text_pattern).to_dataframe()
+
+    def get_facts_with_dimensions(self) -> pd.DataFrame:
+        """
+        Get facts that have dimensional qualifiers.
+
+        Returns:
+            pandas DataFrame with dimensionally-qualified facts
+        """
+        # include_dimensions is required, not optional, because the predicate
+        # selects rows BY their dim_* keys and to_dataframe()'s projection
+        # drops every dim_* column when it is falsy. Selection and projection
+        # are independent stages, and without this they contradicted each
+        # other: the caller got the right rows with the very information that
+        # made them the right rows removed, and nothing warned (gh #1243).
+        return self.query().with_dimensions().by_custom(
+            lambda f: any(key.startswith('dim_') for key in f.keys())
+        ).to_dataframe()
+
+    def get_facts_by_period(self, period_key: str) -> pd.DataFrame:
+        """
+        Get facts for a specific reporting period.
+
+        Args:
+            period_key: Period key from reporting_periods
+
+        Returns:
+            pandas DataFrame with facts for the specified period
+        """
+        return self.query().by_period_key(period_key).to_dataframe()
+
+    def get_facts_by_period_view(self, statement_type: str, period_view_name: str) -> pd.DataFrame:
+        """
+        Get facts for a specific period view (e.g., "Annual Comparison", "Three-Year Comparison").
+
+        Args:
+            statement_type: Type of statement ('BalanceSheet', 'IncomeStatement', etc.)
+            period_view_name: Name of the period view as defined in get_period_views
+
+        Returns:
+            pandas DataFrame with facts for the specified period view
+        """
+        # Get available period views for this statement type
+        period_views = self.xbrl.get_period_views(statement_type)
+
+        # Find the requested view
+        matching_view = next((view for view in period_views if view['name'] == period_view_name), None)
+
+        if not matching_view:
+            # If view not found, return empty DataFrame
+            return pd.DataFrame()
+
+        # Get the period keys for this view
+        period_keys = matching_view['period_keys']
+
+        # Query facts that match any of these period keys and the statement type
+        query = self.query()
+
+        # Filter by statement type
+        if statement_type:
+            query = query.by_statement_type(statement_type)
+
+        # Filter by the period keys
+        query = query.by_period_keys(period_keys)
+
+        return query.to_dataframe()
+
+    def get_facts_by_fiscal_period(self, fiscal_year: Union[int, str],
+                                   fiscal_period: str) -> pd.DataFrame:
+        """
+        Get facts for a specific fiscal period.
+
+        Args:
+            fiscal_year: Fiscal year
+            fiscal_period: Fiscal period ('FY', 'Q1', 'Q2', 'Q3', 'Q4')
+
+        Returns:
+            pandas DataFrame with facts for the specified fiscal period
+        """
+        return self.query().by_fiscal_year(fiscal_year).by_fiscal_period(fiscal_period).to_dataframe()
+
+    def summarize(self) -> Dict[str, Any]:
+        """
+        Generate a summary of facts in the XBRL instance.
+
+        Returns:
+            Dictionary with fact summary statistics
+        """
+        facts = self.get_facts()
+
+        # Count total facts
+        total_facts = len(facts)
+
+        # Count by data type
+        types = {}
+        for fact in facts:
+            element_type = fact.get('element_type', 'unknown')
+            types[element_type] = types.get(element_type, 0) + 1
+
+        # Count by statement
+        by_statement = {}
+        for fact in facts:
+            stmt_type = fact.get('statement_type', 'unknown')
+            by_statement[stmt_type] = by_statement.get(stmt_type, 0) + 1
+
+        # Count by period type
+        by_period_type = {}
+        for fact in facts:
+            period_type = fact.get('period_type', 'unknown')
+            by_period_type[period_type] = by_period_type.get(period_type, 0) + 1
+
+        # List unique dimensions
+        dimensions = set()
+        for fact in facts:
+            for key in fact.keys():
+                if key.startswith('dim_'):
+                    dimensions.add(key.replace('dim_', ''))
+
+        # List unique periods
+        periods = set()
+        for fact in facts:
+            if 'period_key' in fact:
+                periods.add(fact['period_key'])
+
+        return {
+            'total_facts': total_facts,
+            'by_type': types,
+            'by_statement': by_statement,
+            'by_period_type': by_period_type,
+            'dimensions': sorted(list(dimensions)),
+            'periods': sorted(list(periods))
+        }
+
+    def get_unique_concepts(self) -> List[str]:
+        """
+        Get list of unique concept names in the facts.
+
+        Returns:
+            List of unique concept names
+        """
+        facts = self.get_facts()
+        concepts = {fact.get('concept') for fact in facts if 'concept' in fact}
+        return sorted(list(concepts))
+
+    def get_unique_dimensions(self) -> Dict[str, Set[str]]:
+        """
+        Get unique dimensions and their values.
+
+        Returns:
+            Dictionary mapping dimension names to sets of possible values
+        """
+        facts = self.get_facts()
+        dimensions = {}
+
+        for fact in facts:
+            for key, value in fact.items():
+                if key.startswith('dim_'):
+                    dim_name = key.replace('dim_', '')
+                    if dim_name not in dimensions:
+                        dimensions[dim_name] = set()
+                    dimensions[dim_name].add(value)
+
+        return dimensions
+
+    def get_available_period_views(self, statement_type: str) -> List[Dict[str, Any]]:
+        """
+        Get available period views for a statement type.
+
+        This method returns the period views that can be used with get_facts_by_period_view.
+
+        Args:
+            statement_type: Type of statement ('BalanceSheet', 'IncomeStatement', etc.)
+
+        Returns:
+            List of period view metadata with name, description, and period keys
+        """
+        period_views = self.xbrl.get_period_views(statement_type)
+
+        # Add facts count for each period view
+        for view in period_views:
+            # Count facts for each period key in this view
+            period_keys = view.get('period_keys', [])
+            if period_keys:
+                facts_count = len(self.query()
+                                  .by_statement_type(statement_type)
+                                  .by_period_keys(period_keys)
+                                  .execute())
+                view['facts_count'] = facts_count
+            else:
+                view['facts_count'] = 0
+
+        return period_views
+
+    def _raise_if_no_such_axis(self, dimension: str) -> None:
+        """Raise if no fact in the document carries the named dimension."""
+        probe = self.query().with_dimensions()
+        all_facts = probe.to_dataframe()
+        available = sorted({c[4:] for c in all_facts.columns if c.startswith('dim_')})
+        if not any(probe._dimension_key_matches(f"dim_{axis}", dimension) for axis in available):
+            raise ValidationError(
+                f"Cannot pivot by dimension {dimension!r}: no fact in this "
+                f"document carries that axis.",
+                parameter='dimension',
+                invalid_value=dimension,
+                suggestions=available,
+            )
+
+    def _pivot_without_losing_collisions(self, df: pd.DataFrame, columns: str,
+                                         what: str) -> pd.DataFrame:
+        """
+        Pivot concepts against ``columns``, keeping colliding rows apart.
+
+        ``pivot_table(aggfunc='first')`` resolves two facts landing in the same
+        cell by keeping one and discarding the other, with nothing to say it
+        happened. When the discarded rows differ only by a column that is not
+        in the index - a concept filed once per currency collides on
+        (concept, label) - the survivor also loses the field that identified
+        it, so it reads as an unqualified number.
+
+        The unit is added to the index when it is what distinguishes the
+        colliding rows, and any collision that still remains is logged with its
+        count rather than silently resolved.
+        """
+        from edgar.core import log
+
+        index = [c for c in ('concept', 'label') if c in df.columns]
+        if not index:
+            return df
+
+        def collisions(keys: List[str]) -> int:
+            return int(df.duplicated(subset=keys + [columns], keep=False).sum())
+
+        remaining = collisions(index)
+        # Only widen on a fully-populated unit column: pivot_table groups on the
+        # index and drops rows whose key is null, so adding a column with gaps
+        # would lose facts rather than separate them.
+        unit_is_usable = 'unit_ref' in df.columns and not df['unit_ref'].isna().any()
+        if remaining and unit_is_usable:
+            widened = index + ['unit_ref']
+            if collisions(widened) < remaining:
+                index = widened
+                remaining = collisions(index)
+
+        if remaining:
+            log.warning(
+                "pivot by %s: %d facts share a cell and only one of each is kept. "
+                "Query the facts directly if you need all of them.",
+                what, remaining
+            )
+
+        pivot = df.pivot_table(
+            values='numeric_value',
+            index=index,
+            columns=columns,
+            aggfunc='first'
+        )
+        return pivot.reset_index()
+
+    def pivot_by_period(self, concept_pattern: Optional[str] = None,
+                        statement_type: Optional[str] = None) -> pd.DataFrame:
+        """
+        Create a pivoted view of facts by period.
+
+        Args:
+            concept_pattern: Optional concept pattern to filter by
+            statement_type: Optional statement type to filter by
+
+        Returns:
+            pandas DataFrame with concepts as rows and periods as columns
+        """
+        query = self.query()
+
+        if concept_pattern:
+            query = query.by_concept(concept_pattern)
+
+        if statement_type:
+            query = query.by_statement_type(statement_type)
+
+        df = query.to_dataframe()
+
+        if df.empty:
+            return pd.DataFrame()
+
+        # Create concept-period pivot
+        if 'period_key' in df.columns and 'concept' in df.columns and 'numeric_value' in df.columns:
+            return self._pivot_without_losing_collisions(
+                df, columns='period_key', what='period'
+            )
+
+        return df  # Return original DataFrame if pivoting isn't possible
+
+    def pivot_by_dimension(self, dimension: str,
+                           concept_pattern: Optional[str] = None,
+                           period_key: Optional[str] = None) -> pd.DataFrame:
+        """
+        Create a pivoted view of facts by dimension values.
+
+        Args:
+            dimension: Dimension to pivot by
+            concept_pattern: Optional concept pattern to filter by
+            period_key: Optional period key to filter by
+
+        Returns:
+            pandas DataFrame with concepts as rows and dimension values as columns
+        """
+        query = self.query()
+
+        # Apply filters if provided
+        if concept_pattern:
+            query = query.by_concept(concept_pattern)
+
+        if period_key:
+            query = query.by_custom(lambda f: 'period_key' in f and f['period_key'] == period_key)
+
+        # Ensure we only get facts with this dimension
+        query = query.by_dimension(dimension)
+
+        df = query.to_dataframe()
+
+        if df.empty:
+            # An axis nobody filed and an axis the caller misspelled both filter
+            # to zero rows, and returning an empty frame for the second reads as
+            # "no data" rather than "no such axis". Distinguish them.
+            self._raise_if_no_such_axis(dimension)
+            return pd.DataFrame()
+
+        # The projected column is always the normalised spelling
+        # (dim_us-gaap_AwardTypeAxis), while callers naturally pass the QName
+        # ("us-gaap:AwardTypeAxis"). Building the name with an f-string off the
+        # raw argument missed, and the method then fell through to `return df`
+        # - the plain unpivoted frame, of plausible shape and not a pivot, with
+        # no warning (gh #1223). by_dimension() above already accepts either
+        # spelling, so the lookup has to as well.
+        dim_col = None
+        for col in df.columns:
+            if col.startswith('dim_') and query._dimension_key_matches(col, dimension):
+                dim_col = col
+                break
+
+        if dim_col is None:
+            raise ValidationError(
+                f"Cannot pivot by dimension {dimension!r}: no such axis in the "
+                f"selected facts.",
+                parameter='dimension',
+                invalid_value=dimension,
+                suggestions=sorted(c[4:] for c in df.columns if c.startswith('dim_')),
+            )
+        if 'concept' not in df.columns or 'numeric_value' not in df.columns:
+            raise ValidationError(
+                "Cannot pivot: the selected facts have no 'concept' or "
+                "'numeric_value' column."
+            )
+
+        return self._pivot_without_losing_collisions(
+            df, columns=dim_col, what=f"dimension {dimension!r}"
+        )
+
+    def time_series(self, concept: str, exact: bool = True) -> pd.DataFrame:
+        """
+        Create a time series view for a specific concept.
+
+        Args:
+            concept: Concept name to create time series for
+            exact: If True, require exact concept match; otherwise, use pattern matching
+
+        Returns:
+            pandas DataFrame with time series data for the concept
+        """
+        df = self.query().by_concept(concept, exact).to_dataframe()
+
+        if df.empty:
+            return pd.DataFrame()
+
+        # For instant periods, use the instant date
+        # For duration periods, use the end date
+        df['date'] = df.apply(
+            lambda row: row.get('period_instant') if row.get('period_type') == 'instant'
+            else row.get('period_end') if row.get('period_type') == 'duration'
+            else None,
+            axis=1
+        )
+
+        # Drop rows without valid dates
+        df = df.dropna(subset=['date'])
+
+        # Sort by date
+        df['date'] = pd.to_datetime(df['date'])
+        df = df.sort_values('date')
+
+        # Select relevant columns
+        columns = ['date', 'numeric_value', 'unit_ref']
+        if 'label' in df.columns:
+            columns.append('label')
+        if 'fiscal_period' in df.columns:
+            columns.append('fiscal_period')
+        if 'fiscal_year' in df.columns:
+            columns.append('fiscal_year')
+
+        # Add any dimension columns that exist
+        dim_cols = [col for col in df.columns if col.startswith('dim_')]
+        columns.extend(dim_cols)
+
+        return df[columns]
+
+    def facts_history(self, concept: str, date_col: str = 'period_end',
+                      include_dimensions: bool = False) -> pd.DataFrame:
+        """
+        Get the history of a concept across time, optionally including dimensions.
+
+        Args:
+            concept: Concept name to track
+            date_col: Date column to use for time series ('period_end', 'period_instant')
+            include_dimensions: Whether to include dimensional breakdowns
+
+        Returns:
+            pandas DataFrame with time series data
+        """
+        # include_dimensions has to reach the QUERY, not just the branch below.
+        # The query defaults to excluding dimensions, so it projected every dim_*
+        # column away; the 'if include_dimensions:' branch then looked for those
+        # columns in the projected frame, found none, and silently fell through to
+        # the undimensioned series. Sibling of #1243, fixed in
+        # get_facts_with_dimensions() only.
+        query = self.query().by_concept(concept, True)
+        if include_dimensions:
+            query = query.with_dimensions()
+        df = query.to_dataframe()
+
+        if df.empty:
+            return pd.DataFrame()
+
+        # A fact carries EITHER period_end (a duration) or period_instant, never both,
+        # so the 'period_end' default dropped every row of an instant concept -- which
+        # is every balance-sheet item -- and returned an empty frame. Fall back to the
+        # date column the facts actually populate instead of returning nothing.
+        date_columns = ('period_end', 'period_instant')
+        if date_col in date_columns and (date_col not in df.columns or df[date_col].isna().all()):
+            for alternative in date_columns:
+                if alternative in df.columns and not df[alternative].isna().all():
+                    date_col = alternative
+                    break
+
+        if date_col not in df.columns:
+            raise ValidationError(
+                f"date_col={date_col!r} is not a date column of this fact frame.",
+                parameter='date_col', invalid_value=date_col,
+                suggestions=["period_end -- for duration facts (revenue, cash flow)",
+                             "period_instant -- for instant facts (balance-sheet items)"],
+            )
+
+        # Filter to only rows with the date column
+        df = df.dropna(subset=[date_col])
+
+        # Convert to datetime
+        df[date_col] = pd.to_datetime(df[date_col])
+
+        # If including dimensions, create a more complex view
+        if include_dimensions:
+            # Convert dimension columns to category names
+            dimension_cols = [col for col in df.columns if col.startswith('dim_')]
+
+            if dimension_cols:
+                # Create a combined dimension key
+                if len(dimension_cols) > 0:
+                    def _dimension_key(row):
+                        # A concept is normally filed both undimensioned (the
+                        # consolidated total) and broken down. The undimensioned row
+                        # has NaN in every dim_* column, which str() renders as the
+                        # column label 'nan'; name it for what it is.
+                        members = [str(row[col]) for col in dimension_cols
+                                   if pd.notna(row.get(col))]
+                        return '-'.join(members) if members else 'No dimensions'
+
+                    df['dimension_key'] = df.apply(_dimension_key, axis=1)
+                else:
+                    df['dimension_key'] = 'No dimensions'
+
+                # Pivot to show time series by dimension
+                pivot = df.pivot_table(
+                    values='numeric_value',
+                    index=[date_col],
+                    columns=['dimension_key'],
+                    aggfunc='first'
+                )
+
+                return pivot.sort_index()
+
+        # Simple time series without dimensions
+        result = df.sort_values(date_col)[['concept', 'label', date_col, 'numeric_value', 'unit_ref']]
+        if 'fiscal_period' in df.columns:
+            result['fiscal_period'] = df['fiscal_period']
+        if 'fiscal_year' in df.columns:
+            result['fiscal_year'] = df['fiscal_year']
+
+        return result
+
+    def _get_primary_weight(self, element_id: str, statement_type: Optional[str],
+                            statement_role: Optional[str] = None) -> Optional[float]:
+        """
+        Get calculation weight for element from primary statement role.
+
+        Weight is role-specific (same concept can have different weights in different statements).
+        Returns weight from primary statement role if available.
+
+        GH-712: Use exact role URI match first (from presentation tree scan), then fall back
+        to keyword matching. The old keyword-only approach missed income statements named
+        "Statement of Operations" (no "income" keyword), causing wrong weights.
+
+        Args:
+            element_id: Normalized element ID (e.g., 'us-gaap_Revenue')
+            statement_type: Statement type ('IncomeStatement', 'BalanceSheet', etc.)
+            statement_role: Exact role URI from presentation tree (preferred for matching)
+
+        Returns:
+            Weight value (typically 1.0 or -1.0) or None if not in calculations
+        """
+        if not hasattr(self.xbrl, 'calculation_trees'):
+            return None
+
+        # GH-712: a fact assigned to a statement reads that statement role's
+        # calculation network only; another role's summation says nothing about
+        # this one (GH #1702). The fallbacks below are for unassigned facts.
+        if statement_role:
+            calc_tree = self.xbrl.calculation_trees.get(statement_role)
+            node = calc_tree.all_nodes.get(element_id) if calc_tree else None
+            return node.weight if node else None
+
+        # Fallback: keyword matching on role URI
+        for role_uri, calc_tree in self.xbrl.calculation_trees.items():
+            if statement_type:
+                role_lower = role_uri.lower()
+                if statement_type == "IncomeStatement" and (
+                    "income" in role_lower or "operation" in role_lower
+                ):
+                    node = calc_tree.all_nodes.get(element_id)
+                    if node:
+                        return node.weight
+                elif statement_type == "BalanceSheet" and ("balance" in role_lower or "position" in role_lower):
+                    node = calc_tree.all_nodes.get(element_id)
+                    if node:
+                        return node.weight
+                elif statement_type == "CashFlowStatement" and "cash" in role_lower:
+                    node = calc_tree.all_nodes.get(element_id)
+                    if node:
+                        return node.weight
+
+        # Fallback: return first weight found in any role
+        for calc_tree in self.xbrl.calculation_trees.values():
+            node = calc_tree.all_nodes.get(element_id)
+            if node:
+                return node.weight
+
+        # Not found in any calculation tree
+        return None
+
+    def clear_cache(self) -> None:
+        """Clear this view's cached data and invalidate its queries' cached frames."""
+        self._facts_cache = None
+        self._facts_df_cache = None
+        self._cache_generation += 1
+
+    def __str__(self):
+        return f"Facts for {self.xbrl}"
+
+    @property
+    def _title_text(self):
+        return Text.assemble(("XBRL Facts for ", "bold white"),
+                             (self.xbrl.entity_name, "bold deep_sky_blue1"),
+                             (" - ", "bold magenta"),
+                             (self.xbrl.document_type, "bold white"))
+
+
+def add_facts_view(xbrl):
+    """
+    Add a FactsView instance to an XBRL object.
+
+    Args:
+        xbrl: XBRL instance
+
+    Returns:
+        FactsView instance
+    """
+    facts_view = FactsView(xbrl)
+    xbrl.facts_view = facts_view
+    return facts_view

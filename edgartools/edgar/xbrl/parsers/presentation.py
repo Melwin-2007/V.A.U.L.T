@@ -1,0 +1,341 @@
+"""
+Presentation parser for XBRL documents.
+
+This module handles parsing of XBRL presentation linkbases and building
+presentation trees for financial statement structure.
+"""
+
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Union
+
+from lxml import etree as ET
+
+from edgar.xbrl.core import PERIOD_END_LABEL, PERIOD_START_LABEL, extract_element_id, is_period_boundary_label_role
+from edgar.xbrl.models import (
+    ElementCatalog,
+    PresentationNode,
+    PresentationRelationship,
+    PresentationTree,
+    XBRLProcessingError,
+)
+from edgar.xmltools import xml_parser
+
+from .base import BaseParser
+from .relationships import arc_candidate, effective_relationships
+
+# Roll-forward label roles legitimately repeat the same concept under one parent
+# (e.g. cash flow's "Cash, beginning/ending balances"). These must NOT be
+# deduplicated even though both arcs collapse to a single element_id node.
+# Includes the negated period roles (GH #1700). Kept for importers; the parser
+# itself tests roles with is_period_boundary_label_role, which matches these
+# and any other namespace version by local name.
+ROLL_FORWARD_LABELS = {
+    PERIOD_START_LABEL,
+    PERIOD_END_LABEL,
+    "http://www.xbrl.org/2009/role/negatedPeriodStartLabel",
+    "http://www.xbrl.org/2009/role/negatedPeriodEndLabel",
+    "http://xbrl.us/us-gaap/role/label/negatedPeriodStart",
+    "http://xbrl.us/us-gaap/role/label/negatedPeriodEnd",
+}
+
+
+class PresentationParser(BaseParser):
+    """Parser for XBRL presentation linkbases."""
+
+    def __init__(self, presentation_roles: Dict[str, Dict[str, Any]],
+                 presentation_trees: Dict[str, PresentationTree],
+                 element_catalog: Dict[str, ElementCatalog],
+                 role_types: Dict[str, Dict] = None):
+        """
+        Initialize presentation parser with data structure references.
+
+        Args:
+            presentation_roles: Reference to presentation roles dictionary
+            presentation_trees: Reference to presentation trees dictionary
+            element_catalog: Reference to element catalog dictionary
+            role_types: Shared dict of role type definitions from schema (human-readable definitions)
+        """
+        super().__init__()
+
+        # Store references to data structures
+        self.presentation_roles = presentation_roles
+        self.presentation_trees = presentation_trees
+        self.element_catalog = element_catalog
+        self.role_types = role_types if role_types is not None else {}
+
+    def parse_presentation(self, file_path: Union[str, Path]) -> None:
+        """Parse presentation linkbase file and build presentation trees."""
+        try:
+            content = Path(file_path).read_text()
+            self.parse_presentation_content(content)
+        except Exception as e:
+            raise XBRLProcessingError(f"Error parsing presentation file {file_path}: {str(e)}") from e
+
+    def parse_presentation_content(self, content: str) -> None:
+        """Parse presentation linkbase content and build presentation trees."""
+        try:
+            # Optimize: Register namespaces for faster XPath lookups
+            nsmap = {
+                'link': 'http://www.xbrl.org/2003/linkbase',
+                'xlink': 'http://www.w3.org/1999/xlink'
+            }
+
+            # Optimize: Use lxml parser with smart string handling
+            parser = xml_parser(remove_blank_text=True, recover=True)
+            root = ET.XML(content.encode('utf-8'), parser)
+
+            # Optimize: Use XPath with namespaces for faster extraction
+            presentation_links = root.xpath('//link:presentationLink', namespaces=nsmap)
+
+            # Optimize: Cache attribute paths
+            xlink_role = '{http://www.w3.org/1999/xlink}role'
+            xlink_from = '{http://www.w3.org/1999/xlink}from'
+            xlink_to = '{http://www.w3.org/1999/xlink}to'
+            xlink_label = '{http://www.w3.org/1999/xlink}label'
+            xlink_href = '{http://www.w3.org/1999/xlink}href'
+
+            # A role may be declared in more than one presentationLink; the arcs of
+            # every link with that role form one network (XBRL 2.1 section 3.5.3.9.7.3).
+            # Collect them per role and build each tree once, after the last link,
+            # so a later link does not replace an earlier one (GH #1745: IMAX's
+            # FY2018 cash-flow role is split across a 56-arc and a 1-arc link).
+            # Every arc is a candidate; prohibition and overriding then decide
+            # which relationships are in the network (XBRL 2.1 section
+            # 3.5.3.9.7), which also keeps an arc repeated with the same
+            # endpoints, order and preferred label once.
+            candidates_by_role: Dict[str, List[Dict[str, Any]]] = {}
+
+            for link in presentation_links:
+                role = link.get(xlink_role)
+                if not role:
+                    continue
+
+                # Store role information — prefer human-readable definition from schema
+                self.presentation_roles[role] = self._role_record(role, self.role_types)
+
+                # Optimize: Pre-build locator map to avoid repeated XPath lookups
+                loc_map = {}
+                for loc in link.xpath('.//link:loc', namespaces=nsmap):
+                    label = loc.get(xlink_label)
+                    if label:
+                        loc_map[label] = loc.get(xlink_href)
+
+                # Optimize: Extract arcs using direct xpath with context
+                arcs = link.xpath('.//link:presentationArc', namespaces=nsmap)
+
+                candidates_append = candidates_by_role.setdefault(role, []).append
+
+                # Process arcs with optimized locator lookups
+                for arc in arcs:
+                    from_ref = arc.get(xlink_from)
+                    to_ref = arc.get(xlink_to)
+
+                    if not from_ref or not to_ref:
+                        continue
+
+                    # Optimize: Use cached locator references instead of expensive XPath lookups
+                    from_href = loc_map.get(from_ref)
+                    to_href = loc_map.get(to_ref)
+
+                    if not from_href or not to_href:
+                        continue
+
+                    # Parse order attribute correctly
+                    order = self._parse_order_attribute(arc)
+
+                    preferred_label = arc.get('preferredLabel')
+
+                    # Extract element IDs from hrefs
+                    from_element = extract_element_id(from_href)
+                    to_element = extract_element_id(to_href)
+
+                    candidates_append(arc_candidate(arc, role, from_element, to_element, {
+                        'from_element': from_element,
+                        'to_element': to_element,
+                        'order': order,
+                        'preferred_label': preferred_label
+                    }))
+
+            # Build one presentation tree per role from all of its links
+            for role, candidates in candidates_by_role.items():
+                network = effective_relationships(candidates)
+                relationships = self._one_period_boundary_per_label(network)
+                if relationships:
+                    self._build_presentation_tree(role, relationships, network)
+
+        except Exception as e:
+            raise XBRLProcessingError(f"Error parsing presentation content: {str(e)}") from e
+
+    @staticmethod
+    def _one_period_boundary_per_label(relationships: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Keep a period start/end relationship once per endpoints and label.
+
+        The tree builder never de-duplicates those, so a repeat at another
+        order would add a second "beginning" row; the first order seen wins.
+        """
+        seen = set()
+        kept = []
+        for rel in relationships:
+            if is_period_boundary_label_role(rel['preferred_label']):
+                key = (rel['from_element'], rel['to_element'], rel['preferred_label'])
+                if key in seen:
+                    continue
+                seen.add(key)
+            kept.append(rel)
+        return kept
+
+    def _build_presentation_tree(self, role: str, relationships: List[Dict[str, Any]],
+                                 network: Optional[List[Dict[str, Any]]] = None) -> None:
+        """
+        Build a presentation tree from relationships.
+
+        Args:
+            role: Extended link role URI
+            relationships: List of relationships (from_element, to_element, order, preferred_label)
+                the tree's nodes are built from
+            network: Every effective relationship of the role, kept on the tree
+                as filed; defaults to `relationships`
+        """
+        # Group relationships by source element
+        from_map = {}
+        to_map = {}
+
+        for rel in relationships:
+            from_element = rel['from_element']
+            to_element = rel['to_element']
+
+            if from_element not in from_map:
+                from_map[from_element] = []
+            from_map[from_element].append(rel)
+
+            if to_element not in to_map:
+                to_map[to_element] = []
+            to_map[to_element].append(rel)
+
+        # Find root elements (appear as 'from' but not as 'to')
+        # Issue #601: Sort to ensure deterministic ordering across Python processes
+        # (set iteration order depends on hash randomization which varies per process)
+        root_elements = sorted(set(from_map.keys()) - set(to_map.keys()))
+
+        if not root_elements:
+            return  # No root elements found
+
+        # Create presentation tree
+        tree = PresentationTree(
+            role_uri=role,
+            definition=self.presentation_roles[role]['definition'],
+            root_element_id=root_elements[0],  # Use first sorted element
+            root_element_ids=root_elements,     # Every root, not just the first
+            all_nodes={},
+            relationships=[
+                PresentationRelationship(
+                    parent_id=rel['from_element'],
+                    child_id=rel['to_element'],
+                    order=rel['order'],
+                    preferred_label=rel['preferred_label'],
+                )
+                for rel in (relationships if network is None else network)
+            ],
+        )
+
+        # Build tree recursively
+        for root_id in root_elements:
+            self._build_presentation_subtree(root_id, None, 0, from_map, tree.all_nodes)
+
+        # Add tree to collection
+        self.presentation_trees[role] = tree
+
+    def _build_presentation_subtree(self, element_id: str, parent_id: Optional[str], depth: int,
+                                 from_map: Dict[str, List[Dict[str, Any]]],
+                                 all_nodes: Dict[str, PresentationNode]) -> None:
+        """
+        Recursively build a presentation subtree.
+
+        Args:
+            element_id: Current element ID
+            parent_id: Parent element ID
+            depth: Current depth in tree
+            from_map: Map of relationships by source element
+            all_nodes: Dictionary to store all nodes
+        """
+        # Create node
+        node = PresentationNode(
+            element_id=element_id,
+            parent=parent_id,
+            children=[],
+            depth=depth
+        )
+
+        # Add element information if available
+        if element_id in self.element_catalog:
+            elem_info = self.element_catalog[element_id]
+            node.element_name = elem_info.name
+            node.standard_label = elem_info.labels.get('http://www.xbrl.org/2003/role/label', elem_info.name)
+
+            # Use enhanced abstract detection (Issue #450 fix)
+            # The element catalog may not have correct abstract info for standard taxonomy concepts
+            from edgar.xbrl.abstract_detection import is_abstract_concept
+            node.is_abstract = is_abstract_concept(
+                concept_name=elem_info.name,
+                schema_abstract=elem_info.abstract,
+                has_children=False,  # Will be updated after children are processed
+                has_values=False,    # Will be determined later when facts are loaded
+                # The catalog leaves data_type None for an element whose
+                # declaration was not read (labels.py); otherwise the
+                # schema's abstract attribute is a real answer.
+                declared=elem_info.data_type is not None
+            )
+
+            node.labels = elem_info.labels
+
+        # Add to collection
+        all_nodes[element_id] = node
+
+        # Process children
+        if element_id in from_map:
+            # Sort children by order
+            children = sorted(from_map[element_id], key=lambda r: r['order'])
+
+            # Track child concepts already added under this parent. Some filers
+            # emit two presentation arcs from the same parent to the same concept
+            # (GH-825: CLW's balance sheet points AssetsAbstract at
+            # PropertyPlantAndEquipmentNet at both order 2 and order 4). Because
+            # nodes are keyed by element_id they collapse to a single node, so a
+            # duplicate child reference would render the identical line item twice.
+            # Keep the first occurrence (lowest order) and skip the rest.
+            #
+            # Exception: roll-forward arcs (periodStart/periodEndLabel, and their
+            # negated forms, GH #1700) repeat the
+            # same concept on purpose -- e.g. cash flow's "Cash, beginning/ending
+            # balances" -- and statement rendering relies on both references being
+            # present (first occurrence = beginning, later = ending). Never dedupe
+            # those (GH-755 regression of the GH-825 fix).
+            seen_children = set()
+
+            for rel in children:
+                child_id = rel['to_element']
+                preferred_label = rel['preferred_label']
+                is_roll_forward = is_period_boundary_label_role(preferred_label)
+
+                if not is_roll_forward:
+                    if child_id in seen_children:
+                        continue
+                    seen_children.add(child_id)
+
+                # Add child to parent's children list, tracking this reference's
+                # preferred label role positionally (edgartools-0609: roll-forward
+                # arcs reference the same concept twice with different label roles).
+                node.children.append(child_id)
+                node.child_preferred_labels.append(preferred_label)
+
+                # Recursively build child subtree
+                self._build_presentation_subtree(
+                    child_id, element_id, depth + 1, from_map, all_nodes
+                )
+
+                # Update preferred label and order after child is built
+                if child_id in all_nodes:
+                    if preferred_label:
+                        all_nodes[child_id].preferred_label = preferred_label
+                    all_nodes[child_id].order = rel['order']

@@ -1,0 +1,119 @@
+id: edgartools-funds
+name: EdgarTools Funds
+version: "1.0"
+
+identity: Investment fund analyst. Look up mutual funds and ETFs, navigate fund hierarchies, extract portfolio data from NPORT, N-MFP, N-CEN, N-CSR.
+
+patterns:
+  - name: Fund Lookup
+    when: User asks about a mutual fund or ETF
+    code: |
+      from edgar import Fund, find_funds
+      fund = Fund("VFINX")
+      fund.name / fund.company / fund.series / fund.share_class
+
+  - name: Search Funds
+    when: Search funds by name
+    code: |
+      find_funds("vanguard growth")
+
+  - name: Fund Portfolio
+    when: Get fund portfolio holdings
+    code: |
+      fund = Fund("VFINX")
+      df = fund.get_portfolio()          # Latest NPORT-P as DataFrame
+      report = fund.get_latest_report()  # Full FundReport object
+
+  - name: Money Market Fund
+    when: Get money market fund data
+    code: |
+      fund = Fund("VMFXX")
+      mmf = fund.get_latest_report(form='N-MFP3')
+      mmf.general_info          # Fund name, CIK, report date
+      mmf.series_info           # Net assets, WAM, fund category
+      mmf.share_classes         # Share class yields and NAVs
+      mmf.portfolio_data()      # Holdings as DataFrame
+    note: N-MFP3 for filings June 2024+. Use form='N-MFP2' for earlier filings.
+
+  - name: BDC Lookup
+    when: Look up Business Development Companies
+    code: |
+      from edgar.bdc import get_bdc_list, find_bdc, is_bdc_cik
+      bdcs = get_bdc_list()             # All BDCs from SEC report
+      results = find_bdc("Ares")        # Fuzzy search by name/ticker
+      is_bdc_cik(1287750)               # Check if CIK is a BDC → True
+
+  - name: BDC Portfolio
+    when: Get BDC schedule of investments or portfolio data
+    code: |
+      from edgar.bdc import get_bdc_list, fetch_bdc_dataset
+      bdcs = get_bdc_list()
+      arcc = bdcs.get_by_ticker("ARCC")
+      soi = arcc.schedule_of_investments()      # From latest 10-K XBRL
+      investments = arcc.portfolio_investments() # Parsed individual investments
+      investments.filter(industry="software")    # by industry as filed or normalized sector
+      investments.by_industry()                  # sector | num_investments | total_fair_value | pct_of_portfolio
+      investments.reported_industry_breakdown()  # filer's own subtotals: industry | fair_value | pct_of_reported_total (calc.) | pct_of_net_assets (filed)
+      investments.reported_total_fair_value      # The filer's balance-sheet total: use this for the portfolio size
+      investments.reconciliation_gap             # Rows vs reported total, e.g. 0.003; check before trusting sums
+      investments.unfunded_commitments_fair_value  # Negative; FSK nets -1,448.1M out of its total, the gap allows for it
+      investments.excluded                       # Subtotal / duplicate rows left out, each with .reason
+      inv = investments[0]
+      inv.industry / inv.sector / inv.industry_source   # as filed / normalized / axis|enumeration|identifier|peer|None
+
+      # Bulk cross-BDC analysis via DERA data sets
+      dataset = fetch_bdc_dataset(2024, 3)
+      dataset.soi                                # Schedule of investments data
+      dataset.summary_by_industry()              # industry | total_fair_value | num_bdcs | num_investments
+      dataset.summary_by_industry(by='sector')   # spellings folded: "Software Sector" + "Software & Services" -> Software
+      dataset.summary_by_company()               # cik | name | form | filed | num_investments | total_fair_value | total_source
+      dataset.schedule_of_investments.search("Ivy Hill")   # Which BDCs hold a company
+      dataset.schedule_of_investments.to_dataframe(clean=True)  # fair_value, cost, industry, industry_source, sector
+    note: |
+      DERA names SOI columns after XBRL labels that change between releases
+      (fair value is currently "Initial fair value of Investment"). Use
+      summary_by_industry() or to_dataframe(clean=True) rather than
+      dataset.soi['Investment Owned, Fair Value'], which is present but empty.
+      Industry is recovered from the investment identifier for filers that tag
+      no industry dimension (Sixth Street, PennantPark, BlackRock TCP, Fidus)
+      and from a peer BDC's tag for the same issuer; industry_source says
+      which. An investment with no recoverable industry has industry, sector
+      and industry_source all None, never an empty string.
+      Check industry_coverage before filter(industry=...) or by_industry():
+      ARCC's FY2025 10-K tags no industry on any of 1,417 holdings, so an
+      industry filter finds nothing (it logs a warning). The filing still
+      reports 23 industry subtotals summing to its 29,484.8M total; use
+      reported_industry_breakdown() for them. It is empty when the filer
+      reports none and for a filtered subset.
+
+  - name: BDC Non-Accrual
+    when: Which BDC loans are on non-accrual, or the non-accrual rate
+    code: |
+      from edgar.bdc import extract_nonaccrual
+      result = extract_nonaccrual(filing)        # a BDC 10-K/10-Q Filing, or a BDCEntity
+      result.nonaccrual_rate                     # non-accrual FV / portfolio FV
+      result.evidence_level                      # 'investment' | 'aggregate' | 'none'
+      result.num_nonaccrual                      # int when 'investment', 0 when tagged zero; else None
+      result.investments                         # NonAccrualInvestment rows (company_name, fair_value, cost)
+    note: |
+      num_nonaccrual None means the filing does not itemize non-accruals: an
+      aggregate rate (evidence_level 'aggregate') proves some exist without a
+      count, and 'none' means no XBRL signal. Never read None as zero. A filer
+      that tags its non-accruals as zero reads extraction_method 'tagged_zero',
+      rate 0.0 and num_nonaccrual 0. The count is of schedule rows, so one
+      company with two loans counts twice.
+
+  - name: Report Backlinks
+    when: Navigate from report to filing
+    code: |
+      report.filing / report.cik / report.series_id
+
+avoid:
+  - pattern: "Company('VFINX')"
+    fix: "Fund('VFINX')"
+    why: Company() is for operating companies; Fund() handles fund hierarchy
+
+  - pattern: "Company('ARCC')"
+    when: Need BDC-specific portfolio or investment data
+    fix: "from edgar.bdc import get_bdc_list; bdcs = get_bdc_list(); arcc = bdcs.get_by_ticker('ARCC')"
+    why: Company() lacks schedule_of_investments() and portfolio_investments() methods

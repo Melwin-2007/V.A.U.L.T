@@ -1,0 +1,1726 @@
+"""TTM (Trailing Twelve Months) calculation module.
+
+Provides core logic for aggregating 4 consecutive quarters into trailing
+twelve month metrics. TTM calculations smooth seasonal variations and
+provide a current view of annual performance.
+
+Example:
+    >>> from edgar import Company
+    >>> company = Company('AAPL')
+    >>> ttm = company.get_ttm_revenue()
+    >>> print(f"TTM Revenue: ${ttm.value / 1e9:.1f}B")
+    TTM Revenue: $391.0B
+
+"""
+import re
+from dataclasses import dataclass, replace
+from datetime import date, datetime, timedelta
+from typing import Callable, List, Optional, Tuple
+
+import pandas as pd
+
+from edgar.entity.models import FinancialFact
+
+# =============================================================================
+# Duration Classification Constants
+# =============================================================================
+# These ranges define how we classify SEC filing periods by their duration.
+# Ranges are non-overlapping to ensure deterministic classification.
+
+# Quarter: ~90 days (shortest valid quarter to longest, accounting for calendar variations)
+QUARTER_MIN_DAYS = 70
+QUARTER_MAX_DAYS = 120
+
+# YTD 6-Month: ~180 days (Jan-Jun or equivalent fiscal periods)
+YTD_6M_MIN_DAYS = 140
+YTD_6M_MAX_DAYS = 229  # Non-overlapping with YTD_9M
+
+# YTD 9-Month: ~270 days (Jan-Sep or equivalent fiscal periods)
+YTD_9M_MIN_DAYS = 230
+YTD_9M_MAX_DAYS = 329  # Non-overlapping with Annual
+
+# Annual: ~365 days (full fiscal year)
+ANNUAL_MIN_DAYS = 330
+ANNUAL_MAX_DAYS = 420
+
+# Per-share earnings concept names other than EarningsPerShare* (GH #1695).
+_PER_SHARE_EARNINGS_SUFFIX = re.compile(
+    r'per(basic|diluted|basicanddiluted)?share|peroutstandinglimitedpartnershipunit')
+
+# Consecutive quarters: days between quarter ends, and the span of a four-quarter
+# window. 52/53-week filers have 12/12/12/16 or 13/13/13/14-week quarters, and a
+# 53-week year is 371 days (GH #1694).
+QUARTER_END_GAP_MIN_DAYS = 70
+QUARTER_END_GAP_MAX_DAYS = 119
+WINDOW_SPAN_MIN_DAYS = 350
+WINDOW_SPAN_MAX_DAYS = 371
+
+# Calculation limits
+MAX_TTM_PERIODS = 100  # Maximum periods for TTM trend calculation
+MIN_QUARTERS_FOR_TTM = 4  # Minimum quarters needed for a single TTM value
+
+# Staleness detection (GH #893): how far the newest quarter in a TTM window may
+# lag the reference date (the caller's as_of, or today when unspecified) before
+# the result is flagged stale. A freshly-reported TTM is at most ~1 quarter plus
+# filing lag behind "now" (~135 days), so 185 days (~2 quarters) avoids false
+# positives on current data while catching the year-plus staleness produced by an
+# abandoned XBRL tag or a company that stopped filing.
+STALE_THRESHOLD_DAYS = 185
+
+# Split detection
+MAX_SPLIT_LAG_DAYS = 280  # Maximum days between period_end and filing_date for valid split
+MAX_SPLIT_DURATION_DAYS = 31  # Maximum duration for a valid split fact (instant or short)
+
+# Monetary duration concepts whose quarters are not defined to add up to the
+# year, so a quarter cannot be derived by subtraction (Q4 = FY - 9M, Q2 = 6M - Q1)
+# (GH #1693). Keyed by local name. Their unit (USD) says nothing about this; the
+# concept definition does:
+# - Two-class EPS allocations are made separately for each period (ASC 260-10-45-60B).
+# - Revenue recognized out of a contract liability counts the balance at the start
+#   of the period (ASC 606-10-50-8(b)): Snowflake's three FY2025 quarters sum to
+#   1,994.7M against a nine-month figure of 1,600M.
+# - The rest are measured for another period than the reporting interval.
+# This is a reviewed list, not a classification of the taxonomy; concepts not on
+# it keep the unit-based rule in `_is_additive_concept`.
+# NetIncomeLossAvailableToCommonStockholdersBasic is deliberately NOT listed: it is
+# net income less preferred dividends, which add up, unless participating
+# securities share undistributed earnings. It is the basic EPS numerator, and its
+# derived Q4 is what a derived Q4 EPS divides (GH #1692).
+NON_ADDITIVE_DURATION_CONCEPTS = frozenset({
+    "UndistributedEarningsLossAllocatedToParticipatingSecuritiesBasic",
+    "DistributedEarnings",
+    "ContractWithCustomerLiabilityRevenueRecognized",
+    "DeferredIncomeRevenueRecognized",
+    "BusinessAcquisitionsPurchasePriceAllocationYearOfAcquisitionNetEffectOnIncome",
+    "ManagingMemberOrGeneralPartnerSubsequentDistributionAmount",
+    "PreviouslyEstimatedDevelopmentCostsIncurred",
+})
+
+# Numerators for derived EPS, best first (GH #1692). Basic EPS divides income
+# available to common stockholders (ASC 260-10-45-10, -11); the diluted
+# numerator starts from it (ASC 260-10-45-16). NetIncomeLoss is only a stand-in.
+EPS_NUMERATOR_CONCEPTS = {
+    "basic": (
+        "NetIncomeLossAvailableToCommonStockholdersBasic",
+        "NetIncomeLoss",
+    ),
+    "diluted": (
+        "NetIncomeLossAvailableToCommonStockholdersDiluted",
+        "NetIncomeLossAvailableToCommonStockholdersBasic",
+        "NetIncomeLoss",
+    ),
+}
+
+# How far apart the filer's own preferred and substitute EPS numerators may be
+# (relative to the preferred value) before the substitute is refused. GH #1692
+# refuses a substitute the filer shows differing materially, such as net income
+# where preferred dividends separate it from income available to common (10% in
+# that issue's case). A gap within 0.5% bounds the EPS error at 0.5%: GOOGL's
+# Q3 2026 10-Q (0001652044-26-000084) tags 9M diluted 201,239M against basic
+# 200,855M (0.19%), which left TTM diluted EPS NaN wherever a diluted quarter
+# was missing (bead edgartools-91gqw).
+EPS_NUMERATOR_REL_TOLERANCE = 0.005
+
+
+def numerator_agrees_within(preferred: List[FinancialFact], substitute: List[FinancialFact],
+                            start: date, end: date) -> bool:
+    """May ``substitute`` stand in for the ``preferred`` EPS numerator over [start, end]?
+
+    Yes unless the filer's own facts say they differ: some period overlapping the
+    span is tagged with both concepts and the latest-filed values disagree by
+    more than ``EPS_NUMERATOR_REL_TOLERANCE`` of the preferred value (a preferred
+    dividend, say, separates income available to common from net income).
+    Periods tagged with only one of them are no evidence either way.
+    """
+    def latest_by_period(facts):
+        best = {}
+        for f in facts:
+            if f.period_type != 'duration' or f.period_start is None or f.period_end is None:
+                continue
+            if f.numeric_value is None or f.period_end < start or f.period_start > end:
+                continue
+            key = (f.period_start, f.period_end)
+            if key not in best or (f.filing_date or date.min) > (best[key].filing_date or date.min):
+                best[key] = f
+        return best
+
+    substitutes = latest_by_period(substitute)
+    for key, fact in latest_by_period(preferred).items():
+        other = substitutes.get(key)
+        if other is None:
+            continue
+        allowed = max(1.0, EPS_NUMERATOR_REL_TOLERANCE * abs(fact.numeric_value))
+        if abs(fact.numeric_value - other.numeric_value) > allowed:
+            return False
+    return True
+
+
+def facts_filed_by(facts: List[FinancialFact], filed_by: date) -> List[FinancialFact]:
+    """The original facts an SEC filing made on or before ``filed_by`` reported (GH #1699).
+
+    Inclusive by filing date. A fact with no filing date cannot be shown to have
+    been filed by the cutoff, so it is left out. This runs on the original facts,
+    before deduplication or quarter derivation: those keep the latest-filed fact
+    for a period, so filtering their output would lose the earlier filings, and a
+    derived quarter carries only one of its operands' filing dates.
+    """
+    return [f for f in facts if f.filing_date is not None and f.filing_date <= filed_by]
+
+
+class DurationBucket:
+    """Duration classification buckets for period facts."""
+
+    QUARTER = "QUARTER"     # 70-120 days
+    YTD_6M = "YTD_6M"       # 140-240 days
+    YTD_9M = "YTD_9M"       # 230-330 days
+    ANNUAL = "ANNUAL"       # 330-420 days
+    OTHER = "OTHER"         # Outside normal ranges
+
+
+@dataclass
+class TTMMetric:
+    """Result of a TTM calculation.
+
+    Attributes:
+        concept: XBRL concept identifier (e.g., 'us-gaap:Revenue')
+        label: Human-readable label (e.g., 'Revenue')
+        value: TTM value (sum of 4 quarters; the average for share counts and rates)
+        unit: Unit of measurement (e.g., 'USD', 'shares')
+        as_of_date: Date of most recent quarter in TTM window
+        periods: List of fiscal periods included [(2023, 'Q3'), (2023, 'Q4'), ...]
+        period_facts: List of FinancialFact objects used in calculation
+        has_gaps: True if quarters are not consecutive
+        has_calculated_q4: True if Q4 was calculated from FY - (Q1+Q2+Q3)
+        is_stale: True if the newest quarter lags the reference date (as_of, or
+            today) by more than one reporting cycle — the window does not track
+            "now" and the value may be years out of date (GH #893)
+        warning: Optional warning message about data quality
+        period_end_cutoff: The requested reporting-period cutoff (``as_of``, or
+            ``filed_by`` when only that was given); None when neither was. The
+            window's own end is ``as_of_date``, which may be earlier.
+        filed_by: The requested filing-date cutoff, or None. When set, every
+            fact the value rests on was filed on or before it (GH #1699).
+
+    """
+
+    concept: str
+    label: str
+    value: float
+    unit: str
+    as_of_date: date
+    periods: List[Tuple[int, str]]  # [(fiscal_year, fiscal_period), ...]
+    period_facts: List[FinancialFact]
+    has_gaps: bool
+    has_calculated_q4: bool = False
+    is_stale: bool = False
+    warning: Optional[str] = None
+    period_end_cutoff: Optional[date] = None
+    filed_by: Optional[date] = None
+
+    def __repr__(self):
+        """String representation."""
+        periods_str = ", ".join(f"{fp} {fy}" for fy, fp in self.periods)
+        return (
+            f"TTMMetric(concept='{self.concept}', "
+            f"value={self.value:,.0f}, "
+            f"periods=[{periods_str}])"
+        )
+
+
+class TTMCalculator:
+    """Calculates TTM metrics from quarterly financial facts.
+
+    TTM (Trailing Twelve Months) aggregates 4 consecutive quarters into a
+    rolling 12-month metric. This provides a smoothed view of financial
+    performance that eliminates seasonal variations.
+
+    Example:
+        >>> calculator = TTMCalculator(revenue_facts)
+        >>> ttm = calculator.calculate_ttm()
+        >>> print(f"TTM: ${ttm.value:,.0f}")
+        TTM: $391,035,000,000
+
+    """
+
+    def __init__(self, facts: List[FinancialFact]):
+        """Initialize with list of facts for a single concept.
+
+        Args:
+            facts: List of FinancialFact objects for one concept
+
+        """
+        self.facts = facts
+
+    def calculate_ttm(self, as_of: Optional[date] = None, *,
+                      filed_by: Optional[date] = None) -> TTMMetric:
+        """Calculate TTM value as of a specific date.
+
+        Selects the 4 most recent consecutive quarters ending on or before
+        the as_of date and sums their values (share counts and rates are
+        averaged instead, see `_aggregate_window`). Quarters are obtained via
+        quarterization, which derives Q2, Q3, and Q4 from YTD and annual facts
+        when discrete quarterly filings are not available.
+
+        Args:
+            as_of: Reporting-period cutoff: quarters ending on or before this date
+                (uses most recent if None). It does not limit which filings the
+                facts come from, so a quarter may be read from a later filing's
+                comparative.
+            filed_by: Filing-date cutoff (keyword-only, GH #1699). Only facts from
+                filings made on or before this date (inclusive, by SEC filing date)
+                are used, and they are chosen before any quarter is derived, so
+                every operand of a derived quarter passes too. A fact with no
+                filing date is left out. Given alone it is also the reporting
+                cutoff. In this mode the window is the latest one of four
+                gap-free quarters, which may end before the cutoff (see
+                ``as_of_date`` and ``is_stale``).
+
+        Returns:
+            TTMMetric with value and metadata
+
+        Raises:
+            ValueError: If insufficient data (<4 quarters available after quarterization),
+                or with ``filed_by``, no gap-free four-quarter window
+
+        Example:
+            >>> ttm = calculator.calculate_ttm(as_of=date(2024, 3, 30))
+            >>> print(ttm.periods)
+            [(2023, 'Q3'), (2023, 'Q4'), (2024, 'Q1'), (2024, 'Q2')]
+
+        """
+        if filed_by is not None:
+            return self._calculate_ttm_filed_by(as_of, filed_by)
+
+        # Per-share earnings: quarters do not add up to a year, so the value is
+        # a filed fiscal-year amount or there is none (GH #1695).
+        if self.facts and self._is_per_share_earnings_concept(self.facts[0]):
+            return replace(self._per_share_earnings_ttm(as_of), period_end_cutoff=as_of)
+
+        # 1. Get quarterized facts (includes derived Q2, Q3, Q4 from YTD/annual)
+        quarterly = self._filter_quarterly_facts()
+
+        # 2. Select 4 consecutive quarters ending on/before as_of
+        ttm_quarters = self._select_ttm_window(quarterly, as_of)
+
+        # 3. Validate minimum 4 quarters
+        if len(ttm_quarters) < 4:
+            raise ValueError(
+                f"Insufficient quarterly data: found {len(ttm_quarters)} quarters, "
+                f"need at least 4 for TTM calculation. "
+                f"Quarterization requires Q1, YTD_6M, YTD_9M, and FY facts to derive all quarters."
+            )
+
+        # Staleness is measured against as_of when given (the caller asked for
+        # that point in time), otherwise against today (GH #893).
+        reference_date = as_of if as_of is not None else date.today()
+        return self._metric_for_window(quarterly, ttm_quarters, reference_date, period_end_cutoff=as_of)
+
+    def _calculate_ttm_filed_by(self, as_of: Optional[date], filed_by: date) -> TTMMetric:
+        """TTM from filings made on or before ``filed_by`` (GH #1699).
+
+        The cutoff applies to the original facts, so quarter derivation and the
+        latest-filing preference only ever see eligible filings. Only gap-free
+        windows qualify, before the latest is chosen.
+        """
+        from edgar.exceptions import ValidationError
+
+        if isinstance(filed_by, datetime):
+            filed_by = filed_by.date()
+        if not isinstance(filed_by, date):
+            raise TypeError(f"filed_by must be a date, got {type(filed_by).__name__}")
+        cutoff = as_of if as_of is not None else filed_by
+        concept = self.facts[0].concept if self.facts else 'this concept'
+        eligible = TTMCalculator(facts_filed_by(self.facts, filed_by))
+
+        if self.facts and self._is_per_share_earnings_concept(self.facts[0]):
+            if not eligible.facts:
+                raise ValidationError(
+                    f"No {concept} facts were filed on or before {filed_by}.",
+                    parameter="filed_by", invalid_value=filed_by)
+            return replace(eligible._per_share_earnings_ttm(cutoff),
+                           period_end_cutoff=cutoff, filed_by=filed_by)
+
+        quarterly = eligible._filter_quarterly_facts()
+        window = eligible._latest_gap_free_window(quarterly, cutoff)
+        if window is None:
+            in_range = sum(1 for q in quarterly if q.period_end <= cutoff)
+            raise ValidationError(
+                f"Insufficient data for a TTM of {concept}: filings made on or before "
+                f"{filed_by} give {in_range} quarters ending on or before {cutoff}, and no "
+                f"four of them are consecutive without a gap.",
+                parameter="filed_by", invalid_value=filed_by,
+                suggestions=["Pass a later filed_by date"])
+        return eligible._metric_for_window(quarterly, window, cutoff,
+                                           period_end_cutoff=cutoff, filed_by=filed_by)
+
+    def _latest_gap_free_window(self, quarterly: List[FinancialFact],
+                                cutoff: date) -> Optional[List[FinancialFact]]:
+        """The latest four consecutive quarters ending on or before ``cutoff`` with no gap.
+
+        Gaps are judged by `_check_for_gaps` (with its 52/53-week tolerance)
+        before the latest window is chosen, so a newer gapped sum is never
+        preferred to an older complete year.
+        """
+        candidates = sorted((q for q in quarterly if q.period_end <= cutoff), key=lambda q: q.period_end)
+        for end in range(len(candidates), MIN_QUARTERS_FOR_TTM - 1, -1):
+            window = candidates[end - MIN_QUARTERS_FOR_TTM:end]
+            if not self._check_for_gaps(window):
+                return window
+        return None
+
+    def _metric_for_window(self, quarterly: List[FinancialFact], ttm_quarters: List[FinancialFact],
+                           reference_date: date, period_end_cutoff: Optional[date] = None,
+                           filed_by: Optional[date] = None) -> TTMMetric:
+        """Build the TTMMetric for a selected four-quarter window."""
+        # Check for gaps in quarterly data
+        has_gaps = self._check_for_gaps(ttm_quarters)
+
+        # Aggregate the window: flows are summed, levels (share counts, rates)
+        # are averaged -- the same rule calculate_ttm_trend applies (GH #1698)
+        ttm_value = self._aggregate_window(ttm_quarters)
+
+        # Check if any quarters were derived (vs. reported)
+        has_calculated_q4 = any(
+            q.calculation_context and 'derived' in q.calculation_context
+            for q in ttm_quarters
+        )
+
+        # Detect staleness: does the newest quarter track the reference date, or
+        # does it lag by more than a reporting cycle? (GH #893)
+        window_end = ttm_quarters[-1].period_end
+        stale_days = (reference_date - window_end).days
+        is_stale = stale_days > STALE_THRESHOLD_DAYS
+
+        # Generate warning if data quality issues exist
+        warning = self._generate_warning(
+            quarterly, ttm_quarters, has_calculated_q4,
+            is_stale=is_stale, window_end=window_end, reference_date=reference_date
+        )
+
+        # Label each quarter's fiscal year from its period_end and the fiscal
+        # year-end month, as calculate_ttm_trend does (GH #793): a quarter re-filed
+        # as a comparative carries the LATER filing's fiscal_year, so AAPL's quarter
+        # ending 2022-12-31 read as (2024, 'Q1') (GH #1699).
+        from edgar.entity.enhanced_statement import (
+            calculate_fiscal_year_for_label,
+            detect_fiscal_year_end,
+        )
+        fiscal_year_end_month = detect_fiscal_year_end(self.facts)
+        return TTMMetric(
+            concept=ttm_quarters[0].concept,
+            label=ttm_quarters[0].label,
+            value=ttm_value,
+            unit=ttm_quarters[0].unit,
+            as_of_date=window_end,  # Most recent quarter
+            periods=[(calculate_fiscal_year_for_label(q.period_end, fiscal_year_end_month), q.fiscal_period)
+                     for q in ttm_quarters],
+            period_facts=ttm_quarters,
+            has_gaps=has_gaps,
+            has_calculated_q4=has_calculated_q4,
+            is_stale=is_stale,
+            warning=warning,
+            period_end_cutoff=period_end_cutoff,
+            filed_by=filed_by,
+        )
+
+    def _per_share_earnings_ttm(self, as_of: Optional[date]) -> TTMMetric:
+        """TTM of a per-share earnings concept: the filed fiscal-year amount (GH #1695).
+
+        Quarterly EPS need not add up to annual EPS (ASC 260-10-55-50), so the
+        twelve-month value exists only for a fiscal year. It is the latest
+        fiscal year ending on or before ``as_of`` (today if None), provided no
+        quarter has ended since (within a week). Otherwise the window is a
+        rolling one, which has no filed amount, and this raises.
+        """
+        from edgar.entity.enhanced_statement import (
+            calculate_fiscal_year_for_label,
+            detect_fiscal_year_end,
+        )
+        from edgar.exceptions import ValidationError
+
+        reference = as_of if as_of is not None else date.today()
+        concept = self.facts[0].concept
+        quarterly = [q for q in self._filter_quarterly_facts() if q.period_end <= reference]
+        years = [f for f in self._filter_by_duration(DurationBucket.ANNUAL)
+                 if f.period_end <= reference and f.period_start and f.numeric_value is not None]
+        if not years:
+            raise ValidationError(
+                f"{concept} is a per-share earnings amount: quarterly amounts do not add up to "
+                f"a twelve-month amount (ASC 260-10-55-50), and no fiscal-year amount was filed "
+                f"on or before {reference}.",
+                parameter="as_of", invalid_value=as_of)
+        year_end = max(f.period_end for f in years)
+        latest_quarter = max((q.period_end for q in quarterly), default=None)
+        if latest_quarter is not None and latest_quarter > year_end + timedelta(days=7):
+            raise ValidationError(
+                f"{concept} is a per-share earnings amount: quarterly amounts do not add up to "
+                f"a twelve-month amount (ASC 260-10-55-50). The twelve months ending "
+                f"{latest_quarter} are not a fiscal year, so no amount was filed for them.",
+                parameter="as_of", invalid_value=as_of,
+                suggestions=[f"Pass as_of={year_end.isoformat()} for the filed fiscal-year amount"])
+
+        fy = max((f for f in years if f.period_end == year_end),
+                 key=lambda f: (self._form_tier(f.form_type or ''), f.filing_date or date.min))
+        in_year = sorted((q for q in quarterly
+                          if q.period_start and q.period_start >= fy.period_start - timedelta(days=7)
+                          and q.period_end <= year_end + timedelta(days=7)),
+                         key=lambda q: q.period_end)
+        fiscal_year_end_month = detect_fiscal_year_end(self.facts)
+        if len(in_year) == 4 and not self._check_for_gaps(in_year):
+            period_facts = in_year
+            periods = [(calculate_fiscal_year_for_label(q.period_end, fiscal_year_end_month), q.fiscal_period)
+                       for q in in_year]
+        else:
+            period_facts = [fy]
+            periods = [(calculate_fiscal_year_for_label(year_end, fiscal_year_end_month), 'FY')]
+
+        is_stale = (reference - year_end).days > STALE_THRESHOLD_DAYS
+        warning = self._generate_warning(quarterly, period_facts, False, is_stale=is_stale,
+                                         window_end=year_end, reference_date=reference)
+        return TTMMetric(
+            concept=concept,
+            label=fy.label,
+            value=fy.numeric_value,
+            unit=fy.unit,
+            as_of_date=year_end,
+            periods=periods,
+            period_facts=period_facts,
+            has_gaps=False,
+            has_calculated_q4=False,
+            is_stale=is_stale,
+            warning=warning,
+        )
+
+    def quarterize(self) -> List[FinancialFact]:
+        """Convert YTD and annual facts into discrete quarterly facts.
+
+        Derives Q2, Q3, Q4 from cumulative filings:
+          Q2 = YTD_6M - Q1
+          Q3 = YTD_9M - YTD_6M
+          Q4 = FY - YTD_9M
+
+        Derived facts have ``calculation_context`` set to the derivation method
+        (e.g., 'derived_q4_fy_minus_ytd9').
+
+        Each quarter is the LATEST-filed fact for its period (a reported quarter,
+        or one derived from the latest-filed annual or year-to-date fact). Its
+        ``accession``, ``filing_date`` and ``fiscal_year`` are that filing's, so a
+        quarter repeated as a comparative carries the later filing's metadata, not
+        the filing that first reported it (GH #1699).
+
+        Returns:
+            Quarterly facts sorted by period_end descending.
+        """
+        return self._quarterize_facts()
+
+    def calculate_ttm_trend(self, periods: int = 8) -> pd.DataFrame:
+        """Calculate rolling TTM values for multiple periods.
+
+        Creates a time series of TTM values, with each row representing
+        a different "as of" quarter. Useful for analyzing TTM trends
+        and growth patterns over time.
+
+        Args:
+            periods: Number of TTM values to calculate (default: 8, max: 100)
+
+        Returns:
+            DataFrame with columns:
+            - as_of_quarter: e.g., 'Q2 2024'
+            - ttm_value: TTM value for that quarter
+            - fiscal_year: e.g., 2024
+            - fiscal_period: e.g., 'Q2'
+            - yoy_growth: % change vs 4 quarters ago (None if insufficient data)
+            - periods_included: List of quarters in this TTM window
+            - has_gaps: True if the window's quarters are not consecutive, so
+              ttm_value is not a twelve-month figure (same test as
+              `calculate_ttm`'s `has_gaps`, GH #1694)
+
+        Raises:
+            ValueError: If periods < 1 or > 100, or insufficient data
+
+        Example:
+            >>> trend = calculator.calculate_ttm_trend(periods=8)
+            >>> print(trend[['as_of_quarter', 'ttm_value', 'yoy_growth']])
+            as_of_quarter    ttm_value  yoy_growth
+            Q2 2024          391.0B     0.042
+            Q1 2024          390.0B     0.031
+            ...
+
+        """
+        # Validate periods parameter
+        if periods < 1 or periods > MAX_TTM_PERIODS:
+            raise ValueError(f"periods must be between 1 and {MAX_TTM_PERIODS}, got {periods}")
+
+        # 1. Filter to quarterly facts
+        quarterly = self._filter_quarterly_facts()
+
+        # 2. Sort chronologically (oldest to newest)
+        sorted_facts = sorted(quarterly, key=lambda f: f.period_end)
+
+        # 3. Check minimum quarters needed
+        if len(sorted_facts) < MIN_QUARTERS_FOR_TTM:
+            raise ValueError(
+                f"Insufficient data for TTM trend: need at least {MIN_QUARTERS_FOR_TTM} quarters, "
+                f"found {len(sorted_facts)} quarters"
+            )
+
+        # Detect company FYE month so labels can be derived from period_end without
+        # relying on the as_of_fact's tagged fiscal_year. The SEC tags comparative
+        # facts in next-year filings with the FILING's fiscal_year, so a Q1 2024
+        # fact re-filed as a comparative in 2025 ends up with fy=2025. After
+        # _deduplicate_by_period_end keeps the most recently filed version, the
+        # as_of_fact carries that comparative-shifted fy and produces collided
+        # labels like "Q1 2025" for two distinct windows (GH #793).
+        from edgar.entity.enhanced_statement import (
+            calculate_fiscal_year_for_label,
+            detect_fiscal_year_end,
+        )
+        fiscal_year_end_month = detect_fiscal_year_end(self.facts)
+
+        # 4. Calculate only the requested number of TTM windows (from most recent)
+        # For YoY growth, we need 4 extra quarters, so calculate a few more if available
+        results = []
+        total_available = len(sorted_facts) - 3  # Number of possible TTM windows
+        num_to_calculate = min(periods, total_available)
+
+        # Calculate from most recent backwards
+        for offset in range(num_to_calculate):
+            i = len(sorted_facts) - 1 - offset
+            # TTM window: quarters [i-3, i-2, i-1, i] (4 quarters)
+            ttm_window = sorted_facts[i-3:i+1]
+            ttm_value = self._aggregate_window(ttm_window)
+
+            # Calculate YoY growth (compare to TTM from 4 quarters ago)
+            yoy_growth = None
+            if i >= 7 and ttm_value is not None:  # Need 8 total quarters for YoY comparison
+                prior_ttm_window = sorted_facts[i-7:i-3]
+                prior_ttm = self._aggregate_window(prior_ttm_window)
+                # Only calculate YoY for positive prior values (negative = losses)
+                if prior_ttm is not None and prior_ttm > 0:
+                    yoy_growth = (ttm_value - prior_ttm) / prior_ttm
+
+            # Build result row. Derive the label fiscal_year from period_end + FYE
+            # rather than trusting as_of_fact.fiscal_year (see GH #793).
+            as_of_fact = sorted_facts[i]
+            label_fy = calculate_fiscal_year_for_label(
+                as_of_fact.period_end, fiscal_year_end_month
+            )
+            results.append({
+                'as_of_quarter': f"{as_of_fact.fiscal_period} {label_fy}",
+                'ttm_value': ttm_value,
+                'fiscal_year': label_fy,
+                'fiscal_period': as_of_fact.fiscal_period,
+                'as_of_date': as_of_fact.period_end,  # Add period_end for statement builder
+                'yoy_growth': yoy_growth,
+                'periods_included': [
+                    (calculate_fiscal_year_for_label(q.period_end, fiscal_year_end_month),
+                     q.fiscal_period)
+                    for q in ttm_window
+                ],
+                'has_gaps': self._check_for_gaps(ttm_window),
+            })
+
+        # 5. Convert to DataFrame (already in most-recent-first order)
+        return pd.DataFrame(results)
+
+    def _filter_quarterly_facts(self) -> List[FinancialFact]:
+        """Get discrete quarterly facts.
+
+        Returns both reported quarters (80-120 day periods) and quarters derived
+        from YTD/annual facts. This handles the common filing pattern where Q2
+        and Q3 are reported as YTD cumulative values rather than discrete quarters.
+
+        The quarterization process:
+        - Q1: Reported discrete quarter (70-120 days)
+        - Q2: Derived from YTD_6M - Q1
+        - Q3: Derived from YTD_9M - YTD_6M
+        - Q4: Derived from FY - YTD_9M
+
+        Returns:
+            List of discrete quarterly facts (reported + derived)
+
+        Example:
+            >>> # Company files: Q1 ($100B), YTD_6M ($220B), YTD_9M ($350B), FY ($480B)
+            >>> quarters = calculator._filter_quarterly_facts()
+            >>> # Returns: Q1 ($100B), Q2 ($120B), Q3 ($130B), Q4 ($130B)
+
+        """
+        return self._quarterize_facts()
+
+    def _filter_annual_facts(self) -> List[FinancialFact]:
+        """Filter to annual duration facts (~365 days).
+
+        Returns:
+            List of facts with duration between 350-380 days
+
+        """
+        annual = []
+
+        for fact in self.facts:
+            # Skip non-duration facts (instant/point-in-time)
+            if fact.period_type != 'duration':
+                continue
+
+            # Skip facts without start/end dates
+            if not fact.period_start or not fact.period_end:
+                continue
+
+            # Calculate duration in days
+            duration_days = (fact.period_end - fact.period_start).days
+
+            # Annual periods are typically 350-380 days
+            # (allows for calendar variations: 363-365 days common, leap years 366)
+            if 350 <= duration_days <= 380:
+                annual.append(fact)
+
+        return annual
+
+    def _classify_duration(self, fact: FinancialFact) -> str:
+        """Classify fact by duration bucket.
+
+        Uses period_start and period_end to determine if fact represents
+        a discrete quarter, YTD (year-to-date), or annual period.
+
+        Args:
+            fact: FinancialFact to classify
+
+        Returns:
+            DurationBucket classification (QUARTER, YTD_6M, YTD_9M, ANNUAL, or OTHER)
+
+        Example:
+            >>> fact = FinancialFact(..., period_start=date(2023,1,1), period_end=date(2023,6,30))
+            >>> bucket = calculator._classify_duration(fact)
+            >>> print(bucket)
+            'YTD_6M'  # 180 days
+
+        """
+        if not fact.period_start or not fact.period_end:
+            return DurationBucket.OTHER
+
+        days = (fact.period_end - fact.period_start).days
+
+        # Use module constants for non-overlapping ranges
+        if QUARTER_MIN_DAYS <= days <= QUARTER_MAX_DAYS:
+            return DurationBucket.QUARTER
+        if YTD_6M_MIN_DAYS <= days <= YTD_6M_MAX_DAYS:
+            return DurationBucket.YTD_6M
+        if YTD_9M_MIN_DAYS <= days <= YTD_9M_MAX_DAYS:
+            return DurationBucket.YTD_9M
+        if ANNUAL_MIN_DAYS <= days <= ANNUAL_MAX_DAYS:
+            return DurationBucket.ANNUAL
+        return DurationBucket.OTHER
+
+    def _filter_by_duration(
+        self,
+        bucket: str,
+        require_duration: bool = True
+    ) -> List[FinancialFact]:
+        """Filter facts to specific duration bucket.
+
+        Args:
+            bucket: DurationBucket constant (QUARTER, YTD_6M, YTD_9M, or ANNUAL)
+            require_duration: If True, only include duration-type facts (default: True)
+
+        Returns:
+            List of facts matching the duration bucket
+
+        Example:
+            >>> quarters = calculator._filter_by_duration(DurationBucket.QUARTER)
+            >>> ytd_6m = calculator._filter_by_duration(DurationBucket.YTD_6M)
+
+        """
+        filtered = []
+        for fact in self.facts:
+            # Skip non-duration facts if required
+            if require_duration and fact.period_type != 'duration':
+                continue
+
+            # Check if fact matches bucket
+            if self._classify_duration(fact) == bucket:
+                filtered.append(fact)
+
+        return filtered
+
+    def _aggregate_window(self, window: List[FinancialFact]) -> Optional[float]:
+        """Combine a TTM window's quarters into one trailing-twelve-month value.
+
+        A share count or a rate is a level that persists, not a flow that
+        accumulates, so its trailing-twelve-month figure is the window's average
+        rather than its total (bead edgartools-djwu). Both `calculate_ttm` and
+        `calculate_ttm_trend` aggregate through here so they cannot disagree
+        (GH #1698).
+
+        A per-share earnings amount (continuing or discontinued operations per
+        share) is a ratio for its own period, so quarters do not add up to the
+        year (ASC 260-10-55-50). Its value is the filed fiscal-year amount when
+        the window is a fiscal year, otherwise None (GH #1695).
+        """
+        if window and self._is_per_share_earnings_concept(window[0]):
+            return self._filed_fiscal_year_value(window)
+        total = sum(q.numeric_value for q in window)
+        if window and self._is_window_average_concept(window[0]):
+            return total / len(window)
+        return total
+
+    def _is_per_share_earnings_concept(self, fact: FinancialFact) -> bool:
+        """Is this a per-share (or per-unit) earnings amount (GH #1695)?
+
+        EarningsPerShare*, IncomeLossFromContinuingOperationsPerBasicShare,
+        the discontinued-operations and *PerBasicAndDilutedShare concepts, and
+        NetIncomeLossPerOutstandingLimitedPartnershipUnit* are ratios for their
+        own period. Dividends or distributions per share are flows and keep
+        summing. (The TTM statement computes its EPS rows from income and
+        shares, not through here.)
+        """
+        name = fact.concept.split(':')[-1].lower()
+        if 'dividend' in name or 'distribut' in name:
+            return False
+        if not ('earningspershare' in name
+                or ('incomeloss' in name and _PER_SHARE_EARNINGS_SUFFIX.search(name))):
+            return False
+        if not fact.unit:
+            return False
+        from edgar.entity.unit_handling import UnitNormalizer
+        unit = str(fact.unit).lower()
+        return (UnitNormalizer.normalize_unit(str(fact.unit)) in UnitNormalizer.PER_SHARE_MAPPINGS
+                or '/share' in unit or 'per share' in unit or '/unit' in unit or 'per unit' in unit)
+
+    def _filed_fiscal_year_value(self, window: List[FinancialFact]) -> Optional[float]:
+        """The latest-filed fiscal-year amount that spans exactly this window, if any."""
+        start, end = window[0].period_start, window[-1].period_end
+        if start is None or end is None:
+            return None
+        years = [f for f in self._filter_by_duration(DurationBucket.ANNUAL)
+                 if f.period_end == end and f.period_start and f.numeric_value is not None
+                 and abs((f.period_start - start).days) <= 7]
+        if not years:
+            return None
+        return max(years, key=lambda f: (self._form_tier(f.form_type or ''), f.filing_date or date.min)).numeric_value
+
+    def _is_window_average_concept(self, fact: FinancialFact) -> bool:
+        """Should this concept's TTM value be the window's average rather than its sum?
+
+        This is a DIFFERENT question from `_is_additive_concept`, which asks whether
+        a quarter can be *derived* by subtraction (Q4 = FY - 9M). The two disagree,
+        and reusing that one here would be wrong: it returns False for per-share
+        amounts, but `CommonStockDividendsPerShareDeclared` is a genuine flow --
+        JPMorgan's trailing-twelve-month dividend is the 5.90 it declared over four
+        quarters, not the 1.48 they average to.
+
+        Only two unit types are levels rather than flows:
+
+        * SHARES -- a weighted-average share count already averages within its own
+          quarter, so summing four of them reported roughly four times the shares a
+          company has: Alphabet's Q2 2026 TTM basic count came back 48.5 billion
+          against an actual ~12.1 billion.
+        * RATIO -- a rate cannot be accumulated over time either. Averaging the
+          window is not exactly a twelve-month rate (that would weight each quarter
+          by its base), but it is the right order of magnitude where summing is not.
+          No concept in the measured corpus reaches this path with a ratio unit, so
+          this arm is reasoning rather than measurement.
+
+        Instant facts are not considered: they never reach the TTM rollup, which is
+        fed only duration facts (verified across GOOGL, TSLA, MSFT, JPM and XOM --
+        47 concept/unit combinations, none instant).
+        """
+        if not fact.unit:
+            return False
+
+        from edgar.entity.unit_handling import UnitNormalizer, UnitType
+        norm_unit = UnitNormalizer.normalize_unit(fact.unit)
+
+        # Per-share amounts normalize to CURRENCY, and they are flows -- check the
+        # mapping before the unit type so a dividend per share is not averaged.
+        if norm_unit in UnitNormalizer.PER_SHARE_MAPPINGS:
+            return False
+
+        return UnitNormalizer.get_unit_type(norm_unit) in (UnitType.SHARES, UnitType.RATIO)
+
+    def _is_additive_concept(self, fact: FinancialFact) -> bool:
+        """Check if a fact represents an additive concept (safe for derivation).
+
+        Derivation (e.g., Q4 = FY - YTD_9M) relies on the concept being additive over time.
+        Non-additive concepts cannot be subtracted to find a period-specific value.
+
+        Returns False for:
+        - Instant facts (Assets, Equity) - point-in-time, not flows
+        - Concepts in NON_ADDITIVE_DURATION_CONCEPTS - monetary, but their
+          quarters do not add up to the year by definition (GH #1693)
+        - Share counts (UnitType.SHARES) - not additive
+        - Ratios/Rates (UnitType.RATIO) - averages, not sums
+        - Per-share metrics (EPS) - derived from Income/Shares, shares change
+
+        Returns True for:
+        - Duration monetary flows (Revenue, Net Income) - truly additive
+        """
+        from edgar.core import log
+
+        # 1. Period Type Check - instant facts are never additive
+        if fact.period_type == 'instant':
+            log.debug(f"Skipping derivation for {fact.concept}: instant period type")
+            return False
+
+        # 2. Concept definition: some monetary flows do not add up over time
+        if fact.concept.split(':')[-1] in NON_ADDITIVE_DURATION_CONCEPTS:
+            log.debug(f"Skipping derivation for {fact.concept}: quarters do not add up to the year")
+            return False
+
+        # 3. Unit Type Check
+        if not fact.unit:
+            return True  # Assume additive if no unit (rare)
+
+        from edgar.entity.unit_handling import UnitNormalizer, UnitType
+        norm_unit = UnitNormalizer.normalize_unit(fact.unit)
+        unit_type = UnitNormalizer.get_unit_type(norm_unit)
+
+        # Exclude Shares and Ratios
+        if unit_type in (UnitType.SHARES, UnitType.RATIO):
+            log.debug(f"Skipping derivation for {fact.concept}: unit type {unit_type}")
+            return False
+
+        # Exclude Per Share metrics (EPS)
+        # Note: get_unit_type maps per-share to CURRENCY, so check mappings directly
+        if norm_unit in UnitNormalizer.PER_SHARE_MAPPINGS:
+            log.debug(f"Skipping derivation for {fact.concept}: per-share unit")
+            return False
+
+        # Additional keyword safety
+        unit_lower = norm_unit.lower()
+        if 'shares' in unit_lower or 'pure' in unit_lower or 'ratio' in unit_lower:
+            log.debug(f"Skipping derivation for {fact.concept}: unit contains keyword")
+            return False
+
+        return True
+
+    def _is_positive_concept(self, concept: str) -> bool:
+        """Check if a concept should always be positive (e.g., revenue, assets).
+
+        For these concepts, a negative derived value indicates data quality issues
+        rather than legitimate negative values (like losses).
+
+        Args:
+            concept: XBRL concept name (may include namespace prefix)
+
+        Returns:
+            True if concept should be positive, False if negatives are valid
+        """
+        # Normalize concept name (remove namespace prefix)
+        name = concept.split(':')[-1].lower() if ':' in concept else concept.lower()
+
+        # Concepts that should always be positive.
+        #
+        # 'cash' is deliberately NOT listed (GH #907). It matched every cash
+        # flow concept by substring — NetCashProvidedByUsedInInvestingActivities
+        # contains "cash" — so investing and financing flows, which are
+        # routinely negative, were classified must-be-positive and every
+        # derived quarter was silently dropped by the guards below. The cash
+        # *balances* it appeared to protect (CashAndCashEquivalentsAtCarrying-
+        # Value and friends) are instant facts, which _is_additive_concept
+        # already rejects before this check is ever reached, so the keyword
+        # only ever did harm.
+        positive_keywords = [
+            'revenue', 'sales', 'asset', 'inventory',
+            'receivable', 'property', 'equipment', 'goodwill',
+        ]
+
+        # Concepts that can legitimately be negative. Checked first, so a
+        # keyword here wins over any substring match in positive_keywords.
+        negative_ok_keywords = [
+            'income', 'loss', 'expense', 'cost', 'liability',
+            'deficit', 'impairment', 'depreciation', 'amortization',
+            'interest', 'tax', 'earnings', 'profit',  # Can be loss
+            # Period-over-period movements are signed by definition: a decrease
+            # in receivables or deferred revenue is a legitimate negative. These
+            # otherwise match 'receivable'/'revenue'/'asset'/'goodwill' below and
+            # lose their negative quarters the same way cash flows did (#907).
+            'increasedecrease',
+        ]
+
+        # Check for negative-OK keywords first (more specific)
+        for keyword in negative_ok_keywords:
+            if keyword in name:
+                return False
+
+        # Check for positive-required keywords
+        for keyword in positive_keywords:
+            if keyword in name:
+                return True
+
+        # Default: allow negatives (conservative)
+        return False
+
+    def _quarterize_facts(self) -> List[FinancialFact]:
+        """Convert YTD and annual facts into discrete quarters.
+
+        This method handles the common SEC filing pattern where companies report:
+        - Q1 as discrete quarter (70-120 days)
+        - Q2 as YTD (Jan-Jun, 140-240 days)
+        - Q3 as YTD (Jan-Sep, 230-330 days)
+        - FY as annual (Jan-Dec, 330-420 days)
+
+        Derives:
+        - Q2 from YTD_6M - Q1
+        - Q3 from YTD_9M - YTD_6M
+        - Q4 from FY - YTD_9M
+
+        Returns:
+            List of discrete quarterly facts (reported + derived), deduplicated
+            and sorted by period_end
+
+        """
+        from edgar.core import log
+
+        # 1. Separate by duration bucket
+        quarters = self._filter_by_duration(DurationBucket.QUARTER)
+        ytd_6m = self._filter_by_duration(DurationBucket.YTD_6M)
+        ytd_9m = self._filter_by_duration(DurationBucket.YTD_9M)
+        annual = self._filter_by_duration(DurationBucket.ANNUAL)
+
+        discrete_quarters = []
+
+        # 2. Keep all reported discrete quarters
+        discrete_quarters.extend(quarters)
+        log.debug(f"Found {len(quarters)} reported discrete quarters")
+
+        # 3. Derive quarters using helper methods
+        discrete_quarters.extend(self._derive_q2_from_ytd6(quarters, ytd_6m))
+        discrete_quarters.extend(self._derive_q3_from_ytd9(ytd_6m, ytd_9m))
+        discrete_quarters.extend(self._derive_q4_from_fy(quarters, ytd_9m, annual))
+
+        # 4. Enforce the invariant this method's name promises: everything returned
+        #    covers one quarter. A derivation pairs a cumulative fact with an earlier
+        #    one, and if the two belong to different fiscal cycles the subtraction is
+        #    arithmetically fine but describes a nonsense interval -- Snowflake's
+        #    goodwill produced a 457-day "Q2" of -45,711,000 by subtracting a prior
+        #    year's Q1 from the current six-month figure (GH #1197). The operands are
+        #    matched on start date upstream; this is the check that the result is
+        #    actually a quarter, which no amount of operand matching can be trusted to
+        #    guarantee on its own.
+        well_formed = []
+        for fact in discrete_quarters:
+            if self._classify_duration(fact) == DurationBucket.QUARTER:
+                well_formed.append(fact)
+            else:
+                log.debug(
+                    f"Discarding derived {fact.concept} for {fact.period_start}..{fact.period_end}: "
+                    f"not a quarter-length interval (context={fact.calculation_context})"
+                )
+
+        # 5. Deduplicate by period_end (keep latest filing)
+        dedup_quarters = self._deduplicate_by_period_end(well_formed)
+        log.debug(f"Quarterization complete: {len(dedup_quarters)} discrete quarters "
+                  f"({len(quarters)} reported + {len(dedup_quarters) - len(quarters)} derived, "
+                  f"{len(discrete_quarters) - len(well_formed)} malformed discarded)")
+
+        return dedup_quarters
+
+    def _derive_q2_from_ytd6(
+        self,
+        quarters: List[FinancialFact],
+        ytd_6m: List[FinancialFact]
+    ) -> List[FinancialFact]:
+        from edgar.core import log
+        derived = []
+        for ytd6 in ytd_6m:
+            if not self._is_additive_concept(ytd6):
+                continue
+            # Skip facts with corrupt/missing fiscal metadata (e.g., proxy
+            # statement historicals tagged with fiscal_period=''). See GH #796.
+            if ytd6.fiscal_period != 'Q2':
+                continue
+            q1 = self._find_prior_quarter(quarters, before=ytd6.period_end)
+            if q1:
+                q2_value = ytd6.numeric_value - q1.numeric_value
+
+                # Skip if negative and concept should be positive (revenue-like)
+                if q2_value < 0 and self._is_positive_concept(ytd6.concept):
+                    log.warning(f"Data quality issue: Q1 ({q1.numeric_value/1e9:.2f}B) > "
+                                f"YTD_6M ({ytd6.numeric_value/1e9:.2f}B) for {ytd6.concept}, skipping Q2 derivation")
+                    continue
+
+                from datetime import timedelta
+                q2_start = q1.period_end + timedelta(days=1)
+                q2_fact = self._create_derived_quarter(
+                    ytd6, q2_value, "derived_q2_ytd6_minus_q1", target_period="Q2",
+                    period_start=q2_start
+                )
+                derived.append(q2_fact)
+                log.debug(f"Derived Q2 from YTD_6M: ${q2_value/1e9:.2f}B "
+                          f"(YTD_6M ${ytd6.numeric_value/1e9:.2f}B - Q1 ${q1.numeric_value/1e9:.2f}B)")
+        return derived
+
+    def _derive_q3_from_ytd9(
+        self,
+        ytd_6m: List[FinancialFact],
+        ytd_9m: List[FinancialFact]
+    ) -> List[FinancialFact]:
+        from edgar.core import log
+        derived = []
+        for ytd9 in ytd_9m:
+            if not self._is_additive_concept(ytd9):
+                continue
+            # Skip facts with corrupt/missing fiscal metadata (e.g., proxy
+            # statement historicals tagged with fiscal_period=''). See GH #796.
+            if ytd9.fiscal_period != 'Q3':
+                continue
+            ytd6 = self._find_prior_ytd6(ytd_6m, before=ytd9.period_end)
+            if ytd6:
+                q3_value = ytd9.numeric_value - ytd6.numeric_value
+
+                # Skip if negative and concept should be positive (revenue-like)
+                if q3_value < 0 and self._is_positive_concept(ytd9.concept):
+                    log.warning(f"Data quality issue: YTD_6M ({ytd6.numeric_value/1e9:.2f}B) > "
+                                f"YTD_9M ({ytd9.numeric_value/1e9:.2f}B) for {ytd9.concept}, skipping Q3 derivation")
+                    continue
+
+                from datetime import timedelta
+                q3_start = ytd6.period_end + timedelta(days=1)
+                q3_fact = self._create_derived_quarter(
+                    ytd9, q3_value, "derived_q3_ytd9_minus_ytd6", target_period="Q3",
+                    period_start=q3_start
+                )
+                derived.append(q3_fact)
+                log.debug(f"Derived Q3 from YTD_9M: ${q3_value/1e9:.2f}B "
+                          f"(YTD_9M ${ytd9.numeric_value/1e9:.2f}B - YTD_6M ${ytd6.numeric_value/1e9:.2f}B)")
+        return derived
+
+    def _derive_q4_from_fy(
+        self,
+        quarters: List[FinancialFact],
+        ytd_9m: List[FinancialFact],
+        annual: List[FinancialFact]
+    ) -> List[FinancialFact]:
+        from dataclasses import replace
+
+        from edgar.core import log
+        from edgar.entity.enhanced_statement import (
+            calculate_fiscal_year_for_label,
+            detect_fiscal_year_end,
+        )
+        derived = []
+        fiscal_year_end_month = detect_fiscal_year_end(self.facts)
+        for fy in annual:
+            if not self._is_additive_concept(fy):
+                continue
+            # Skip facts with corrupt/missing fiscal metadata (e.g., proxy
+            # statement historicals tagged with fiscal_period=''). See GH #796:
+            # DX DEF 14A had a 12-month NetIncomeLoss fact with fiscal_year=0,
+            # fiscal_period='' and a wrong scale, which got picked up as the
+            # FY 2025 input and produced Q4 = 319,065 - 133,707,000 = -133M.
+            if fy.fiscal_period != 'FY':
+                continue
+            ytd9 = self._find_matching_ytd9(
+                ytd_9m, period_start=fy.period_start, before=fy.period_end
+            )
+            if ytd9:
+                q4_value = fy.numeric_value - ytd9.numeric_value
+
+                # Skip if negative and concept should be positive (revenue-like)
+                if q4_value < 0 and self._is_positive_concept(fy.concept):
+                    log.warning(f"Data quality issue: YTD_9M ({ytd9.numeric_value/1e9:.2f}B) > "
+                                f"FY ({fy.numeric_value/1e9:.2f}B) for {fy.concept}, skipping Q4 derivation")
+                    continue
+
+                from datetime import timedelta
+                q4_start = ytd9.period_end + timedelta(days=1)
+                q4_fact = self._create_derived_quarter(
+                    fy, q4_value, "derived_q4_fy_minus_ytd9", target_period="Q4",
+                    period_start=q4_start
+                )
+                if q4_fact.period_end:
+                    calculated_fy = calculate_fiscal_year_for_label(
+                        q4_fact.period_end, fiscal_year_end_month
+                    )
+                    q4_fact = replace(q4_fact, fiscal_year=calculated_fy)
+                derived.append(q4_fact)
+                log.debug(f"Derived Q4 from FY: ${q4_value/1e9:.2f}B "
+                          f"(FY ${fy.numeric_value/1e9:.2f}B - YTD_9M ${ytd9.numeric_value/1e9:.2f}B)")
+                continue
+
+            # Fallback: derive Q4 from FY - (Q1 + Q2 + Q3) when YTD_9M is absent
+            # (concept reported as discrete quarters).
+            #
+            # Select the input quarters by their actual calendar period, NOT by the
+            # fiscal_period label. The SEC tags comparative facts in a re-filing with
+            # the FILING's fiscal_period, so the same calendar quarter can appear
+            # labeled Q1, Q2 AND Q3 across successive 10-Qs. Keying on the label then
+            # selects that one quarter for every slot (Q1=Q2=Q3) and yields a wrong,
+            # often negative, Q4 (e.g. GAIN: 57.2M - 3*28.8M = -29.2M). See GH #848;
+            # same root cause as the fiscal_period unreliability behind #793/#796.
+            q_candidates = []
+            for q in quarters:
+                if q.numeric_value is None or q.period_start is None or q.period_end is None:
+                    continue
+                if fy.period_start and fy.period_end:
+                    if not (fy.period_start <= q.period_start <= fy.period_end):
+                        continue
+                    if not (fy.period_start <= q.period_end <= fy.period_end):
+                        continue
+                q_candidates.append(q)
+
+            if not q_candidates:
+                log.debug(f"No discrete quarters found for FY {fy.fiscal_year} - cannot derive Q4")
+                continue
+
+            # Collapse to one fact per distinct calendar period (latest periodic
+            # filing wins), sorted ascending by period_end.
+            distinct = self._deduplicate_by_period_end(q_candidates)
+
+            # If a discrete quarter already ends on the fiscal year-end, Q4 is
+            # reported directly - no derivation needed.
+            if any(q.period_end == fy.period_end for q in distinct):
+                log.debug(f"Discrete Q4 already present for FY {fy.fiscal_year} - skipping derivation")
+                continue
+
+            # Expect exactly the three quarters (Q1-Q3) that precede Q4. Anything
+            # else (gaps, overlaps, stub periods) is ambiguous - skip rather than
+            # emit a wrong value.
+            if len(distinct) != 3:
+                log.debug(f"Expected 3 discrete quarters for FY {fy.fiscal_year}, "
+                          f"found {len(distinct)} - cannot derive Q4")
+                continue
+
+            q1, q2, q3 = distinct  # ascending by period_end
+            q1_q3_sum = q1.numeric_value + q2.numeric_value + q3.numeric_value
+            q4_value = fy.numeric_value - q1_q3_sum
+
+            # Skip if negative and concept should be positive (revenue-like)
+            if q4_value < 0 and self._is_positive_concept(fy.concept):
+                log.warning(f"Data quality issue: Q1+Q2+Q3 ({q1_q3_sum/1e9:.2f}B) > "
+                            f"FY ({fy.numeric_value/1e9:.2f}B) for {fy.concept}, skipping Q4 derivation")
+                continue
+
+            from datetime import timedelta
+            q4_start = q3.period_end + timedelta(days=1)
+            q4_fact = self._create_derived_quarter(
+                fy, q4_value, "derived_q4_fy_minus_q1q2q3", target_period="Q4",
+                period_start=q4_start
+            )
+            if q4_fact.period_end:
+                calculated_fy = calculate_fiscal_year_for_label(
+                    q4_fact.period_end, fiscal_year_end_month
+                )
+                q4_fact = replace(q4_fact, fiscal_year=calculated_fy)
+            derived.append(q4_fact)
+            log.debug(
+                f"Derived Q4 from FY: ${q4_value/1e9:.2f}B "
+                f"(FY ${fy.numeric_value/1e9:.2f}B - Q1-3 ${q1_q3_sum/1e9:.2f}B)"
+            )
+        return derived
+
+    def derive_eps_for_quarter(
+        self,
+        net_income_facts: List[FinancialFact],
+        shares_facts: List[FinancialFact],
+        eps_concept: str = 'us-gaap:EarningsPerShareBasic'
+    ) -> List[FinancialFact]:
+        """Calculate EPS for derived quarters using Net Income / Weighted Avg Shares.
+
+        Uses a two-route approach for accuracy:
+        - Route A (stable shares, CV ≤ 0.03): Derive Q4 EPS via subtraction
+          (FY_EPS - Q1 - Q2 - Q3). Mathematically exact when shares are constant.
+        - Route B (volatile shares, CV > 0.03): Derive Q4 using NI/shares formula.
+
+        Args:
+            net_income_facts: Facts for NetIncomeLoss concept
+            shares_facts: Facts for WeightedAverageNumberOfSharesOutstandingBasic
+            eps_concept: XBRL concept for the EPS (default: basic)
+
+        Returns:
+            List of derived EPS FinancialFact objects for Q4 periods
+
+        """
+        from edgar.core import log
+
+        derived_eps = []
+
+        # Step 1: Get Q4 Net Income facts (derived or reported)
+        ni_calculator = TTMCalculator(net_income_facts)
+        ni_quarters = ni_calculator._quarterize_facts()
+        q4_net_income = [q for q in ni_quarters if q.fiscal_period == 'Q4']
+
+        if not q4_net_income:
+            log.debug("No derived Q4 Net Income found - cannot calculate Q4 EPS")
+            return derived_eps
+
+        # Step 2: Get shares by period (FY, YTD9, and quarterly for CV check)
+        shares_calculator = TTMCalculator(shares_facts)
+        fy_shares_list = shares_calculator._filter_by_duration(DurationBucket.ANNUAL)
+        ytd9_shares_list = shares_calculator._filter_by_duration(DurationBucket.YTD_9M)
+        q_shares_list = shares_calculator._filter_by_duration(DurationBucket.QUARTER)
+
+        # Build lookup by fiscal year
+        fy_shares_by_year = {s.fiscal_year: s.numeric_value for s in fy_shares_list}
+        ytd9_shares_by_year = {s.fiscal_year: s.numeric_value for s in ytd9_shares_list}
+
+        # Build quarterly shares lookup: {fiscal_year: [Q1_WAS, Q2_WAS, ...]}
+        q_shares_by_year: dict = {}
+        for s in q_shares_list:
+            q_shares_by_year.setdefault(s.fiscal_year, []).append(s.numeric_value)
+
+        # Compute per-year CV of quarterly WAS to detect buyback-heavy years
+        shares_cv_by_year = self._compute_shares_cv(
+            q_shares_by_year, fy_shares_by_year, ytd9_shares_by_year
+        )
+
+        # Step 3: Calculate Q4 EPS
+        for q4_ni in q4_net_income:
+            eps_fact = self._calculate_single_q4_eps(
+                q4_ni, fy_shares_by_year, ytd9_shares_by_year, eps_concept,
+                shares_cv_by_year=shares_cv_by_year
+            )
+            if eps_fact:
+                derived_eps.append(eps_fact)
+
+        return derived_eps
+
+    @staticmethod
+    def _compute_shares_cv(
+        q_shares_by_year: dict,
+        fy_shares_by_year: dict,
+        ytd9_shares_by_year: Optional[dict] = None
+    ) -> dict:
+        """Compute coefficient of variation of quarterly WAS per fiscal year.
+
+        Returns dict of {fiscal_year: cv_value}. CV > 0.03 indicates significant
+        share count variability (buybacks, dilution), where the linear WAS
+        approximation becomes unreliable.
+
+        Uses quarterly data when available, otherwise estimates from FY vs YTD9.
+        """
+        import statistics
+        result = {}
+        # From quarterly data (most accurate)
+        for fy, q_values in q_shares_by_year.items():
+            valid = [v for v in q_values if v and v > 0]
+            if len(valid) >= 2:
+                mean = statistics.mean(valid)
+                if mean > 0:
+                    result[fy] = statistics.stdev(valid) / mean
+            elif len(valid) == 1 and fy in fy_shares_by_year:
+                fy_was = fy_shares_by_year[fy]
+                if fy_was and fy_was > 0:
+                    result[fy] = abs(valid[0] - fy_was) / fy_was
+
+        # For years without quarterly data, estimate from FY vs YTD9
+        ytd9_map = ytd9_shares_by_year or {}
+        for fy, fy_was in fy_shares_by_year.items():
+            if fy in result:
+                continue  # Already computed from quarterly data
+            ytd9_was = ytd9_map.get(fy)
+            if ytd9_was and ytd9_was > 0 and fy_was and fy_was > 0:
+                # If FY and YTD9 WAS differ significantly, shares are volatile
+                result[fy] = abs(fy_was - ytd9_was) / fy_was
+        return result
+
+    def _calculate_single_q4_eps(
+        self,
+        q4_ni: FinancialFact,
+        fy_shares_map: dict,
+        ytd9_shares_map: dict,
+        eps_concept: str,
+        shares_cv_by_year: Optional[dict] = None
+    ) -> Optional[FinancialFact]:
+        """Calculate Q4 EPS for a single fiscal year.
+
+        Uses CV-based routing:
+        - CV ≤ 0.03 (stable shares): Q4_EPS = Q4_NI / FY_WAS (FY WAS is a
+          good proxy for Q4 WAS when shares are stable)
+        - CV > 0.03 (volatile shares): Q4_WAS = 4*FY_WAS - 3*YTD9_WAS,
+          then Q4_EPS = Q4_NI / Q4_WAS
+        """
+        from edgar.core import log
+        from edgar.entity.mappings_loader import get_primary_statement
+        fy = q4_ni.fiscal_year
+
+        if fy not in fy_shares_map or fy_shares_map[fy] <= 0:
+            log.debug(f"No FY shares found for {fy} - cannot calculate Q4 EPS")
+            return None
+
+        fy_shares = fy_shares_map[fy]
+        ytd9_shares = ytd9_shares_map.get(fy)
+
+        # Determine share volatility for this year
+        cv = (shares_cv_by_year or {}).get(fy, 0.0)
+        cv_threshold = 0.03
+
+        if cv <= cv_threshold:
+            # Route A: Stable shares — use FY WAS directly (accurate proxy for Q4)
+            q4_shares = fy_shares
+            calc_method = 'derived_eps_stable_shares'
+            log.debug(f"FY{fy}: Stable shares (CV={cv:.4f}), using FY WAS = {fy_shares/1e6:.2f}M")
+        else:
+            # Route B: Volatile shares — derive Q4 WAS from linear formula
+            q4_shares = fy_shares  # Default fallback
+            calc_method = 'derived_eps_volatile_shares'
+
+            if ytd9_shares and ytd9_shares > 0:
+                calculated_q4_shares = 4 * fy_shares - 3 * ytd9_shares
+
+                if calculated_q4_shares > 0:
+                    q4_shares = calculated_q4_shares
+                    share_change_pct = ((q4_shares - fy_shares) / fy_shares) * 100
+                    log.debug(f"FY{fy}: Volatile shares (CV={cv:.4f}), "
+                              f"Q4 WAS = {q4_shares/1e6:.2f}M "
+                              f"(FY: {fy_shares/1e6:.2f}M, change: {share_change_pct:.1f}%)")
+                else:
+                    log.debug(f"FY{fy}: Derived Q4 shares invalid ({calculated_q4_shares}), "
+                              f"using FY shares")
+            else:
+                log.debug(f"FY{fy}: Volatile shares but no YTD9 available, using FY shares")
+
+        # Guard against division by zero
+        if q4_shares <= 0:
+            log.warning(f"FY{fy}: Invalid Q4 shares ({q4_shares}) - cannot calculate EPS")
+            return None
+
+        q4_eps_value = q4_ni.numeric_value / q4_shares
+
+        log.debug(f"Derived Q4 EPS for FY{fy}: ${q4_eps_value:.2f} "
+                  f"(NI ${q4_ni.numeric_value/1e9:.2f}B / {q4_shares/1e9:.2f}B shares, "
+                  f"route={'A-stable' if cv <= cv_threshold else 'B-volatile'})")
+
+        clean_concept = eps_concept.split(':')[-1] if ':' in eps_concept else eps_concept
+        statement_type = get_primary_statement(clean_concept)
+
+        return FinancialFact(
+            concept=eps_concept,
+            taxonomy='us-gaap',
+            label='Earnings Per Share (Derived)',
+            value=q4_eps_value,
+            numeric_value=q4_eps_value,
+            unit='USD/share',
+            fiscal_year=fy,
+            fiscal_period='Q4',
+            period_type='duration',
+            period_start=q4_ni.period_start,
+            period_end=q4_ni.period_end,
+            filing_date=q4_ni.filing_date,
+            form_type=q4_ni.form_type,
+            accession=q4_ni.accession,
+            statement_type=statement_type,
+            calculation_context=calc_method
+        )
+
+    def _find_prior_quarter(
+        self,
+        quarters: List[FinancialFact],
+        before: date
+    ) -> Optional[FinancialFact]:
+        """Find the most recent quarter ending before a date.
+
+        Args:
+            quarters: List of quarterly facts
+            before: Date to search before
+
+        Returns:
+            Most recent quarter ending before the date, or None if not found
+
+        Example:
+            >>> q1 = calculator._find_prior_quarter(quarters, before=date(2023, 6, 30))
+            >>> # Returns Q1 ending 2023-03-31
+
+        """
+        candidates = [q for q in quarters if q.period_end < before]
+        return max(candidates, key=self._operand_rank) if candidates else None
+
+    def _find_prior_ytd6(
+        self,
+        ytd_6m: List[FinancialFact],
+        before: date
+    ) -> Optional[FinancialFact]:
+        """Find the most recent YTD_6M ending before a date.
+
+        Args:
+            ytd_6m: List of YTD_6M facts
+            before: Date to search before
+
+        Returns:
+            Most recent YTD_6M ending before the date, or None if not found
+
+        Example:
+            >>> ytd6 = calculator._find_prior_ytd6(ytd_6m, before=date(2023, 9, 30))
+            >>> # Returns YTD_6M ending 2023-06-30
+
+        """
+        candidates = [y for y in ytd_6m if y.period_end < before]
+        return max(candidates, key=self._operand_rank) if candidates else None
+
+    def _find_matching_ytd9(
+        self,
+        ytd_9m: List[FinancialFact],
+        period_start: date,
+        before: date
+    ) -> Optional[FinancialFact]:
+        """Find YTD_9M with matching period_start (same fiscal year).
+
+        Attempts to match period_start exactly to ensure Q4 derivation uses
+        YTD_9M from the same fiscal year as the annual fact. Falls back to
+        latest YTD_9M before the date if exact match not found.
+
+        Args:
+            ytd_9m: List of YTD_9M facts
+            period_start: Fiscal year start date to match
+            before: Date to search before
+
+        Returns:
+            YTD_9M fact with matching period_start, or latest before date
+
+        Example:
+            >>> ytd9 = calculator._find_matching_ytd9(
+            ...     ytd_9m,
+            ...     period_start=date(2023, 1, 1),
+            ...     before=date(2023, 12, 31)
+            ... )
+            >>> # Returns YTD_9M with period_start=2023-01-01
+
+        """
+        # First try exact period_start match (same fiscal year)
+        candidates = [
+            y for y in ytd_9m
+            if y.period_start == period_start and y.period_end < before
+        ]
+        if candidates:
+            return max(candidates, key=self._operand_rank)
+
+        # Fallback: latest YTD_9M before the date
+        candidates = [y for y in ytd_9m if y.period_end < before]
+        return max(candidates, key=self._operand_rank) if candidates else None
+
+    def _operand_rank(self, fact: FinancialFact) -> tuple:
+        """Order derivation operands: latest period, then best source, then latest filing.
+
+        Two facts for the same period are the original and a recast (a later
+        filing restating it, for example after a disposal). Taking whichever was
+        listed first made a derived quarter depend on input order (GH #1675).
+        The latest filing is the one the annual fact it is paired with is most
+        likely restated to as well, and it matches `_deduplicate_by_period_end`,
+        which keeps the latest-filed annual fact's derived quarter.
+        """
+        return (fact.period_end, self._form_tier(fact.form_type or ''), fact.filing_date or date.min)
+
+    def _create_derived_quarter(
+        self,
+        source_fact: FinancialFact,
+        derived_value: float,
+        derivation_method: str,
+        target_period: Optional[str] = None,
+        period_start: Optional[date] = None
+    ) -> FinancialFact:
+        """Create a synthetic quarter fact from derivation.
+
+        Args:
+            source_fact: Source YTD or annual fact
+            derived_value: Calculated discrete quarter value
+            derivation_method: Description of how value was derived
+            target_period: Fiscal period label (e.g., 'Q2', 'Q4'). Defaults to source's.
+            period_start: Optional start date for the derived period
+
+        Returns:
+            New FinancialFact with derived value and metadata
+
+        Example:
+            >>> q2_fact = calculator._create_derived_quarter(
+            ...     ytd6_fact,
+            ...     120e9,
+            ...     "derived_q2_ytd6_minus_q1",
+            ...     target_period="Q2"
+            ... )
+
+        """
+        # Ensure statement_type is set (if None, builder rejects in _fact_belongs_to_statement fallback due to linkage rules)
+        stmt_type = source_fact.statement_type
+        if not stmt_type:
+            from edgar.entity.mappings_loader import get_primary_statement
+            clean_concept = source_fact.concept.split(':')[-1] if ':' in source_fact.concept else source_fact.concept
+            stmt_type = get_primary_statement(clean_concept)
+
+        return FinancialFact(
+            concept=source_fact.concept,
+            taxonomy=source_fact.taxonomy,
+            label=source_fact.label,
+            value=derived_value,
+            numeric_value=derived_value,
+            unit=source_fact.unit,
+            fiscal_year=source_fact.fiscal_year,
+            fiscal_period=target_period or source_fact.fiscal_period,
+            period_type='duration',
+            period_start=period_start or source_fact.period_start,
+            period_end=source_fact.period_end,
+            filing_date=source_fact.filing_date,
+            form_type=source_fact.form_type,
+            accession=source_fact.accession,
+            statement_type=stmt_type,
+            calculation_context=derivation_method  # Mark as derived
+        )
+
+    # Periodic reports are the canonical source for financials. Facts derived
+    # from these forms are preferred over facts derived from non-periodic forms
+    # (e.g., DEF 14A proxies, S-1 registrations) when both report the same
+    # period. See GH #796 for the failure mode this prevents.
+    _PERIODIC_FORMS = frozenset({
+        '10-K', '10-K/A', '10-KSB', '10-KSB/A',
+        '10-Q', '10-Q/A', '10-QSB', '10-QSB/A',
+        '20-F', '20-F/A', '40-F', '40-F/A', '6-K', '6-K/A',
+    })
+
+    @classmethod
+    def _form_tier(cls, form_type: str) -> int:
+        """Tier ranking for dedup: periodic > everything else."""
+        return 1 if form_type in cls._PERIODIC_FORMS else 0
+
+    def _deduplicate_by_period_end(
+        self,
+        facts: List[FinancialFact]
+    ) -> List[FinancialFact]:
+        """Keep best fact per period_end (handles re-filings).
+
+        When multiple facts exist for the same period_end, prefer in this order:
+        1. Facts from periodic reports (10-K, 10-Q, 20-F, etc.) over non-periodic
+           (DEF 14A, S-1, etc.)
+        2. Facts with a more recent filing_date
+        3. Facts with a filing_date over those without
+
+        Args:
+            facts: List of facts potentially containing duplicates
+
+        Returns:
+            Deduplicated list sorted by period_end
+
+        Example:
+            >>> dedup = calculator._deduplicate_by_period_end(all_quarters)
+            >>> # Returns one fact per unique period_end date
+
+        """
+        def sort_key(fact: FinancialFact):
+            # Higher is better. Use a tuple so periodic-report status outranks
+            # filing_date, and filing_date breaks ties within the same tier.
+            return (
+                self._form_tier(fact.form_type or ''),
+                fact.filing_date or date.min,
+            )
+
+        by_end: dict = {}
+        for fact in facts:
+            key = fact.period_end
+            if key not in by_end or sort_key(fact) > sort_key(by_end[key]):
+                by_end[key] = fact
+        return sorted(by_end.values(), key=lambda f: f.period_end)
+
+
+    def _select_ttm_window(
+        self,
+        quarterly: List[FinancialFact],
+        as_of: Optional[date]
+    ) -> List[FinancialFact]:
+        """Select 4 consecutive quarters ending on/before as_of date.
+
+        Args:
+            quarterly: List of quarterly facts
+            as_of: Date to calculate TTM as of (None = most recent)
+
+        Returns:
+            List of 4 quarters in chronological order (oldest to newest)
+
+        """
+        # Sort by period_end descending (newest first)
+        sorted_facts = sorted(quarterly, key=lambda f: f.period_end, reverse=True)
+
+        # If as_of specified, filter to quarters ending on/before that date
+        if as_of:
+            sorted_facts = [f for f in sorted_facts if f.period_end <= as_of]
+
+        # Take first 4 quarters (most recent)
+        ttm_window = sorted_facts[:4]
+
+        # Reverse to chronological order (oldest to newest)
+        return list(reversed(ttm_window))
+
+    def _check_for_gaps(self, quarters: List[FinancialFact]) -> bool:
+        """Check if quarters are consecutive (~90 days apart).
+
+        Args:
+            quarters: List of quarters in chronological order
+
+        Returns:
+            True if gaps detected, False if quarters are consecutive
+
+        """
+        if len(quarters) < 2:
+            return False
+
+        for i in range(len(quarters) - 1):
+            # Quarter ends ~91 days apart. A 52/53-week filer's long quarter is
+            # 16 or 17 weeks (Costco's Q4: 112 days), so up to 119 (GH #1694).
+            gap = (quarters[i+1].period_end - quarters[i].period_end).days
+            if not (QUARTER_END_GAP_MIN_DAYS <= gap <= QUARTER_END_GAP_MAX_DAYS):
+                return True
+
+        # Four consecutive quarters span a year: 52 or 53 weeks, or a calendar year.
+        first_start = quarters[0].period_start
+        if len(quarters) == 4 and first_start is not None:
+            span = (quarters[-1].period_end - first_start).days + 1
+            if not (WINDOW_SPAN_MIN_DAYS <= span <= WINDOW_SPAN_MAX_DAYS):
+                return True
+
+        return False
+
+    def _generate_warning(
+        self,
+        all_quarterly: List[FinancialFact],
+        ttm_quarters: List[FinancialFact],
+        has_calculated_q4: bool = False,
+        is_stale: bool = False,
+        window_end: Optional[date] = None,
+        reference_date: Optional[date] = None
+    ) -> Optional[str]:
+        """Generate warning message if data quality issues exist.
+
+        Args:
+            all_quarterly: All available quarterly facts
+            ttm_quarters: 4 quarters used in TTM calculation
+            has_calculated_q4: True if any quarters were derived from YTD/annual data
+            is_stale: True if the TTM window lags the reference date (GH #893)
+            window_end: period_end of the newest quarter (for the stale message)
+            reference_date: date staleness was measured against (as_of, or today)
+
+        Returns:
+            Warning message string, or None if no issues
+
+        """
+        warnings = []
+
+        # Staleness is the most consequential problem — surface it first so a
+        # caller scanning warning text sees it before data-derivation notes.
+        if is_stale and window_end is not None and reference_date is not None:
+            warnings.append(
+                f"TTM window ends {window_end.isoformat()}, which lags the "
+                f"reference date {reference_date.isoformat()} by "
+                f"{(reference_date - window_end).days} days. The result may be "
+                "stale — the company may have stopped reporting this concept or "
+                "migrated to a different XBRL tag."
+            )
+
+        # Info message if quarters were derived (not a warning, just informational)
+        if has_calculated_q4:
+            warnings.append(
+                "Some quarters were derived from YTD or annual facts. "
+                "These are calculated values, not directly reported quarterly data."
+            )
+
+        # Check total quarters available
+        if len(all_quarterly) < 8:
+            warnings.append(
+                f"Only {len(all_quarterly)} quarters available. "
+                "Minimum 8 quarters recommended for year-over-year TTM comparison."
+            )
+
+        # Check for gaps in TTM window
+        if self._check_for_gaps(ttm_quarters):
+            warnings.append(
+                "Gaps detected in quarterly data. "
+                "TTM calculation may not be accurate."
+            )
+
+        return " ".join(warnings) if warnings else None
+

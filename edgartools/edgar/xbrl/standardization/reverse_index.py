@@ -1,0 +1,822 @@
+"""
+Reverse index for O(1) XBRL tag to standard concept lookups.
+
+This module provides fast lookups from company-specific XBRL tags to
+mpreiss9's standard concepts, with support for:
+- O(1) hash-based lookups (vs O(n×m) iteration)
+- Ambiguous tag detection (tags mapping to multiple concepts)
+- Display name resolution (concept → user-friendly label)
+- Exclusion filtering (DropThisItem tags)
+
+Architecture:
+    XBRL Tag (us-gaap:AccountsPayableCurrent)
+        ↓ reverse_index lookup (O(1))
+    Standard Concept (TradePayables)
+        ↓ display_names lookup
+    Display Label ("Accounts Payable")
+
+Generated from: data/xbrl-mappings/gaap_taxonomy_mapping.csv
+"""
+
+import json
+import logging
+import os
+from dataclasses import dataclass
+from typing import Dict, List, Optional, Tuple
+
+from .exclusions import EXCLUDED_TAGS, should_exclude
+
+logger = logging.getLogger(__name__)
+
+
+IFRS_PREFIXES = ("ifrs-full:", "ifrs-full_", "ifrs:", "ifrs_")
+
+
+def _is_ifrs_tag(tag: str) -> bool:
+    """Whether a tag names an IFRS concept rather than a US-GAAP one."""
+    return bool(tag) and str(tag).startswith(IFRS_PREFIXES)
+
+
+def _canonical_ifrs_key(tag: str) -> str:
+    """Rewrite any IFRS prefix spelling to the one the index is keyed on."""
+    for prefix in IFRS_PREFIXES:
+        if tag.startswith(prefix):
+            return "ifrs-full_" + tag[len(prefix):]
+    return tag
+
+
+def _denotes_total(display_name: Optional[str]) -> bool:
+    """Whether a standard concept's display name claims to be a statement total.
+
+    The generated mappings mark totals in the display name ("Total Assets",
+    "Total Stockholders' Equity"), which is what a consumer reads when it looks
+    for the total row.
+    """
+    return bool(display_name) and str(display_name).strip().lower().startswith("total")
+
+
+@dataclass
+class MappingResult:
+    """Result of a reverse index lookup."""
+
+    standard_concepts: List[str]
+    """List of standard concept names (mpreiss9's taxonomy)."""
+
+    display_names: List[str]
+    """List of user-friendly display names."""
+
+    is_ambiguous: bool
+    """True if the tag maps to multiple concepts (needs context resolution)."""
+
+    is_deprecated: bool
+    """True if the XBRL tag is deprecated."""
+
+    deprecated_year: Optional[str]
+    """Year the tag was deprecated, if applicable."""
+
+    comment: Optional[str]
+    """Any comment about the mapping (e.g., 'Curr/NonCurr ambiguity')."""
+
+    @property
+    def primary_concept(self) -> Optional[str]:
+        """Get the primary (first) standard concept."""
+        return self.standard_concepts[0] if self.standard_concepts else None
+
+    @property
+    def primary_display_name(self) -> Optional[str]:
+        """Get the primary (first) display name."""
+        return self.display_names[0] if self.display_names else None
+
+
+class ReverseIndex:
+    """
+    Reverse index for fast XBRL tag to standard concept lookups.
+
+    This class provides O(1) lookups from XBRL tags to standard concepts,
+    replacing the O(n×m) iteration in the current MappingStore.
+
+    Example:
+        >>> index = ReverseIndex()
+        >>> result = index.lookup("AccountsPayableCurrent")
+        >>> result.primary_concept
+        'TradePayables'
+        >>> result.primary_display_name
+        'Accounts Payable'
+        >>> result.is_ambiguous
+        False
+
+        >>> result = index.lookup("AccountsPayableCurrentAndNoncurrent")
+        >>> result.standard_concepts
+        ['TradePayables', 'OtherOperatingNonCurrentLiabilities']
+        >>> result.is_ambiguous
+        True
+    """
+
+    def __init__(self,
+                 gaap_mappings_path: Optional[str] = None,
+                 display_names_path: Optional[str] = None,
+                 total_membership_path: Optional[str] = None):
+        """
+        Initialize the reverse index.
+
+        Args:
+            gaap_mappings_path: Path to gaap_mappings.json. If None, uses default.
+            display_names_path: Path to display_names.json. If None, uses default.
+            total_membership_path: Path to total_membership.json. If None, uses default.
+        """
+        module_dir = os.path.dirname(os.path.abspath(__file__))
+
+        if gaap_mappings_path is None:
+            gaap_mappings_path = os.path.join(module_dir, "gaap_mappings.json")
+        if display_names_path is None:
+            display_names_path = os.path.join(module_dir, "display_names.json")
+        if total_membership_path is None:
+            total_membership_path = os.path.join(module_dir, "total_membership.json")
+
+        # Load the mappings
+        self._gaap_mappings: Dict[str, dict] = self._load_json(gaap_mappings_path)
+        self._display_names: Dict[str, str] = self._load_json(display_names_path)
+
+        # Closed membership of each total concept: the only index keys that may
+        # resolve to it (GH #1444).
+        self._total_members: Dict[str, frozenset] = {
+            concept: frozenset(keys)
+            for concept, keys in self._load_json(total_membership_path).get("totals", {}).items()
+        }
+
+        # Extract and store metadata from new-format concept_mappings
+        self._metadata: Optional[dict] = self._gaap_mappings.pop("_metadata", None)
+
+        # Build embedded display names from entries (new format has display_name per entry)
+        # Only use non-ambiguous entries or the primary (first) concept in ambiguous ones
+        self._embedded_display_names: Dict[str, str] = {}
+        for entry in self._gaap_mappings.values():
+            if isinstance(entry, dict) and entry.get("display_name"):
+                std_tags = entry.get("standard_tags", [])
+                if not entry.get("ambiguous") and len(std_tags) == 1:
+                    # Non-ambiguous: display_name directly describes this concept
+                    if std_tags[0] not in self._embedded_display_names:
+                        self._embedded_display_names[std_tags[0]] = entry["display_name"]
+
+        # Build the reverse index
+        self._index: Dict[str, dict] = self._gaap_mappings
+
+        # Cache for normalized lookups (strips namespace prefixes)
+        self._normalized_cache: Dict[str, str] = {}
+        self._build_normalized_cache()
+
+        # Statistics
+        self._stats = {
+            "total_mappings": len(self._index),
+            "ambiguous_count": sum(1 for v in self._index.values() if isinstance(v, dict) and v.get("ambiguous", False)),
+            "deprecated_count": sum(1 for v in self._index.values() if isinstance(v, dict) and v.get("deprecated")),
+            "excluded_count": len(EXCLUDED_TAGS),
+        }
+
+        logger.info(
+            "ReverseIndex initialized: %d mappings, %d ambiguous, %d deprecated, %d excluded",
+            self._stats["total_mappings"],
+            self._stats["ambiguous_count"],
+            self._stats["deprecated_count"],
+            self._stats["excluded_count"]
+        )
+
+    def _load_json(self, path: str) -> dict:
+        """Load a JSON file, returning empty dict on failure."""
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError) as e:
+            logger.warning("Failed to load %s: %s", path, e)
+            return {}
+
+    def _build_normalized_cache(self) -> None:
+        """Build cache mapping normalized tag names to original keys."""
+        for tag in self._index:
+            # Store lowercase version for case-insensitive lookup
+            self._normalized_cache[tag.lower()] = tag
+
+            # Also store with common prefixes stripped
+            for prefix in ("us-gaap:", "us-gaap_", "ifrs-full:", "ifrs-full_", "ifrs:", "dei:"):
+                if tag.lower().startswith(prefix.lower()):
+                    stripped = tag[len(prefix):]
+                    self._normalized_cache[stripped.lower()] = tag
+
+    def _normalize_tag(self, tag: str) -> Optional[str]:
+        """
+        Normalize an XBRL tag to match index keys.
+
+        Handles:
+        - Namespace prefixes (us-gaap:, us-gaap_, srt:, srt_, ifrs-full:, dei:)
+        - Case variations
+
+        Args:
+            tag: The XBRL tag to normalize
+
+        Returns:
+            The normalized tag key, or None if not found
+        """
+        # Direct match (fastest path)
+        if tag in self._index:
+            return tag
+
+        # IFRS tags are stored in the index WITH their prefix (161 of them), so
+        # the direct match above is the only correct lookup for one. Stripping
+        # the prefix and retrying can therefore only ever match a US-GAAP entry
+        # that happens to share the bare name -- a different taxonomy's concept,
+        # answering for this one. That is how ifrs-full:IntangibleAssetsAndGoodwill
+        # came back as "Total Non-Current Assets", by way of a GAAP fuzzy match
+        # it has nothing to do with (edgartools-gnx5).
+        if _is_ifrs_tag(tag):
+            # The separator still has to be canonicalised: the index keys use
+            # 'ifrs-full_', so a filing spelling it 'ifrs-full:Assets' must
+            # still find its own entry. It is only the GAAP fallback below that
+            # an IFRS tag must never reach.
+            canonical = _canonical_ifrs_key(tag)
+            if canonical in self._index:
+                return canonical
+            cache_key = canonical.lower()
+            if cache_key in self._normalized_cache:
+                return self._normalized_cache[cache_key]
+            return None
+
+        # Strip namespace prefix if present
+        normalized = tag
+        # SRT shares no element name with us-gaap, so a bare srt key cannot answer
+        # for a different taxonomy's concept the way a bare IFRS one could.
+        for prefix in ("us-gaap:", "us-gaap_", "srt:", "srt_", "dei:"):
+            if tag.startswith(prefix):
+                normalized = tag[len(prefix):]
+                break
+
+        # Check direct match after stripping
+        if normalized in self._index:
+            return normalized
+
+        # Case-insensitive lookup via cache
+        cache_key = normalized.lower()
+        if cache_key in self._normalized_cache:
+            return self._normalized_cache[cache_key]
+
+        return None
+
+    def _apply_industry_override(self, entry: dict, industry: str) -> dict:
+        """
+        Apply industry-specific overrides to a mapping entry.
+
+        If the entry has an industry_overrides dict with a key matching the
+        given industry code, merge those overrides into the base entry.
+
+        Args:
+            entry: The base mapping entry
+            industry: Fama-French 48 industry code (e.g., "Banks", "Chips")
+
+        Returns:
+            Entry with overrides applied (may be the original if no override)
+        """
+        overrides = entry.get("industry_overrides")
+        if not overrides or industry not in overrides:
+            return entry
+
+        override = overrides[industry]
+        # Merge: override fields take precedence over base entry
+        merged = dict(entry)
+        merged.pop("industry_overrides", None)  # Don't carry overrides into merged
+        for key, value in override.items():
+            merged[key] = value
+
+        # Update ambiguity flag based on override's standard_tags count
+        std_tags = merged.get("standard_tags", [])
+        if len(std_tags) == 1:
+            merged["ambiguous"] = False
+        elif len(std_tags) > 1:
+            merged["ambiguous"] = True
+
+        return merged
+
+    def lookup(self, xbrl_tag: str, industry: Optional[str] = None) -> Optional[MappingResult]:
+        """
+        Look up an XBRL tag in the reverse index.
+
+        Args:
+            xbrl_tag: The XBRL tag to look up (with or without namespace prefix)
+            industry: Optional Fama-French 48 industry code (e.g., "Banks") for
+                     industry-specific overrides
+
+        Returns:
+            MappingResult with standard concepts and display names, or None if not found
+        """
+        # Check if excluded first
+        if should_exclude(xbrl_tag):
+            return None
+
+        # Normalize the tag
+        normalized = self._normalize_tag(xbrl_tag)
+        if normalized is None:
+            return None
+
+        # Get the mapping entry
+        entry = self._index.get(normalized)
+        if entry is None:
+            return None
+
+        # Apply industry overrides if industry is known
+        if industry and isinstance(entry, dict):
+            entry = self._apply_industry_override(entry, industry)
+
+        # Extract data from entry
+        standard_tags = entry.get("standard_tags", [])
+        is_ambiguous = entry.get("ambiguous", False)
+        deprecated = entry.get("deprecated")
+        comment = entry.get("comment")
+
+        # Resolve display names: prefer embedded display_name, then display_names.json, then concept name
+        display_names = []
+        for tag in standard_tags:
+            dn = self._embedded_display_names.get(tag) or self._display_names.get(tag, tag)
+            display_names.append(dn)
+
+        # A tag that is not itself a total must not resolve to a TOTAL concept.
+        # The generated mappings assign fuzzy matches a total concept regardless
+        # of what the tag means, and the consumer surfaced those as
+        # authoritative: us-gaap:BankOwnedLifeInsurance resolved to "Total
+        # Assets" at confidence 0.319, so a standardized balance sheet returned
+        # several rows all claiming to be total assets and taking the first gave
+        # $7.9B instead of $226.4B for Citizens Financial (edgartools-gnx5).
+        #
+        # A total concept listed in total_membership.json is closed: it is
+        # returned only for the keys listed under it (GH #1444). The older
+        # signals could not express that. `is_total` is a usage statistic, not a
+        # property of the element (LimitedPartnersCapitalAccount carries True
+        # and resolved to "Total Stockholders' Equity"), and only display names
+        # starting with "Total" were guarded, so "Net Cash from Operating
+        # Activities", "Revenue" and "Operating Income" took 94 parts between
+        # them. The list is applied after any industry override, so an override
+        # cannot reopen a total either.
+        #
+        # A total concept the list does not know keeps the earlier rule: an
+        # entry with is_total False does not resolve to a concept displayed
+        # "Total ...". A MISSING is_total is not treated as False: those are the
+        # ifrs-full_ entries, which carry no such metadata.
+        kept = [
+            (tag, dn) for tag, dn in zip(standard_tags, display_names, strict=True)
+            if self._may_resolve_to(normalized, entry, tag, dn)
+        ]
+        if len(kept) != len(standard_tags) or (not standard_tags and entry.get("is_total") is False):
+            if not kept:
+                # Every candidate was a total this tag is not a member of. No
+                # mapping is the right answer; a wrong total is worse than a
+                # missing one, because a caller cannot tell it is wrong.
+                return None
+            standard_tags = [tag for tag, _ in kept]
+            display_names = [dn for _, dn in kept]
+
+        return MappingResult(
+            standard_concepts=standard_tags,
+            display_names=display_names,
+            is_ambiguous=is_ambiguous,
+            is_deprecated=bool(deprecated),
+            deprecated_year=deprecated if deprecated else None,
+            comment=comment,
+        )
+
+    def _may_resolve_to(self, key: str, entry: dict, concept: str, display_name: str) -> bool:
+        """Whether the index entry `key` may resolve to `concept` (the total guard in lookup())."""
+        members = self._total_members.get(concept)
+        if members is not None:
+            return key in members
+        return not (entry.get("is_total") is False and _denotes_total(display_name))
+
+    def get_standard_concept(
+        self,
+        xbrl_tag: str,
+        context: Optional[Dict] = None,
+        log_ambiguous: bool = False,
+        industry: Optional[str] = None
+    ) -> Optional[str]:
+        """
+        Get the standard concept for an XBRL tag.
+
+        This is the primary lookup method for standardization.
+        For ambiguous tags, uses context (section, balance type) to disambiguate.
+
+        Args:
+            xbrl_tag: The XBRL tag to look up
+            context: Optional context for disambiguation:
+                     - section: Balance sheet section (e.g., "Current Assets")
+                     - balance: Debit/credit balance type
+                     - statement_type: Type of statement
+            log_ambiguous: If True, log ambiguous resolutions to UnmappedTagLogger
+            industry: Optional Fama-French 48 industry code (e.g., "Banks") for
+                     industry-specific overrides
+
+        Returns:
+            The standard concept name, or None if not found/excluded
+        """
+        result = self.lookup(xbrl_tag, industry=industry)
+        if result is None:
+            return None
+
+        # Non-ambiguous tags: return primary concept
+        if not result.is_ambiguous:
+            return result.primary_concept
+
+        # Ambiguous tags: try to disambiguate using context
+        resolution_method = "fallback"
+        resolved = None
+
+        if context and len(result.standard_concepts) > 1:
+            resolved = self._disambiguate_by_context(
+                xbrl_tag, result.standard_concepts, context
+            )
+            if resolved:
+                # Determine resolution method for logging
+                if context.get('is_total'):
+                    resolution_method = "is_total"
+                elif context.get('section'):
+                    resolution_method = "section"
+                logger.debug(
+                    "Disambiguated %s to %s using context (section=%s)",
+                    xbrl_tag, resolved, context.get('section')
+                )
+
+        # Use fallback if disambiguation failed
+        if not resolved:
+            resolved = result.primary_concept
+            resolution_method = "fallback"
+            logger.debug(
+                "Ambiguous tag %s maps to %s - using first candidate",
+                xbrl_tag, result.standard_concepts
+            )
+
+        # Log ambiguous resolution if requested (Phase 5)
+        if log_ambiguous:
+            try:
+                from .unmapped_logger import log_ambiguous as log_amb
+                log_amb(
+                    concept=xbrl_tag,
+                    label=context.get('label', '') if context else '',
+                    candidates=result.standard_concepts,
+                    resolved_to=resolved,
+                    resolution_method=resolution_method,
+                    statement_type=context.get('statement_type') if context else None,
+                    section=context.get('section') if context else None,
+                    confidence=1.0 if resolution_method != "fallback" else 0.5,
+                )
+            except Exception as e:
+                logger.debug("Failed to log ambiguous resolution: %s", e)
+
+        return resolved
+
+    def _disambiguate_by_context(
+        self,
+        xbrl_tag: str,
+        candidates: List[str],
+        context: Dict
+    ) -> Optional[str]:
+        """
+        Disambiguate between candidate concepts using context.
+
+        Phase 3/4: Uses section membership, entry metadata, and label clues
+        to resolve ambiguous tags.
+
+        Args:
+            xbrl_tag: The original XBRL tag
+            candidates: List of possible standard concepts
+            context: Context dict with section, balance, statement_type, is_total
+
+        Returns:
+            The resolved concept, or None if disambiguation failed
+        """
+        section = context.get('section')
+        statement_type = context.get('statement_type', 'BalanceSheet')
+        is_total = context.get('is_total', False)
+
+        # Get the mapping entry for this tag (may have section/is_total/confidence metadata)
+        normalized = self._normalize_tag(xbrl_tag)
+        entry = self._index.get(normalized, {}) if normalized else {}
+        entry_section = entry.get('section') if isinstance(entry, dict) else None
+        entry_is_total = entry.get('is_total') if isinstance(entry, dict) else None
+        # Deliberately no confidence read here. The value was fetched and never
+        # used, which read as though low-confidence mappings were being weighed
+        # when nothing weighed them. They are handled where it is safe to do so,
+        # by `is_total` in lookup(); a numeric threshold cannot be applied at
+        # this layer without discarding legitimate totals (edgartools-gnx5).
+
+        try:
+            from .sections import get_section_for_concept
+
+            # Phase 4: Special case - if is_total is True (from context or entry), prefer "Total" concepts
+            if is_total or entry_is_total:
+                for candidate in candidates:
+                    if 'total' in candidate.lower():
+                        logger.debug(
+                            "Disambiguated %s to %s (is_total=True)",
+                            xbrl_tag, candidate
+                        )
+                        return candidate
+
+            # The statement section, when the caller knows it, decides first.
+            # A ...CurrentAndNoncurrent element can sit in either section, so
+            # its name must not override where the filer actually put it (#1434).
+            # A role URI is not a section_membership key, so fall back to the
+            # untyped lookup instead of treating the section as unknown.
+            if section:
+                for candidate in candidates:
+                    candidate_section = (
+                        get_section_for_concept(candidate, statement_type)
+                        or get_section_for_concept(candidate)
+                    )
+                    if candidate_section and self._sections_match(section, candidate_section):
+                        return candidate
+
+            # Phase 3+: Use tag name hints for current/noncurrent disambiguation.
+            # 'nonoperating' is not 'noncurrent': OtherNonOperatingCurrentAssets is current.
+            tag_lower = xbrl_tag.lower()
+            unclassified = 'currentandnoncurrent' in tag_lower
+            if not unclassified and any(hint in tag_lower for hint in ('noncurrent', 'longterm', 'long_term')):
+                for candidate in candidates:
+                    cl = candidate.lower()
+                    if 'noncurrent' in cl or 'longterm' in cl:
+                        return candidate
+            elif not unclassified and 'current' in tag_lower and 'noncurrent' not in tag_lower:
+                for candidate in candidates:
+                    cl = candidate.lower()
+                    if 'current' in cl and 'noncurrent' not in cl:
+                        return candidate
+
+            # Use entry-level section for disambiguation if context section is missing
+            effective_section = section or entry_section
+            if not effective_section:
+                return None
+
+            # Find which candidate belongs in this section
+            for candidate in candidates:
+                candidate_section = get_section_for_concept(candidate, statement_type)
+                if candidate_section and self._sections_match(effective_section, candidate_section):
+                    return candidate
+
+            # Secondary: check if section name is in concept name.
+            # 'non-current' contains 'current', so the noncurrent spellings
+            # have to be tested first. 'long-term' / 'longterm' are noncurrent.
+            section_lower = effective_section.lower()
+            section_compact = section_lower.replace('-', '').replace(' ', '').replace('_', '')
+            section_is_noncurrent = (
+                'non-current' in section_lower
+                or 'noncurrent' in section_lower
+                or 'non current' in section_lower
+                or 'long-term' in section_lower
+                or 'longterm' in section_compact
+            )
+            for candidate in candidates:
+                candidate_lower = candidate.lower()
+                if section_is_noncurrent:
+                    if 'noncurrent' in candidate_lower or 'longterm' in candidate_lower:
+                        return candidate
+                elif 'current' in section_lower:
+                    if 'current' in candidate_lower and 'noncurrent' not in candidate_lower:
+                        return candidate
+
+        except Exception as e:
+            logger.debug("Disambiguation failed for %s: %s", xbrl_tag, e)
+
+        return None
+
+    def _sections_match(self, context_section: str, concept_section: str) -> bool:
+        """Check if two section names match (handles variations)."""
+        if not context_section or not concept_section:
+            return False
+
+        # Normalize for comparison
+        ctx = context_section.lower().replace('-', ' ').replace('_', ' ')
+        cpt = concept_section.lower().replace('-', ' ').replace('_', ' ')
+
+        # Direct match
+        if ctx == cpt:
+            return True
+
+        # Determine if sections are current vs non-current.
+        # 'long term' / 'longterm' name the noncurrent side. Hyphens and
+        # underscores are already spaces, so 'long-term' is 'long term'.
+        ctx_is_noncurrent = (
+            'non current' in ctx
+            or 'noncurrent' in ctx
+            or ('non' in ctx and 'current' in ctx)
+            or 'long term' in ctx
+            or 'longterm' in ctx.replace(' ', '')
+        )
+        ctx_is_current = (
+            'current' in ctx
+            and 'non' not in ctx.split('current')[0]
+            and not ctx_is_noncurrent
+        )
+
+        cpt_is_noncurrent = (
+            'non current' in cpt
+            or 'noncurrent' in cpt
+            or ('non' in cpt and 'current' in cpt)
+            or 'long term' in cpt
+            or 'longterm' in cpt.replace(' ', '')
+        )
+        cpt_is_current = (
+            'current' in cpt
+            and 'non' not in cpt.split('current')[0]
+            and not cpt_is_noncurrent
+        )
+
+        # Current vs Non-Current must match
+        if ctx_is_current != cpt_is_current:
+            return False
+        if ctx_is_noncurrent != cpt_is_noncurrent:
+            return False
+
+        # Check asset/liability type
+        ctx_is_asset = 'asset' in ctx
+        ctx_is_liability = 'liabilit' in ctx
+        cpt_is_asset = 'asset' in cpt
+        cpt_is_liability = 'liabilit' in cpt
+
+        # If both specify asset/liability, they must match
+        if ctx_is_asset and cpt_is_liability:
+            return False
+        if ctx_is_liability and cpt_is_asset:
+            return False
+
+        # Current Assets match
+        if ctx_is_current and cpt_is_current and ctx_is_asset and cpt_is_asset:
+            return True
+
+        # Current Liabilities match
+        if ctx_is_current and cpt_is_current and ctx_is_liability and cpt_is_liability:
+            return True
+
+        # Non-Current Assets match
+        if ctx_is_noncurrent and cpt_is_noncurrent and ctx_is_asset and cpt_is_asset:
+            return True
+
+        # Non-Current Liabilities match
+        if ctx_is_noncurrent and cpt_is_noncurrent and ctx_is_liability and cpt_is_liability:
+            return True
+
+        return False
+
+    def get_display_name(self, xbrl_tag: str, context: Optional[Dict] = None,
+                         industry: Optional[str] = None) -> Optional[str]:
+        """
+        Get the user-friendly display name for an XBRL tag.
+
+        Args:
+            xbrl_tag: The XBRL tag to look up
+            context: Optional context for disambiguation:
+                     - section: Balance sheet section (e.g., "Current Assets")
+                     - balance: Debit/credit balance type
+                     - statement_type: Type of statement
+            industry: Optional Fama-French 48 industry code for overrides
+
+        Returns:
+            The display name, or None if not found/excluded
+        """
+        result = self.lookup(xbrl_tag, industry=industry)
+        if result is None:
+            return None
+
+        # Non-ambiguous tags: return primary display name
+        if not result.is_ambiguous:
+            return result.primary_display_name
+
+        # Ambiguous tags: try to disambiguate using context
+        if context and len(result.standard_concepts) > 1:
+            resolved = self._disambiguate_by_context(
+                xbrl_tag, result.standard_concepts, context
+            )
+            if resolved:
+                # Return display name: prefer embedded, then display_names.json
+                return (self._embedded_display_names.get(resolved)
+                        or self._display_names.get(resolved, resolved))
+
+        return result.primary_display_name
+
+    def is_excluded(self, xbrl_tag: str) -> bool:
+        """Check if an XBRL tag should be excluded from standardization."""
+        return should_exclude(xbrl_tag)
+
+    def is_ambiguous(self, xbrl_tag: str) -> bool:
+        """Check if an XBRL tag is ambiguous (maps to multiple concepts)."""
+        result = self.lookup(xbrl_tag)
+        return result.is_ambiguous if result else False
+
+    def get_ambiguous_candidates(self, xbrl_tag: str) -> List[Tuple[str, str]]:
+        """
+        Get all candidate mappings for an ambiguous tag.
+
+        Args:
+            xbrl_tag: The XBRL tag to look up
+
+        Returns:
+            List of (standard_concept, display_name) tuples
+        """
+        result = self.lookup(xbrl_tag)
+        if result is None:
+            return []
+
+        return list(zip(result.standard_concepts, result.display_names, strict=True))
+
+    def concept_to_display_name(self, standard_concept: str) -> str:
+        """
+        Convert a standard concept to its display name.
+
+        Args:
+            standard_concept: The mpreiss9 standard concept name
+
+        Returns:
+            The user-friendly display name, or the concept itself if no mapping
+        """
+        return (self._embedded_display_names.get(standard_concept)
+                or self._display_names.get(standard_concept, standard_concept))
+
+    @property
+    def metadata(self) -> Optional[dict]:
+        """Get metadata about the mapping source (version, build date, etc.)."""
+        return self._metadata.copy() if self._metadata else None
+
+    @property
+    def stats(self) -> Dict[str, int]:
+        """Get statistics about the reverse index."""
+        return self._stats.copy()
+
+    def __len__(self) -> int:
+        """Return the number of mappings in the index."""
+        return len(self._index)
+
+    def __contains__(self, xbrl_tag: str) -> bool:
+        """Check if an XBRL tag is in the index."""
+        if should_exclude(xbrl_tag):
+            return False
+        return self._normalize_tag(xbrl_tag) is not None
+
+
+# Module-level singleton for convenience
+_default_index: Optional[ReverseIndex] = None
+
+
+def get_reverse_index() -> ReverseIndex:
+    """
+    Get the default reverse index singleton.
+
+    Returns:
+        The default ReverseIndex instance
+    """
+    global _default_index
+    if _default_index is None:
+        _default_index = ReverseIndex()
+    return _default_index
+
+
+def lookup(xbrl_tag: str) -> Optional[MappingResult]:
+    """
+    Convenience function to look up an XBRL tag.
+
+    Args:
+        xbrl_tag: The XBRL tag to look up
+
+    Returns:
+        MappingResult or None
+    """
+    return get_reverse_index().lookup(xbrl_tag)
+
+
+def get_standard_concept(
+    xbrl_tag: str,
+    context: Optional[Dict] = None,
+    log_ambiguous: bool = False,
+    industry: Optional[str] = None
+) -> Optional[str]:
+    """
+    Convenience function to get standard concept for an XBRL tag.
+
+    Args:
+        xbrl_tag: The XBRL tag to look up
+        context: Optional context for disambiguation
+        log_ambiguous: If True, log ambiguous resolutions to UnmappedTagLogger
+        industry: Optional Fama-French 48 industry code for overrides
+
+    Returns:
+        Standard concept name or None
+    """
+    return get_reverse_index().get_standard_concept(xbrl_tag, context, log_ambiguous, industry=industry)
+
+
+def get_display_name(xbrl_tag: str, context: Optional[Dict] = None,
+                     industry: Optional[str] = None) -> Optional[str]:
+    """
+    Convenience function to get display name for an XBRL tag.
+
+    Args:
+        xbrl_tag: The XBRL tag to look up
+        context: Optional context for disambiguation
+        industry: Optional Fama-French 48 industry code for overrides
+
+    Returns:
+        Display name or None
+    """
+    return get_reverse_index().get_display_name(xbrl_tag, context, industry=industry)

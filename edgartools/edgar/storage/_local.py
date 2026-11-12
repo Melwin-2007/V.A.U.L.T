@@ -1,0 +1,1114 @@
+import os
+import re
+from datetime import date, datetime, timedelta
+from pathlib import Path
+from typing import TYPE_CHECKING, List, Optional, Union
+
+if TYPE_CHECKING:
+    from edgar._filings import Filings
+    from edgar.filesystem import EdgarPath
+
+import pandas as pd
+from httpx2 import AsyncClient, HTTPStatusError
+from tqdm.auto import tqdm
+
+from edgar.core import log, run_async_or_sync, strtobool
+from edgar.dates import extract_dates, filing_date_to_year_quarters
+from edgar.exceptions import EdgarError, TransportError, ValidationError, http_status
+from edgar.httprequests import download_bulk_data, download_datafile, download_text, inspect_response
+from edgar.settings import get_edgar_data_directory
+from edgar.urls import build_company_tickers_exchange_url, build_company_tickers_url, build_mutual_fund_tickers_url, build_ticker_url
+
+
+def _run_coroutine(coroutine):
+    """Run an async coroutine from sync code, also when an event loop is already running (e.g. Jupyter)."""
+    return run_async_or_sync(coroutine)
+
+
+__all__ = ['download_edgar_data',
+           'download_submissions',
+           'download_submissions_async',
+           'get_edgar_data_directory',
+           'use_local_storage',
+           'is_using_local_storage',
+           'is_network_fallback_allowed',
+           'set_local_storage_path',
+           'download_filings',
+           'local_filing_path',
+           'resolve_local_filing_path',
+           'check_filings_exist_locally',
+           '_filter_extracted_files',
+           'compress_filing',
+           'decompress_filing',
+           'compress_all_filings',
+           'is_compressed_file',
+           'DirectoryBrowsingNotAllowed',
+           'list_filing_feed_files',
+           'list_filing_feed_files_for_quarter',
+           'is_feed_file_in_date_range',
+           'get_sec_file_listing',
+           'parse_file_size',
+           'latest_filing_date']
+
+
+class DirectoryBrowsingNotAllowed(EdgarError):
+
+    def __init__(self, url: str, message: str = "Directory browsing is not allowed for this URL."):
+        super().__init__(f"{message} \nurl: {url}")
+        self.url = url
+
+def use_local_storage(path_or_enable: Union[bool, str, Path, None] = True,
+                      use_local: Optional[bool] = None,
+                      allow_network_fallback: bool = True):
+    """
+    Enable or disable local storage, optionally setting the storage path.
+
+    This function supports multiple calling patterns for convenience:
+
+    Args:
+        path_or_enable: Can be:
+            - bool: Enable (True) or disable (False) local storage
+            - str/Path: Path to storage directory (enables local storage)
+            - None: Use default behavior
+        use_local: Optional boolean to explicitly set enable/disable state.
+                  Only used when path_or_enable is a path.
+        allow_network_fallback: If True (default), allow network requests when
+                  local data is incomplete (e.g. missing XBRL instance documents
+                  in pre-Oct 2020 SEC feed files). Network fallback is logged
+                  so you know when it happens. Set to False for strict offline mode.
+
+    Raises:
+        FileNotFoundError: If path is provided but does not exist.
+        NotADirectoryError: If path exists but is not a directory.
+
+    Examples:
+        >>> # Simple enable/disable (backward compatible)
+        >>> use_local_storage(True)
+        >>> use_local_storage(False)
+        >>> use_local_storage()  # defaults to True
+
+        >>> # Set path and enable (new intuitive syntax)
+        >>> use_local_storage("~/Documents/edgar")
+        >>> use_local_storage("/tmp/edgar_data")
+        >>> use_local_storage(Path.home() / "edgar")
+
+        >>> # Set path and explicitly control enable/disable
+        >>> use_local_storage("/tmp/edgar", True)   # enable
+        >>> use_local_storage("/tmp/edgar", False)  # set path but disable
+
+        >>> # Strict offline mode — no network requests at all
+        >>> use_local_storage("/tmp/edgar", allow_network_fallback=False)
+    """
+    # Determine the actual values based on parameter types
+    if isinstance(path_or_enable, bool):
+        # Backward compatible: use_local_storage(True/False)
+        enable = path_or_enable
+        path = None
+    elif isinstance(path_or_enable, (str, Path)):
+        # New syntax: use_local_storage("/path/to/storage")
+        path = path_or_enable
+        enable = use_local if use_local is not None else True
+    elif path_or_enable is None:
+        # use_local_storage() - default behavior
+        enable = True
+        path = None
+    else:
+        raise TypeError(f"First parameter must be bool, str, Path, or None, got {type(path_or_enable)}")
+
+    # If a path is provided and we're enabling local storage, set the path first
+    if path is not None and enable:
+        set_local_storage_path(path)
+
+    # Set the local storage flag
+    os.environ['EDGAR_USE_LOCAL_DATA'] = "1" if enable else "0"
+
+    # Set the network fallback flag
+    os.environ['EDGAR_ALLOW_NETWORK_FALLBACK'] = "1" if allow_network_fallback else "0"
+
+
+def is_using_local_storage() -> bool:
+    """
+    Returns True if using local storage
+    """
+    return strtobool(os.getenv('EDGAR_USE_LOCAL_DATA', "False"))
+
+
+def is_network_fallback_allowed() -> bool:
+    """
+    Returns True if network fallback is allowed when local data is incomplete.
+    Defaults to True — network requests are permitted when local data is missing,
+    but each fallback is logged so the user knows when it happens.
+    """
+    return strtobool(os.getenv('EDGAR_ALLOW_NETWORK_FALLBACK', "True"))
+
+
+def set_local_storage_path(path: Union[str, Path]) -> None:
+    """
+    Set the local storage path for Edgar data.
+
+    This function provides a programmatic way to set the local storage directory,
+    equivalent to setting the EDGAR_LOCAL_DATA_DIR environment variable.
+
+    Args:
+        path: Path to the directory where Edgar data should be stored.
+              Can be a string or Path object. The directory must already exist.
+
+    Raises:
+        FileNotFoundError: If the specified directory does not exist.
+        NotADirectoryError: If the path exists but is not a directory.
+
+    Example:
+        >>> # First create the directory
+        >>> os.makedirs("/tmp/edgar_data", exist_ok=True)
+        >>> set_local_storage_path("/tmp/edgar_data")
+        >>>
+        >>> # Or use an existing directory
+        >>> set_local_storage_path(Path.home() / "Documents")
+    """
+    from pathlib import Path
+
+    # Convert to Path object and resolve to absolute path
+    storage_path = Path(path).expanduser().resolve()
+
+    # Validate that the directory exists
+    if not storage_path.exists():
+        raise FileNotFoundError(f"Directory does not exist: {storage_path}")
+
+    # Validate that it's actually a directory
+    if not storage_path.is_dir():
+        raise NotADirectoryError(f"Path exists but is not a directory: {storage_path}")
+
+    # Set the environment variable
+    os.environ['EDGAR_LOCAL_DATA_DIR'] = str(storage_path)
+
+
+async def download_facts_async(client: Optional[AsyncClient], disable_progress: bool = False) -> Path:
+    """
+    Download company facts
+
+    Args:
+        client: Optional AsyncClient instance
+        disable_progress: If True, suppress progress bars. Defaults to False.
+    """
+    from edgar.config import SEC_ARCHIVE_URL
+    log.info(f"Downloading Company facts to {get_edgar_data_directory()}/companyfacts")
+
+    return await download_bulk_data(client=client, url=f"{SEC_ARCHIVE_URL}/daily-index/xbrl/companyfacts.zip", disable_progress=disable_progress)
+
+def download_facts(disable_progress: bool = False) -> Path:
+    """
+    Download company facts
+
+    Args:
+        disable_progress: If True, suppress progress bars. Defaults to False.
+    """
+
+    return _run_coroutine(download_facts_async(client=None, disable_progress=disable_progress))
+
+async def download_submissions_async(client: Optional[AsyncClient], disable_progress: bool = False) -> Path:
+    """
+    Download company submissions
+
+    Args:
+        client: Optional AsyncClient instance
+        disable_progress: If True, suppress progress bars. Defaults to False.
+    """
+    from edgar.config import SEC_ARCHIVE_URL
+    log.info(f"Downloading Company submissions to {get_edgar_data_directory()}/submissions")
+
+    return await download_bulk_data(client=client, url=f"{SEC_ARCHIVE_URL}/daily-index/bulkdata/submissions.zip", disable_progress=disable_progress)
+
+
+def download_submissions(disable_progress: bool = False) -> Path:
+    """
+    Download company submissions
+
+    Args:
+        disable_progress: If True, suppress progress bars. Defaults to False.
+    """
+    return _run_coroutine(download_submissions_async(client=None, disable_progress=disable_progress))
+
+def download_ticker_data(reference_data_directory: Path):
+    """
+    Download reference data from the SEC website.
+    """
+    log.info(f"Downloading ticker data to {reference_data_directory}")
+    download_datafile(build_ticker_url(), reference_data_directory)
+    download_datafile(build_company_tickers_url(), reference_data_directory)
+    download_datafile(build_mutual_fund_tickers_url(), reference_data_directory)
+    download_datafile(build_company_tickers_exchange_url(), reference_data_directory)
+
+
+def download_reference_data():
+    """
+    Download reference data from the SEC website.
+    """
+    log.info(f"Downloading reference data to {get_edgar_data_directory()}")
+    reference_directory = get_edgar_data_directory() / "reference"
+    reference_directory.mkdir(exist_ok=True)
+    download_ticker_data(reference_directory)
+
+def download_edgar_data(submissions: bool = True,
+                        facts: bool = True,
+                        reference: bool = True,
+                        disable_progress: bool = False):
+    """
+    Download Edgar bulk data (metadata) to the local storage directory.
+
+    This downloads INDEX/METADATA only - NOT actual filing documents.
+    For offline access to filing.xbrl() or filing content, use download_filings().
+
+    What this function downloads:
+        - submissions: Company metadata and filing indexes (~5 GB)
+        - facts: Pre-processed financial facts from SEC's CompanyFacts API (~2 GB)
+        - reference: Ticker/CIK mappings, exchange data (~50 MB)
+
+    What this does NOT download:
+        - Actual filing documents (10-K, 10-Q HTML/XML content)
+        - XBRL files needed for filing.xbrl()
+        - Filing attachments and exhibits
+
+    For complete offline capability including XBRL parsing, also run:
+        download_filings('YYYY-MM-DD')  # Downloads actual filing documents
+
+    Args:
+        submissions: Download submissions. Defaults to True.
+        facts: Download facts. Defaults to True.
+        reference: Download reference data. Defaults to True.
+        disable_progress: If True, suppress progress bars. Defaults to False.
+    """
+    log.info("Downloading SEC bulk data (metadata/indexes). "
+             "Note: This does NOT include filing documents needed for filing.xbrl(). "
+             "Use download_filings() for that.")
+
+    if submissions:
+        download_submissions(disable_progress=disable_progress)
+    if facts:
+        download_facts(disable_progress=disable_progress)
+    if reference:
+        download_reference_data()
+
+    log.info("Bulk data download complete. For offline XBRL access, also run: "
+             "download_filings('YYYY-MM-DD')")
+
+
+def download_filings(filing_date: Optional[str] = None,
+                     data_directory: Optional[str] = None,
+                     overwrite_existing:bool=False,
+                     filings: Optional['Filings'] = None,
+                     compress: bool = True,
+                     compression_level: int = 6,
+                     upload_to_cloud: bool = False,
+                     disable_progress: bool = False,
+                     source: str = 'submission'):
+    """
+    Download filings into local storage, for a date or date range or for specific filings.
+    Optionally compresses the stored files to save disk space.
+
+    Examples
+
+    download_filings('2025-01-03:')
+    download_filings('2025-01-03', overwrite_existing=False)
+    download_filings('2024-01-01:2025-01-05', overwrite_existing=True)
+    download_filings(filings=my_filings_object)
+    download_filings(filings=my_filings_object, source='feed')
+    download_filings('2025-01-03', compress=True, compression_level=9)  # Maximum compression
+    download_filings('2025-01-03', upload_to_cloud=True)  # Upload to cloud after download
+    download_filings('2025-01-03', disable_progress=True)  # Suppress progress bars for logging
+
+    A date or date range downloads SEC's daily feed files, which hold every filing
+    disseminated that day. A feed file on a busy day is several GB.
+
+    With ``filings``, only those filings are downloaded. By default each one is
+    fetched as its own full submission file, the same file ``Filing.sgml()`` reads
+    from SEC, so a 10-K costs tens of MB rather than its day's feed file.
+    ``source='feed'`` downloads the feed file for each filing's date instead and keeps
+    only the requested filings from it; that downloads far more, and is only worth it
+    when the filings make up a large share of the days they were filed on.
+
+    Args:
+        filing_date: String in format 'YYYY-MM-DD', 'YYYY-MM-DD:', ':YYYY-MM-DD',
+                    or 'YYYY-MM-DD:YYYY-MM-DD'. With ``filings``, only the filings filed in
+                    this range are downloaded.
+        data_directory: Directory to save the downloaded files. Defaults to the Edgar data directory.
+        overwrite_existing: If True, download again what is already stored. Default is False.
+        filings: Optional Filings object. If provided, only these filings are downloaded.
+        compress: Whether to compress the stored files to save disk space. Default is True.
+        compression_level: Compression level for gzip (1-9, with 9 being highest compression). Default is 6.
+        upload_to_cloud: If True, upload downloaded filings to cloud storage after download.
+            Requires cloud storage to be configured via use_cloud_storage(). Default is False.
+        disable_progress: If True, suppress progress bars. Useful for logging environments where progress
+            updates create excessive log entries. Default is False.
+        source: With ``filings``, where each filing comes from: 'submission' (default) fetches
+            each filing on its own; 'feed' downloads the daily feed files that contain them.
+            Ignored without ``filings``.
+    """
+    if source not in ('submission', 'feed'):
+        raise ValidationError(f"source must be 'submission' or 'feed', not {source!r}")
+
+    if not data_directory:
+        data_directory = get_edgar_data_directory() / 'filings'
+        log.info('Using data directory: %s', data_directory)
+    data_directory = Path(data_directory)
+
+    if filings is not None:
+        if filing_date:
+            filings = filings.filter(filing_date=filing_date)
+            log.info('Using the %d filings filed in %s', len(filings), filing_date)
+        log.info('Downloading %d filings from %s', len(filings),
+                 'their submission files' if source == 'submission' else 'the daily feed files')
+        if source == 'submission':
+            _download_filing_submissions(filings, data_directory,
+                                         overwrite_existing=overwrite_existing,
+                                         compress=compress,
+                                         compression_level=compression_level,
+                                         disable_progress=disable_progress)
+        else:
+            _download_feed_files_for_filings(filings, data_directory,
+                                             overwrite_existing=overwrite_existing,
+                                             compress=compress,
+                                             compression_level=compression_level,
+                                             disable_progress=disable_progress)
+    else:
+        _download_feed_files_for_dates(filing_date, data_directory,
+                                       overwrite_existing=overwrite_existing,
+                                       compress=compress,
+                                       compression_level=compression_level,
+                                       disable_progress=disable_progress)
+
+
+    # Upload to cloud if requested
+    if upload_to_cloud:
+        from edgar.filesystem import is_cloud_storage_enabled, sync_to_cloud
+
+        if not is_cloud_storage_enabled():
+            log.warning('upload_to_cloud=True but cloud storage is not configured. '
+                       'Call use_cloud_storage() first to configure cloud storage.')
+        else:
+            log.info('Uploading filings to cloud storage...')
+            # Compute relative path from edgar data directory for sync
+            edgar_data_dir = get_edgar_data_directory()
+            try:
+                sync_path = str(Path(data_directory).relative_to(edgar_data_dir))
+            except ValueError:
+                # data_directory is outside edgar data dir - warn and skip
+                log.warning('Cannot upload to cloud: data_directory %s is outside edgar data directory %s',
+                           data_directory, edgar_data_dir)
+                sync_path = None
+
+            if sync_path:
+                result = sync_to_cloud(sync_path, overwrite=overwrite_existing)
+                log.info('Cloud upload complete. Uploaded: %d, Skipped: %d, Failed: %d',
+                        result['uploaded'], result['skipped'], result['failed'])
+                if result['errors']:
+                    for error in result['errors'][:5]:
+                        log.warning('Upload error: %s', error)
+                    if len(result['errors']) > 5:
+                        log.warning('... and %d more errors', len(result['errors']) - 5)
+
+
+
+def _download_feed_files_for_dates(filing_date: Optional[str],
+                                   data_directory: Path,
+                                   overwrite_existing: bool,
+                                   compress: bool,
+                                   compression_level: int,
+                                   disable_progress: bool) -> None:
+    """Download every daily feed file in a date or date range."""
+    # Use default date if not specified
+    if not filing_date:
+        filing_date = latest_filing_date()
+        log.info('No filing date specified. Using latest filing date: %s', filing_date)
+
+    start_date_tm, end_date_tm, _ = extract_dates(filing_date)
+    total_feed_files_downloaded = 0
+
+    for year, quarter in filing_date_to_year_quarters(filing_date):
+        log.info('Downloading feed files for %d Q%d', year, quarter)
+        feed_files = list_filing_feed_files_for_quarter(year, quarter)
+        log.info('Found %d total feed files', len(feed_files))
+
+        filtered_files = feed_files[
+            feed_files['Name'].apply(
+                lambda x: is_feed_file_in_date_range(x, start_date_tm, end_date_tm)
+            )
+        ]
+        log.info('Found %d feed files in date range', len(filtered_files))
+        if filtered_files.empty:
+            log.info('No feed files found for %d Q%d in date range %s', year, quarter, filing_date)
+            continue
+
+        for _, row in tqdm(filtered_files.iterrows(), desc='Downloading feed file(s)', disable=disable_progress):
+            bulk_file_directory = data_directory / row['Name'][:8]
+            if not overwrite_existing and bulk_file_directory.exists():
+                log.warning('Skipping %s. Already exists', bulk_file_directory)
+                continue
+
+            path = _run_coroutine(download_bulk_data(client=None, url=row['File'], data_directory=data_directory,
+                                                     disable_progress=disable_progress))
+            log.info('Downloaded feed file to %s', path)
+            total_feed_files_downloaded += 1
+
+            if compress and path.exists():
+                log.info('Compressing all extracted files')
+                for file_path in path.glob('*.nc'):
+                    if not is_compressed_file(file_path):
+                        try:
+                            compress_filing(file_path, compression_level=compression_level)
+                        except Exception as e:
+                            log.warning(f"Failed to compress {file_path}: {e}")
+
+    log.info('Download complete. Downloaded %d feed files.', total_feed_files_downloaded)
+
+
+def _stored_filing_path(data_directory: Path, filing_date: date, accession_number: str) -> Optional[Path]:
+    """The stored bundle for a filing under data_directory, or None.
+
+    Looks in the filing date's folder first, then in the adjacent days a feed file
+    can file it under, as resolve_local_filing_path does on the read side.
+    """
+    for offset in (0, *_adjacent_day_offsets(_ADJACENT_FOLDER_SEARCH_DAYS)):
+        folder = data_directory / (filing_date + timedelta(days=offset)).strftime('%Y%m%d')
+        for name in (f"{accession_number}.nc.gz", f"{accession_number}.nc"):
+            if (folder / name).exists():
+                return folder / name
+    return None
+
+
+def _as_date(value) -> date:
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    return datetime.strptime(str(value)[:10], '%Y-%m-%d').date()
+
+
+def _download_filing_submissions(filings: 'Filings',
+                                 data_directory: Path,
+                                 overwrite_existing: bool,
+                                 compress: bool,
+                                 compression_level: int,
+                                 disable_progress: bool) -> int:
+    """Store each filing's full submission file, the same file Filing.sgml() fetches.
+
+    Each one goes to <data_directory>/<YYYYMMDD of its filing date>/<accession>.nc,
+    where the local readers look first. Returns the number of filings stored.
+    """
+    from edgar.httprequests import get_with_retry
+
+    stored = skipped = 0
+    not_found = []
+    for filing in tqdm(filings, desc='Downloading filing(s)', total=len(filings), disable=disable_progress):
+        accession_number = filing.accession_no
+        filing_date = _as_date(filing.filing_date)
+        if not overwrite_existing and _stored_filing_path(data_directory, filing_date, accession_number):
+            skipped += 1
+            continue
+
+        try:
+            response = get_with_retry(url=filing.text_url)
+            inspect_response(response)
+        except TransportError as e:
+            if http_status(e) == 404:
+                not_found.append(accession_number)
+                continue
+            raise
+
+        folder = data_directory / filing_date.strftime('%Y%m%d')
+        folder.mkdir(parents=True, exist_ok=True)
+        target = folder / f"{accession_number}.nc"
+        partial = folder / f"{accession_number}.nc.part"
+        partial.write_bytes(response.content)
+        partial.replace(target)
+        stale = Path(f"{target}.gz")
+        if compress:
+            compress_filing(target, compression_level=compression_level)
+        elif stale.exists():
+            stale.unlink()   # an overwrite must not leave the old compressed copy in front of the new one
+        stored += 1
+
+    log.info('Download complete. Stored %d filings, skipped %d already stored.', stored, skipped)
+    if not_found:
+        log.warning('%d of %d filings were not found at SEC: %s', len(not_found), len(filings),
+                    ', '.join(not_found[:10]) + (' ...' if len(not_found) > 10 else ''))
+    return stored
+
+
+def _feed_file_urls(year: int, quarter: int, cache: dict) -> dict:
+    """{YYYYMMDD: feed file URL} for one quarter, listed once per call of the caller."""
+    if (year, quarter) not in cache:
+        feed_files = list_filing_feed_files_for_quarter(year, quarter)
+        cache[(year, quarter)] = {
+            name[:8]: url for name, url in zip(feed_files['Name'], feed_files['File'], strict=True)
+            if re.fullmatch(r'\d{8}\.nc\.tar\.gz', name)
+        }
+    return cache[(year, quarter)]
+
+
+def _download_feed_files_for_filings(filings: 'Filings',
+                                     data_directory: Path,
+                                     overwrite_existing: bool,
+                                     compress: bool,
+                                     compression_level: int,
+                                     disable_progress: bool) -> int:
+    """Download the daily feed files that hold the requested filings, keeping only those.
+
+    A feed file holds the filings SEC disseminated that day, which is usually but not
+    always the filing date (an after-hours or delayed filing can sit a day or more away;
+    see edgartools-a3ej). So each filing's own date is tried first, and only the filings
+    still missing move on to the adjacent days, nearest first. Dates that hold none of
+    the requested filings are never downloaded (GH #1608). Returns the number kept.
+    """
+    pending = {}
+    for filing in filings:
+        filing_date = _as_date(filing.filing_date)
+        if not overwrite_existing and _stored_filing_path(data_directory, filing_date, filing.accession_no):
+            continue
+        pending[filing.accession_no] = filing_date
+    requested = len(pending)
+    log.info('%d of %d filings are not stored yet', requested, len(filings))
+
+    listings: dict = {}
+    downloaded_days = set()
+    for offset in (0, *_adjacent_day_offsets(_ADJACENT_FOLDER_SEARCH_DAYS)):
+        if not pending:
+            break
+        days = sorted({filing_date + timedelta(days=offset) for filing_date in pending.values()})
+        for day in tqdm(days, desc='Downloading feed file(s)', disable=disable_progress):
+            if not pending:
+                break
+            if day in downloaded_days:
+                continue
+            quarter = (day.month - 1) // 3 + 1
+            url = _feed_file_urls(day.year, quarter, listings).get(day.strftime('%Y%m%d'))
+            if url is None:
+                continue   # a weekend or holiday: no feed file that day
+            downloaded_days.add(day)
+
+            bulk_file_directory = data_directory / day.strftime('%Y%m%d')
+            existing_files = set()
+            if bulk_file_directory.exists():
+                existing_files = {str(f) for f in bulk_file_directory.glob('*.nc')}
+
+            path = _run_coroutine(download_bulk_data(client=None, url=url, data_directory=data_directory,
+                                                     disable_progress=disable_progress, preserve_existing_filings=True))
+            log.info('Downloaded feed file to %s', path)
+            if not path.exists():
+                continue
+            _filter_extracted_files._existing_files = existing_files
+            try:
+                _filter_extracted_files(path, list(pending), compress=compress, compression_level=compression_level)
+            finally:
+                if hasattr(_filter_extracted_files, '_existing_files'):
+                    delattr(_filter_extracted_files, '_existing_files')
+            for accession_number in [a for a in pending
+                                     if (path / f"{a}.nc").exists() or (path / f"{a}.nc.gz").exists()]:
+                del pending[accession_number]
+
+    log.info('Download complete. Downloaded %d feed files and kept %d of %d filings.',
+             len(downloaded_days), requested - len(pending), requested)
+    if pending:
+        log.warning('%d filings were not found in the feed files within %d days of their filing date: %s',
+                    len(pending), _ADJACENT_FOLDER_SEARCH_DAYS,
+                    ', '.join(list(pending)[:10]) + (' ...' if len(pending) > 10 else ''))
+    return requested - len(pending)
+
+
+def _filter_extracted_files(directory_path: Path, accession_numbers: List[str], compress: bool = True, compression_level: int = 6) -> int:
+    """
+    Filter files in the extracted directory to keep only those matching the specified accession numbers.
+    Files from the current extraction that don't match are removed to save disk space.
+    Files that existed before this extraction (from previous downloads) are preserved.
+
+    Args:
+        directory_path: Path to the directory containing extracted files
+        accession_numbers: List of accession numbers to keep
+        compress: Whether to compress the kept files (default: True)
+        compression_level: Compression level for gzip (1-9, with 9 being highest compression)
+
+    Returns:
+        int: Number of filings kept
+    """
+    if not directory_path.is_dir():
+        return 0
+
+    # Convert accession numbers to the format used in filenames (removing dashes)
+    normalized_accession_numbers = [an.replace('-', '') for an in accession_numbers]
+
+    # Keep track of which filings were found
+    filings_kept = 0
+
+    # Get list of files that existed before this extraction
+    # We'll preserve these even if they don't match our filter
+    existing_files = getattr(_filter_extracted_files, '_existing_files', set())
+
+    # Find all .nc files in the directory
+    for file_path in directory_path.glob('*.nc'):
+        # Extract accession number from filename
+        file_accession = file_path.stem
+        undashed_accession = file_accession.replace('-', '')
+
+        # Check if this file matches our filter
+        matches_filter = (undashed_accession in normalized_accession_numbers or
+                         file_accession in accession_numbers)
+
+        # Check if this file existed before this extraction
+        was_preexisting = str(file_path) in existing_files
+
+        if matches_filter:
+            filings_kept += 1
+            # Compress the file if requested
+            if compress and not is_compressed_file(file_path):
+                try:
+                    compress_filing(file_path, compression_level=compression_level)
+                    log.debug(f"Compressed {file_path}")
+                except Exception as e:
+                    log.warning(f"Failed to compress {file_path}: {e}")
+        elif not was_preexisting:
+            # Remove files from current extraction that don't match filter
+            # But preserve files that existed before this extraction
+            try:
+                file_path.unlink()
+                log.debug(f"Removed non-matching file from current extraction: {file_path}")
+            except Exception as e:
+                log.warning(f"Failed to remove {file_path}: {e}")
+
+    return filings_kept
+
+
+def is_feed_file_in_date_range(filename: str,
+                          start_date: Optional[datetime],
+                          end_date: Optional[datetime]) -> bool:
+    """
+    Check if a feed file falls within the specified date range.
+    Feed files are named like '20240102.nc.tar.gz'
+    """
+    # Extract date from filename
+    match = re.search(r'(\d{8})\.nc\.tar\.gz', filename)
+    if not match:
+        return False
+
+    date_str = match.group(1)
+    file_date = datetime.strptime(date_str, '%Y%m%d')
+
+    # For single date (not range)
+    if start_date and not end_date:
+        return (file_date.year == start_date.year and
+                file_date.month == start_date.month and
+                file_date.day == start_date.day)
+
+    # For date range
+    if start_date:
+        if file_date < start_date:
+            return False
+
+    if end_date:
+        if file_date > end_date:
+            return False
+
+    return True
+
+def list_filing_feed_files_for_quarter(year:int, quarter:int) -> pd.DataFrame:
+    assert quarter in (1, 2, 3, 4), "Quarter must be between 1 and 4"
+    from edgar.urls import build_feed_url
+    url = build_feed_url(year, quarter)
+    return list_filing_feed_files(url)
+
+def get_sec_file_listing(url:str) -> pd.DataFrame:
+    """
+    Reads an SEC EDGAR file listing directory and returns file information as a DataFrame.
+
+    Args:
+        url (str): URL of the SEC EDGAR feed directory (e.g., 'https://www.sec.gov/Archives/edgar/Feed/2024/QTR1/')
+
+    Returns:
+        pd.DataFrame: DataFrame containing file information with columns:
+            - Name: str, filename
+            - Size: int, file size in bytes
+            - Modified: datetime, last modification timestamp
+
+    Raises:
+        ValueError: If URL is invalid or doesn't point to SEC EDGAR
+        TransportError: If unable to download the page
+        RuntimeError: If page structure is invalid or no table found
+    """
+    try:
+        html = download_text(url)
+    except (HTTPStatusError, TransportError) as e:
+        status = http_status(e)
+        if status == 403:
+            log.warning(f"There are no feed files for url {url}")
+            return pd.DataFrame(columns=['Name', 'File', 'Size', 'Modified'])
+        elif status == 404:
+            raise FileNotFoundError(f"Page not found: {url}") from None
+        if isinstance(e, TransportError):
+            # Already the right type from the boundary wrap. Re-wrapping it as a
+            # builtin ConnectionError would demote a typed error back to the
+            # vocabulary the hierarchy exists to replace.
+            raise
+        raise ConnectionError(f"Failed to download page: {str(e)}") from e
+
+    if "Directory Browsing Not Allowed" in html:
+        log.warning(f"Directory browsing is not allowed for {url}")
+        raise DirectoryBrowsingNotAllowed("""
+        Directory browsing is not allowed for here.
+        This is unexpected and the SEC likely has changed their policy for viewing the bulk filing files.
+        """)
+
+    import lxml.html
+    from lxml.etree import ParserError, strip_elements
+
+    from edgar.documents.utils.html_utils import create_lxml_parser
+
+    if isinstance(html, str):
+        html = html.encode("utf-8", errors="replace")
+    try:
+        root = lxml.html.fromstring(html, parser=create_lxml_parser())
+    except ParserError:
+        # bs4 gave an empty soup here, and the no-table branch below raised
+        # RuntimeError. Keep that, rather than surfacing an lxml exception.
+        raise RuntimeError("No table found in the page") from None
+    # bs4's .text left the text inside these three tags out; text_content()
+    # does not. See the docstring on forty_f._html_to_text.
+    strip_elements(root, "script", "style", "template", with_tail=False)
+    # descendant-or-self: see the note in edgar/forms.py -- a listing trimmed
+    # to its table would otherwise parse to "no table found".
+    found = root.xpath('descendant-or-self::table')
+    table = found[0] if found else None
+
+    if table is None:
+        raise RuntimeError("No table found in the page")
+
+    records = []
+
+    # Process table rows, skip header row
+    for row in table.xpath('.//tr')[1:]:
+        cells = row.xpath('.//td')
+
+        # Skip if row structure is invalid
+        if len(cells) != 3:
+            continue
+
+        # text_content(), not .text -- lxml's .text is the cell's own
+        # leading text only, where bs4's .text was every descendant's.
+        name = cells[0].text_content().strip()
+
+        # Skip parent directory entry
+        if name in ('.', '..'):
+            continue
+        feed_file_url = f"{url}{name}"
+
+        # Parse file size (convert "1.2K", "3.4M" etc. to bytes)
+        size_text = cells[1].text_content().strip()
+        size = parse_file_size(size_text)
+
+        # Parse modification date
+        modified_text = cells[2].text_content().strip()
+        try:
+            modified = datetime.strptime(modified_text, '%m/%d/%Y %I:%M:%S %p')
+        except ValueError:
+            modified = None
+
+        records.append((name, feed_file_url, size, modified))
+
+    df = pd.DataFrame(records, columns=['Name', 'File', 'Size', 'Modified'])
+    return df
+
+def list_filing_feed_files(url: str) -> pd.DataFrame:
+    """
+    Reads the SEC EDGAR filing feed directory and returns file information as a DataFrame.
+
+    Args:
+        url (str): URL of the SEC EDGAR feed directory (e.g., 'https://www.sec.gov/Archives/edgar/Feed/2024/QTR1/')
+
+    Returns:
+        pd.DataFrame: DataFrame containing file information with columns:
+            - Name: str, filename
+            - Size: int, file size in bytes
+            - Modified: datetime, last modification timestamp
+
+    Raises:
+        ValueError: If URL is invalid or doesn't point to SEC EDGAR
+        TransportError: If unable to download the page
+        RuntimeError: If page structure is invalid or no table found
+    """
+    # Validate URL
+    from edgar.config import SEC_ARCHIVE_URL
+    expected_prefix = f"{SEC_ARCHIVE_URL}/Feed/"
+    if not url.startswith(expected_prefix):
+        raise ValueError(f"URL must be an SEC EDGAR feed directory starting with {expected_prefix}")
+    return get_sec_file_listing(url)
+
+
+def parse_file_size(size_text: str) -> Optional[int]:
+    """Convert size string to bytes (e.g., "1.2K" -> 1228)"""
+    if not size_text:
+        return None
+
+    units = {'B': 1, 'K': 1024, 'M': 1024 * 1024, 'G': 1024 * 1024 * 1024}
+    pattern = r'(\d+\.?\d*)\s*([BKMG])?'
+    match = re.match(pattern, size_text.upper())
+
+    if not match:
+        return None
+
+    number = float(match.group(1))
+    unit = match.group(2) or 'B'
+
+    return int(number * units[unit])
+
+
+def latest_filing_date():
+    """Get the latest filing date"""
+    from edgar import get_filings
+    return get_filings().end_date
+
+
+def is_compressed_file(file_path: Path) -> bool:
+    """
+    Check if a file is gzip-compressed by examining its extension.
+
+    Args:
+        file_path: Path to the file
+
+    Returns:
+        bool: True if the file has a .gz extension, False otherwise
+    """
+    return str(file_path).endswith('.gz')
+
+
+def compress_filing(file_path: Path, compression_level: int = 6, delete_original: bool = True) -> Path:
+    """
+    Compress a filing file using gzip and optionally delete the original.
+
+    Args:
+        file_path: Path to the file to compress
+        compression_level: Compression level (1-9, with 9 being highest compression)
+        delete_original: Whether to delete the original file after compression
+
+    Returns:
+        Path to the compressed file
+
+    Raises:
+        FileNotFoundError: If the file does not exist
+        ValueError: If the file is already compressed
+    """
+    import gzip
+    import shutil
+
+    if not file_path.exists():
+        raise FileNotFoundError(f"File not found: {file_path}")
+
+    if is_compressed_file(file_path):
+        raise ValueError(f"File is already compressed: {file_path}")
+
+    compressed_path = Path(f"{file_path}.gz")
+
+    # Compress the file
+    with file_path.open('rb') as f_in:
+        with gzip.open(compressed_path, 'wb', compresslevel=compression_level) as f_out:
+            shutil.copyfileobj(f_in, f_out)
+
+    # Delete the original file if requested
+    if delete_original:
+        file_path.unlink()
+
+    return compressed_path
+
+
+def decompress_filing(file_path: Path, output_path: Optional[Path] = None, delete_original: bool = False) -> Path:
+    """
+    Decompress a gzip-compressed filing file.
+
+    Args:
+        file_path: Path to the compressed file
+        output_path: Path to save the decompressed file (if None, use the original path without .gz)
+        delete_original: Whether to delete the original compressed file
+
+    Returns:
+        Path to the decompressed file
+
+    Raises:
+        FileNotFoundError: If the file does not exist
+        ValueError: If the file is not compressed
+        gzip.BadGzipFile: If the file is not a valid gzip file
+    """
+    import gzip
+    import shutil
+
+    if not file_path.exists():
+        raise FileNotFoundError(f"File not found: {file_path}")
+
+    if not is_compressed_file(file_path):
+        raise ValueError(f"File is not compressed: {file_path}")
+
+    # Determine output path if not provided
+    if output_path is None:
+        # Remove .gz extension
+        output_path = Path(str(file_path)[:-3])
+
+    # Decompress the file
+    with gzip.open(file_path, 'rb') as f_in:
+        with output_path.open('wb') as f_out:
+            shutil.copyfileobj(f_in, f_out)
+
+    # Delete the original compressed file if requested
+    if delete_original:
+        file_path.unlink()
+
+    return output_path
+
+
+def compress_all_filings(data_directory: Optional[Path] = None, compression_level: int = 6, disable_progress: bool = False) -> int:
+    """
+    Compress all uncompressed filing files in the data directory.
+
+    Args:
+        data_directory: Path to the data directory (defaults to the Edgar data directory)
+        compression_level: Compression level (1-9, with 9 being highest compression)
+        disable_progress: If True, suppress progress bar. Defaults to False.
+
+    Returns:
+        Number of files compressed
+    """
+    if data_directory is None:
+        data_directory = get_edgar_data_directory() / 'filings'
+
+    # Find all .nc files (not already compressed)
+    files_compressed = 0
+    for file_path in tqdm(list(data_directory.glob('**/*.nc')), desc="Compressing files", disable=disable_progress):
+        if not is_compressed_file(file_path) and file_path.is_file():
+            try:
+                compress_filing(file_path, compression_level=compression_level)
+                files_compressed += 1
+            except Exception as e:
+                log.warning(f"Failed to compress {file_path}: {e}")
+
+    return files_compressed
+
+def check_filings_exist_locally(filing_date: Union[str, date], accession_numbers: List[str]) -> bool:
+    """
+    Check if all specified accession numbers already exist locally for a given filing date.
+
+    Args:
+        filing_date: The filing date (YYYY-MM-DD format)
+        accession_numbers: List of accession numbers to check
+
+    Returns:
+        bool: True if all filings exist locally, False otherwise
+    """
+    if not accession_numbers:
+        return False
+
+    for accession_number in accession_numbers:
+        # Check both compressed and uncompressed versions
+        filing_path = local_filing_path(filing_date, accession_number)
+        if not filing_path.exists():
+            return False
+
+    return True
+
+
+def local_filing_path(filing_date: Union[str, date],
+                      accession_number: str,
+                      correction: bool = False) -> Union[Path, 'EdgarPath']:
+    """
+    Get the path for a filing in local or cloud storage.
+
+    If correction is True, will look for the corrected filing with extension 'corr'.
+    Returns the compressed version (.gz) if it exists, otherwise returns the uncompressed path.
+
+    When cloud storage is enabled via use_cloud_storage(), returns an EdgarPath
+    that works with the configured cloud backend. Otherwise returns a pathlib.Path.
+
+    Args:
+        filing_date: The filing date (YYYY-MM-DD format or date object)
+        accession_number: The SEC accession number
+        correction: If True, look for correction file (.corr extension)
+
+    Returns:
+        Path or EdgarPath pointing to the filing location
+    """
+    from edgar.filesystem import EdgarPath, is_cloud_storage_enabled
+
+    ext = 'corr' if correction else 'nc'
+    if isinstance(filing_date, date):
+        filing_date = filing_date.strftime('%Y-%m-%d')
+    filing_date = filing_date.replace('-', '')
+
+    if is_cloud_storage_enabled():
+        # Cloud storage path via EdgarPath
+        base_path = EdgarPath('filings', filing_date, f"{accession_number}.{ext}")
+        compressed_path = EdgarPath('filings', filing_date, f"{accession_number}.{ext}.gz")
+        if compressed_path.exists():
+            return compressed_path
+        return base_path
+    else:
+        # Original local filesystem path
+        base_path = get_edgar_data_directory() / 'filings' / filing_date / f"{accession_number}.{ext}"
+        compressed_path = Path(f"{base_path}.gz")
+        if compressed_path.exists():
+            return compressed_path
+        return base_path
+
+
+# Default number of adjacent days to scan when a filing is not found under its
+# FILED AS OF DATE folder (see resolve_local_filing_path). 4 days spans a weekend
+# plus a day, covering after-hours boundary filings and short dissemination lags.
+_ADJACENT_FOLDER_SEARCH_DAYS = 4
+
+
+def _adjacent_day_offsets(window_days: int):
+    """Yield day offsets ordered by proximity: +1, -1, +2, -2, ... (0 is checked first elsewhere)."""
+    for distance in range(1, window_days + 1):
+        yield distance
+        yield -distance
+
+
+def resolve_local_filing_path(filing_date: Union[str, date],
+                              accession_number: str,
+                              correction: bool = False,
+                              search_window_days: int = _ADJACENT_FOLDER_SEARCH_DAYS) -> Optional[Path]:
+    """
+    Resolve an *existing* local filing bundle, returning its path or None.
+
+    Filings are stored under ``filings/<YYYYMMDD>/``. ``download_filings()`` buckets
+    feed files by the SEC dissemination (acceptance) date, which for most filings equals
+    the FILED AS OF DATE used on the read side — but not always. After-hours submissions
+    (filed-as-of the next business day) and historic dissemination lag can land a bundle
+    in an adjacent day's folder. Because accession numbers are globally unique, any folder
+    holding ``<accession>.nc`` is unambiguously the right file, so when the FILED AS OF DATE
+    folder misses we scan a small window of adjacent days before giving up.
+
+    Returns None when the bundle is not present locally (callers then fall back to the
+    network, exactly as before). Cloud storage uses the exact path only.
+    """
+    exact = local_filing_path(filing_date, accession_number, correction=correction)
+    if exact.exists():
+        return exact
+
+    # Cloud storage: keep exact-only behaviour (no cheap directory scan available).
+    from edgar.filesystem import is_cloud_storage_enabled
+    if is_cloud_storage_enabled():
+        return None
+
+    # Normalise the filing date to a date object so we can walk adjacent days.
+    if isinstance(filing_date, date):
+        base_date = filing_date
+    else:
+        try:
+            base_date = datetime.strptime(str(filing_date).replace('-', ''), '%Y%m%d').date()
+        except ValueError:
+            return None
+
+    ext = 'corr' if correction else 'nc'
+    filings_root = get_edgar_data_directory() / 'filings'
+    for offset in _adjacent_day_offsets(search_window_days):
+        day = (base_date + timedelta(days=offset)).strftime('%Y%m%d')
+        base_path = filings_root / day / f"{accession_number}.{ext}"
+        compressed_path = Path(f"{base_path}.gz")
+        if compressed_path.exists():
+            return compressed_path
+        if base_path.exists():
+            return base_path
+    return None

@@ -1,0 +1,689 @@
+"""
+Markdown renderer for parsed documents.
+"""
+
+from dataclasses import replace
+from typing import Dict, List, Optional, Set
+from urllib.parse import urljoin
+
+from edgar.documents.document import Document
+from edgar.documents.nodes import HeadingNode, ImageNode, ListItemNode, ListNode, Node, ParagraphNode, TextNode
+from edgar.documents.table_nodes import TableNode
+from edgar.documents.utils.table_matrix import TableMatrix
+
+
+def _escape_pipe_cell(text: str) -> str:
+    """Escape a pipe-table cell so its text cannot change the table's shape.
+
+    Backslashes go first, so the backslash added before each pipe is not
+    doubled again.
+    """
+    return text.replace('\\', '\\\\').replace('|', '\\|')
+
+
+class MarkdownRenderer:
+    """
+    Renders parsed documents to Markdown format.
+
+    Features:
+    - Preserves document structure
+    - Handles tables with proper formatting
+    - Supports nested lists
+    - Includes metadata annotations
+    - Configurable output options
+    """
+
+    def __init__(self,
+                 include_metadata: bool = False,
+                 include_toc: bool = False,
+                 max_heading_level: int = 6,
+                 table_format: str = 'pipe',
+                 wrap_width: Optional[int] = None):
+        """
+        Initialize markdown renderer.
+
+        Args:
+            include_metadata: Include metadata annotations
+            include_toc: Generate table of contents
+            max_heading_level: Maximum heading level to render
+            table_format: Table format ('pipe', 'grid', 'simple')
+            wrap_width: Wrap text at specified width
+        """
+        self.include_metadata = include_metadata
+        self.include_toc = include_toc
+        self.max_heading_level = max_heading_level
+        self.table_format = table_format
+        self.wrap_width = wrap_width
+
+        # Track state during rendering
+        self._toc_entries: List[tuple] = []
+        self._rendered_ids: Set[str] = set()
+        self._list_depth = 0
+        self._in_table = False
+        # Base URL for resolving relative image src (set per-document in render())
+        self._base_url: Optional[str] = None
+
+    def render(self, document: Document) -> str:
+        """
+        Render document to Markdown.
+
+        Args:
+            document: Document to render
+
+        Returns:
+            Markdown formatted text
+        """
+        self._reset_state()
+
+        # Resolve relative image src against the source document URL when known.
+        self._base_url = document.metadata.url if document.metadata else None
+
+        parts = []
+
+        # Add metadata header if requested
+        if self.include_metadata:
+            parts.append(self._render_metadata(document))
+            parts.append("")
+
+        # Placeholder for TOC
+        if self.include_toc:
+            toc_placeholder = "<!-- TOC -->"
+            parts.append(toc_placeholder)
+            parts.append("")
+
+        # Render document content
+        content = self._render_node(document.root)
+        parts.append(content)
+
+        # Join parts
+        markdown = "\n".join(parts)
+
+        # Replace TOC placeholder
+        if self.include_toc and self._toc_entries:
+            toc = self._generate_toc()
+            markdown = markdown.replace(toc_placeholder, toc)
+
+        return markdown.strip()
+
+    def render_node(self, node: Node) -> str:
+        """
+        Render a specific node to Markdown.
+
+        Args:
+            node: Node to render
+
+        Returns:
+            Markdown formatted text
+        """
+        self._reset_state()
+        return self._render_node(node)
+
+    def _reset_state(self):
+        """Reset renderer state."""
+        self._toc_entries = []
+        self._rendered_ids = set()
+        self._list_depth = 0
+        self._in_table = False
+
+    def _render_node(self, node: Node) -> str:
+        """Render a node and its children."""
+        # Skip if already rendered (handles shared nodes)
+        if node.id in self._rendered_ids:
+            return ""
+        self._rendered_ids.add(node.id)
+
+        # Dispatch based on node type
+        if isinstance(node, HeadingNode):
+            return self._render_heading(node)
+        elif isinstance(node, ParagraphNode):
+            return self._render_paragraph(node)
+        elif isinstance(node, TextNode):
+            return self._render_text(node)
+        elif isinstance(node, TableNode):
+            return self._render_table(node)
+        elif isinstance(node, ListNode):
+            return self._render_list(node)
+        elif isinstance(node, ListItemNode):
+            return self._render_list_item(node)
+        elif isinstance(node, ImageNode):
+            return self._render_image(node)
+        else:
+            # Default: render children
+            return self._render_children(node)
+
+    def _render_heading(self, node: HeadingNode) -> str:
+        """Render heading node."""
+        # Limit heading level
+        level = min(node.level, self.max_heading_level)
+
+        # Get heading text
+        text = node.text().strip()
+        if not text:
+            return ""
+
+        # Add to TOC
+        if self.include_toc:
+            self._toc_entries.append((level, text, node.id))
+
+        # Create markdown heading
+        markdown = "#" * level + " " + text
+
+        # Add metadata if requested
+        if self.include_metadata and node.metadata:
+            metadata = self._format_metadata(node.metadata)
+            if metadata:
+                markdown += f" <!-- {metadata} -->"
+
+        # Add children content
+        children_content = self._render_children(node)
+        if children_content:
+            markdown += "\n\n" + children_content
+
+        return markdown
+
+    def _render_paragraph(self, node: ParagraphNode) -> str:
+        """Render paragraph node."""
+        # Get paragraph content
+        content = self._render_children(node).strip()
+        if not content:
+            return ""
+
+        # Wrap if requested
+        if self.wrap_width:
+            content = self._wrap_text(content, self.wrap_width)
+
+        # Add metadata if requested
+        if self.include_metadata and node.metadata:
+            metadata = self._format_metadata(node.metadata)
+            if metadata:
+                content = f"<!-- {metadata} -->\n{content}"
+
+        return content
+
+    def _render_text(self, node: TextNode) -> str:
+        """Render text node."""
+        text = node.text()
+
+        # Escape markdown special characters
+        text = self._escape_markdown(text)
+
+        # Apply text formatting based on style
+        if node.style:
+            if node.style.font_weight in ['bold', '700', '800', '900']:
+                text = f"**{text}**"
+            elif node.style.font_style == 'italic':
+                text = f"*{text}*"
+            elif node.style.text_decoration == 'underline':
+                text = f"<u>{text}</u>"
+
+        return text
+
+    def _render_image(self, node: ImageNode) -> str:
+        """Render an image node as a Markdown image link (GH #886).
+
+        The relative ``src`` from the filing HTML is resolved against the source
+        document URL when it is known (``document.metadata.url``), so the output
+        is a self-contained absolute link to the image in the SEC archive.
+        Without a base URL (e.g. when parsing raw HTML), the raw ``src`` is kept.
+        """
+        src = (node.src or '').strip()
+        alt = (node.alt or '').strip()
+
+        if not src:
+            # No source to link to; surface the alt text if there is any.
+            return f"![{alt}]()" if alt else ""
+
+        url = src
+        is_absolute = '://' in src or src.startswith('data:')
+        if self._base_url and not is_absolute:
+            url = urljoin(self._base_url, src)
+
+        # Fall back to the file name for the link text when alt is empty.
+        label = alt or src.rsplit('/', 1)[-1]
+        return f"![{label}]({url})"
+
+    def _render_table(self, node: TableNode) -> str:
+        """Render table node."""
+        self._in_table = True
+
+        parts = []
+
+        # Add caption if present
+        if node.caption:
+            parts.append(f"**Table: {node.caption}**")
+            parts.append("")
+
+        # Render based on format
+        if self.table_format == 'pipe':
+            table_md = self._render_table_pipe(node)
+        elif self.table_format == 'grid':
+            table_md = self._render_table_grid(node)
+        else:  # simple
+            table_md = self._render_table_simple(node)
+
+        parts.append(table_md)
+
+        # Add metadata if requested
+        if self.include_metadata and node.metadata:
+            metadata = self._format_metadata(node.metadata)
+            if metadata:
+                parts.append(f"<!-- Table metadata: {metadata} -->")
+
+        self._in_table = False
+
+        return "\n".join(parts)
+
+    def _render_table_pipe(self, node: TableNode) -> str:
+        """Render table in pipe format with proper column spanning support."""
+        # Handle complex SEC filing tables with column spanning
+        expanded_headers, expanded_data_rows = self._expand_table_structure(node)
+
+        # Identify and filter to meaningful columns
+        content_columns = self._identify_content_columns(expanded_headers, expanded_data_rows)
+
+        if not content_columns:
+            return ""
+
+        rows = []
+
+        # Flatten each column's complete header path in source order.
+        if expanded_headers:
+            combined_headers = self._combine_multi_row_headers(expanded_headers)
+            filtered_headers = [combined_headers[i] if i < len(combined_headers) else "" for i in content_columns]
+
+            # A literal pipe would open a column and a lone backslash would
+            # escape the next character, in flat headers as in grouped ones
+            # (GH #1483).
+            filtered_headers = [_escape_pipe_cell(header) for header in filtered_headers]
+            row_md = "| " + " | ".join(filtered_headers) + " |"
+            rows.append(row_md)
+
+            # Add separator
+            separator = "| " + " | ".join(["---"] * len(filtered_headers)) + " |"
+            rows.append(separator)
+        elif expanded_data_rows:
+            # GH #1484: a headerless table has no labels of its own. Promote the
+            # first non-empty data row to the header, so the output is a valid
+            # pipe table with a delimiter row and real column labels instead of
+            # a blank header bar on every layout table (GH #1524 review).
+            # A table with a single non-empty row (a page footer, a footnote)
+            # keeps its plain row: promoting it would leave a header with a
+            # lone delimiter under it and nothing in the body.
+            non_empty = [index for index, row in enumerate(expanded_data_rows)
+                         if any(row[column].strip() for column in content_columns if column < len(row))]
+            if len(non_empty) > 1:
+                promoted_index = non_empty[0]
+                promoted_row = expanded_data_rows[promoted_index]
+                promoted = [promoted_row[column] if column < len(promoted_row) else ""
+                            for column in content_columns]
+                # Promoted labels must stay on one line, and literal pipes
+                # must not create header columns. Escape backslashes first.
+                promoted = [_escape_pipe_cell(" ".join(cell.split())) for cell in promoted]
+                rows.append("| " + " | ".join(promoted) + " |")
+                rows.append("| " + " | ".join(["---"] * len(content_columns)) + " |")
+                expanded_data_rows = expanded_data_rows[promoted_index + 1:]
+
+        # Render data rows
+        for expanded_row in expanded_data_rows:
+            filtered_row = [expanded_row[i] if i < len(expanded_row) else "" for i in content_columns]
+            # A pipe-table row must stay on one line, so collapse the whitespace
+            # in each cell (line breaks from <br> or several paragraphs too).
+            filtered_row = [_escape_pipe_cell(' '.join(cell.split())) for cell in filtered_row]
+
+            # Only add rows with meaningful content
+            if any(cell.strip() for cell in filtered_row):
+                row_md = "| " + " | ".join(filtered_row) + " |"
+                rows.append(row_md)
+
+        return "\n".join(rows)
+
+    def _render_table_grid(self, node: TableNode) -> str:
+        """Render table in grid format."""
+        # Simplified grid format
+        all_rows = []
+
+        # Add headers
+        if node.headers:
+            for header_row in node.headers:
+                cells = [cell.text() for cell in header_row]
+                all_rows.append(" | ".join(cells))
+
+        # Add data rows
+        for row in node.rows:
+            cells = [cell.text() for cell in row.cells]
+            all_rows.append(" | ".join(cells))
+
+        if all_rows:
+            # Add borders
+            max_width = max(len(row) for row in all_rows)
+            border = "+" + "-" * (max_width + 2) + "+"
+            result = [border]
+            for row in all_rows:
+                result.append(f"| {row:<{max_width}} |")
+            result.append(border)
+            return "\n".join(result)
+
+        return ""
+
+    def _render_table_simple(self, node: TableNode) -> str:
+        """Render table in simple format."""
+        rows = []
+
+        # Add headers
+        if node.headers:
+            for header_row in node.headers:
+                cells = [cell.text() for cell in header_row]
+                rows.append("  ".join(cells))
+
+        # Add separator if we have headers
+        if node.headers and node.rows:
+            rows.append("")
+
+        # Add data rows
+        for row in node.rows:
+            cells = [cell.text() for cell in row.cells]
+            rows.append("  ".join(cells))
+
+        return "\n".join(rows)
+
+    def _render_list(self, node: ListNode) -> str:
+        """Render list node."""
+        self._list_depth += 1
+
+        items = []
+        for child in node.children:
+            if isinstance(child, ListItemNode):
+                item_md = self._render_list_item(child)
+                if item_md:
+                    items.append(item_md)
+
+        self._list_depth -= 1
+
+        return "\n".join(items)
+
+    def _render_list_item(self, node: ListItemNode) -> str:
+        """Render list item node."""
+        # Determine bullet/number
+        if node.parent and hasattr(node.parent, 'ordered') and node.parent.ordered:
+            # Ordered list
+            index = node.parent.children.index(node) + 1
+            marker = f"{index}."
+        else:
+            # Unordered list
+            markers = ['*', '-', '+']
+            marker = markers[(self._list_depth - 1) % len(markers)]
+
+        # Indentation
+        indent = "  " * (self._list_depth - 1)
+
+        # Get content
+        content = self._render_children(node).strip()
+
+        # Format item
+        if '\n' in content:
+            # Multi-line content
+            lines = content.split('\n')
+            result = indent + marker + " " + lines[0]
+            for line in lines[1:]:
+                result += "\n" + indent + "  " + line
+            return result
+        else:
+            # Single line
+            return indent + marker + " " + content
+
+    def _render_children(self, node: Node) -> str:
+        """Render all children of a node."""
+        parts = []
+
+        for child in node.children:
+            child_md = self._render_node(child)
+            if child_md:
+                parts.append(child_md)
+
+        # Join with appropriate separator
+        if self._in_table:
+            return " ".join(parts)
+        elif any(isinstance(child, (HeadingNode, ParagraphNode, TableNode, ListNode))
+                for child in node.children):
+            return "\n\n".join(parts)
+        else:
+            return " ".join(parts)
+
+    def _render_metadata(self, document: Document) -> str:
+        """Render document metadata."""
+        lines = ["---"]
+
+        if document.metadata.company:
+            lines.append(f"company: {document.metadata.company}")
+        if document.metadata.form:
+            lines.append(f"form: {document.metadata.form}")
+        if document.metadata.filing_date:
+            lines.append(f"filing_date: {document.metadata.filing_date}")
+        if document.metadata.cik:
+            lines.append(f"cik: {document.metadata.cik}")
+        if document.metadata.accession_number:
+            lines.append(f"accession_number: {document.metadata.accession_number}")
+
+        lines.append("---")
+
+        return "\n".join(lines)
+
+    def _generate_toc(self) -> str:
+        """Generate table of contents."""
+        lines = ["## Table of Contents", ""]
+
+        for level, text, node_id in self._toc_entries:
+            # Create anchor link
+            anchor = self._create_anchor(text)
+
+            # Indentation based on level
+            indent = "  " * (level - 1)
+
+            # Add TOC entry
+            lines.append(f"{indent}- [{text}](#{anchor})")
+
+        return "\n".join(lines)
+
+    def _create_anchor(self, text: str) -> str:
+        """Create anchor from heading text."""
+        # Convert to lowercase and replace spaces with hyphens
+        anchor = text.lower()
+        anchor = anchor.replace(' ', '-')
+
+        # Remove special characters
+        import re
+        anchor = re.sub(r'[^a-z0-9\-]', '', anchor)
+
+        # Remove multiple hyphens
+        anchor = re.sub(r'-+', '-', anchor)
+
+        return anchor.strip('-')
+
+    def _format_metadata(self, metadata: Dict) -> str:
+        """Format metadata for display."""
+        parts = []
+
+        for key, value in metadata.items():
+            if key == 'semantic_type':
+                parts.append(f"type:{value}")
+            elif key == 'section':
+                parts.append(f"section:{value}")
+            elif key == 'ix_tag':
+                parts.append(f"xbrl:{value}")
+            else:
+                parts.append(f"{key}:{value}")
+
+        return " ".join(parts)
+
+    def _escape_markdown(self, text: str) -> str:
+        """Escape markdown special characters."""
+        # Don't escape in tables
+        if self._in_table:
+            return text
+
+        # Escape special characters
+        for char in ['\\', '`', '*', '_', '{', '}', '[', ']', '(', ')', '#', '+', '-', '.', '!']:
+            text = text.replace(char, '\\' + char)
+
+        return text
+
+    def _wrap_text(self, text: str, width: int) -> str:
+        """Wrap text at specified width."""
+        import textwrap
+        return textwrap.fill(text, width=width, break_long_words=False)
+
+    def _expand_table_structure(self, node: TableNode) -> tuple:
+        """
+        Align header cells using their spans and preserve body expansion.
+        Returns (expanded_headers, expanded_data_rows).
+        """
+        # Flat/headerless tables retain their original column and whitespace policy.
+        if len(node.headers) < 2:
+            all_rows = [*node.headers, *(row.cells for row in node.rows)]
+            max_columns = max((sum(cell.colspan for cell in row) for row in all_rows), default=0)
+            return (
+                [self._expand_row_to_columns(row, max_columns) for row in node.headers],
+                [self._expand_row_to_columns(row.cells, max_columns) for row in node.rows],
+            )
+
+        # Parsed headers can omit blank physical rows crossed by a rowspan.
+        # Use the source grid without changing public cells or body spacers.
+        groups = self._header_groups(node)
+        header_rows = []
+        for group in groups:
+            for row_index, (row, is_header) in enumerate(group):
+                remaining = len(group) - row_index
+                header_rows.append([
+                    replace(cell, content=cell.content if is_header else '',
+                            rowspan=remaining if cell.rowspan == 0 else min(cell.rowspan, remaining))
+                    for cell in row
+                ])
+        # Use the matrix only for headers; retain the body expansion below.
+        matrix = TableMatrix().build_from_rows(header_rows, [])
+        max_columns = max(matrix.col_count, max((sum(cell.colspan for cell in row.cells)
+                                               for row in node.rows), default=0))
+
+        # Find content columns before copying group labels across their spans,
+        # so a header over empty SEC spacing columns does not keep those columns.
+        expanded_headers = []
+        for row_index in range(matrix.header_row_count):
+            expanded = [cell.text().strip() if cell else "" for cell in matrix.get_expanded_row(row_index)]
+            expanded.extend([""] * (max_columns - len(expanded)))
+            expanded_headers.append(expanded)
+        expanded_data_rows = [self._expand_row_to_columns(row.cells, max_columns) for row in node.rows]
+        content_columns = self._identify_content_columns(expanded_headers, expanded_data_rows)
+
+        for row_index, expanded in enumerate(expanded_headers):
+            for column in content_columns:
+                if column >= matrix.col_count:
+                    continue
+                entry = matrix.matrix[row_index][column]
+                # A horizontal span contributes to each covered column. A
+                # vertical span contributes only once, at its source row.
+                if entry.original_cell and entry.row_origin == row_index:
+                    expanded[column] = entry.original_cell.text().strip()
+
+        return expanded_headers, expanded_data_rows
+
+    def _header_groups(self, node: TableNode) -> tuple:
+        """Use source geometry while the public header cells still match it."""
+        geometry = getattr(node, '_header_geometry', None)
+        if geometry is not None and node.headers is geometry.headers and len(node.headers) == len(geometry.source_rows):
+            matches = True
+            for current, (source_row, cells) in zip(node.headers, geometry.source_rows, strict=True):
+                if current is not source_row or len(current) < len(cells):
+                    matches = False
+                    break
+                if any(current[index] is not cell for index, cell in enumerate(cells)):
+                    matches = False
+                    break
+                # Rich appends empty one-column cells; they are not source
+                # geometry. Other public header replacements use the fallback.
+                if any(cell.text().strip() or cell.colspan != 1 or cell.rowspan != 1
+                       for cell in current[len(cells):]):
+                    matches = False
+                    break
+            if matches:
+                return geometry.groups
+        return (tuple((tuple(row), True) for row in node.headers),)
+
+    def _expand_row_to_columns(self, cells: List, target_columns: int) -> List[str]:
+        """Expand a row with colspan cells to match the target column count."""
+        expanded = []
+        current_column = 0
+
+        for cell in cells:
+            cell_text = cell.text().strip()
+
+            # Add the cell content
+            expanded.append(cell_text)
+            current_column += 1
+
+            # Add empty cells for remaining colspan
+            for _ in range(cell.colspan - 1):
+                if current_column < target_columns:
+                    expanded.append("")
+                    current_column += 1
+
+        # Pad to target column count if needed
+        while len(expanded) < target_columns:
+            expanded.append("")
+
+        return expanded[:target_columns]
+
+    def _identify_content_columns(self, expanded_headers: List[List[str]],
+                                 expanded_data_rows: List[List[str]]) -> List[int]:
+        """Identify which columns actually contain meaningful content."""
+        if not expanded_headers and not expanded_data_rows:
+            return []
+
+        # Get the column count
+        max_cols = 0
+        if expanded_headers:
+            max_cols = max(max_cols, max(len(row) for row in expanded_headers))
+        if expanded_data_rows:
+            max_cols = max(max_cols, max(len(row) for row in expanded_data_rows))
+
+        content_columns = []
+
+        for col in range(max_cols):
+            has_content = False
+
+            # Check headers
+            for header_row in expanded_headers:
+                if col < len(header_row) and header_row[col].strip():
+                    has_content = True
+                    break
+
+            # Check data rows
+            if not has_content:
+                for data_row in expanded_data_rows:
+                    if col < len(data_row) and data_row[col].strip():
+                        has_content = True
+                        break
+
+            if has_content:
+                content_columns.append(col)
+
+        return content_columns
+
+    def _combine_multi_row_headers(self, header_rows: List[List[str]]) -> List[str]:
+        """Join each column's group and leaf labels without discarding levels."""
+        if not header_rows:
+            return []
+        if len(header_rows) == 1:
+            return [value.strip().replace('\n', ' ') for value in header_rows[0]]
+
+        num_columns = len(header_rows[0])
+        combined = [""] * num_columns
+
+        for col in range(num_columns):
+            column_values = []
+            for row in header_rows:
+                if col < len(row) and row[col].strip():
+                    # Equal labels can come from distinct cells. Expansion
+                    # already suppresses repeated appearances of one rowspan.
+                    column_values.append(" ".join(row[col].split()))
+            combined[col] = " ".join(column_values)
+
+        return combined

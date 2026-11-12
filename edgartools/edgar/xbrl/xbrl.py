@@ -1,0 +1,4287 @@
+"""
+XBRL Parser - Top-level integration module for XBRL parsing.
+
+This module provides the XBRL class, which integrates all components of the XBRL parsing system:
+- Instance Document Parser
+- Presentation Linkbase Parser
+- Calculation Linkbase Parser
+- Definition Linkbase Parser
+
+The XBRL class provides a unified interface for working with XBRL data,
+organizing facts according to presentation hierarchies, validating calculations,
+and handling dimensional qualifiers.
+"""
+import datetime
+import itertools
+import re
+from pathlib import Path
+from textwrap import dedent
+from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Set, Tuple, Union
+
+if TYPE_CHECKING:
+    from edgar.xbrl.facts import FactQuery
+    from edgar.xbrl.models import Fact, Footnote
+
+import pandas as pd
+from rich import box
+from rich.table import Column, Table
+from rich.table import Table as RichTable
+
+from edgar.attachments import Attachments
+from edgar.config import VERBOSE_EXCEPTIONS
+from edgar.core import log
+from edgar.richtools import repr_rich
+from edgar.xbrl.core import (
+    STANDARD_LABEL,
+    STANDARD_TAXONOMIES,
+    normalize_decimals,
+    split_element_id,
+    unit_currency_measure,
+)
+from edgar.xbrl.models import NIL_MEMBER_LABEL, Axis, Domain, PresentationNode, is_negated_label_role
+from edgar.xbrl.parsers import XBRLParser
+from edgar.xbrl.periods import get_period_views
+from edgar.xbrl.rendering import RenderedStatement, generate_rich_representation, render_statement
+from edgar.exceptions import NotFoundError
+from edgar.xbrl.statement_resolver import StatementResolver, declares_statement
+from edgar.xbrl.statements import statement_to_concepts
+
+
+# The word "note" carries two unrelated meanings in a role definition: the
+# financial-statement section, and the debt instrument ("notes payable",
+# "convertible notes").  A role that declares itself a disclosure is one even
+# when notes are its subject, which is what these two helpers separate
+# (issue #1207).
+
+# EDGAR role definitions carry an explicit category segment:
+# "0011 - Disclosure - Promissory Notes Payable".  When the schema definition is
+# missing, the role name stands in for it and the same marker leads it:
+# "DisclosurePromissoryNotesPayable".
+_ROLE_CATEGORY_MARKER = 'disclosure'
+
+# The concept a disclosure role hangs from, e.g. us-gaap_DebtDisclosureAbstract.
+# Matches the Disclosures concept patterns in statement_resolver.py.
+_DISCLOSURE_CONCEPT_RE = re.compile(r"disclosures?abstract$", re.IGNORECASE)
+
+# A prefixed QName (prefix:local, both NCNames). A typed dimension value that is
+# one names a concept; any other typed value ('10:30') is data, kept as filed.
+_QNAME = re.compile(r"^[A-Za-z_][\w.-]*:[A-Za-z_][\w.-]*$")
+
+# The section sense of the word, kept deliberately generous: a definition that
+# matches here keeps the classification it already had, so a false positive
+# costs nothing while a false negative would move a real note.
+_NOTES_SECTION_RE = re.compile(
+    r"notes?\s*to\s*[\w\s',&-]*financial\s*statements?"  # Notes to Consolidated Financial Statements
+    r"|notes?\s*\d"                                      # Note 7 - Income Taxes
+    r"|footnotes?"                                       # Footnotes
+    r"|(?:^|\s-\s)notes?$"                               # a role titled only "Notes"
+)
+
+
+def _declares_disclosure(role_def: str, primary_concept: str) -> bool:
+    """Whether a role states that it is a disclosure, rather than merely
+    mentioning the word.
+
+    Args:
+        role_def: Role definition, lowercased.
+        primary_concept: The role's first presentation node.
+    """
+    if _DISCLOSURE_CONCEPT_RE.search(primary_concept or ''):
+        return True
+    if any(part.strip() == _ROLE_CATEGORY_MARKER for part in role_def.split(' - ')):
+        return True
+    return role_def.startswith(_ROLE_CATEGORY_MARKER)
+
+
+def _statement_typing_concept(tree, menu_category: Optional[str]) -> str:
+    """The presentation node that says what kind of statement a role is.
+
+    That is the first node, except where a declared statement opens with its
+    hypercube: STERIS presents its income statement as StatementTable ->
+    StatementLineItems -> IncomeStatementAbstract (GH #1838). Only the filing's
+    own presentation path is followed, and only for a role the filing declares
+    a statement, since a standard abstract inside a disclosure says nothing
+    about the role.
+
+    Args:
+        tree: The role's presentation tree.
+        menu_category: The role's FilingSummary menu category, or None.
+    """
+    first = next(iter(tree.all_nodes))
+    if not first.endswith('Table') or not declares_statement(tree.definition, menu_category):
+        return first
+    table = tree.all_nodes[first]
+    for child in table.children:
+        if child.endswith('LineItems'):
+            line_items = tree.all_nodes.get(child)
+            if line_items is not None and line_items.children:
+                return line_items.children[0]
+    return first
+
+
+def _names_notes_section(role_def: str) -> bool:
+    """Whether a role definition names the notes to the financial statements,
+    as opposed to using "note" as the subject of a disclosure.
+
+    Args:
+        role_def: Role definition, lowercased.
+    """
+    return bool(_NOTES_SECTION_RE.search(role_def))
+
+
+# A role family is a stem and its members, spelled either way a filing names
+# its roles: the schema definition "Debt", "Debt (Tables)", "Debt - Summary
+# (Details)", or the bare role name "ConvertiblePromissoryNotesPayable",
+# "...Tables", "...ScheduleOf...Details", "...Details1Parentheticals".  Only
+# the stem hangs from the disclosure concept, so in a filing that falls back
+# to role names the members cannot declare themselves and are classified with
+# their stem instead (issue #1218).
+#
+# The bare spelling is only read as a member suffix when it is glued to the
+# name: Apple's "Consolidated Financial Statement Details" is a note, and its
+# members say so with the parenthesised form.
+_ROLE_FAMILY_SUFFIX_RE = re.compile(
+    r"(?:\((?:tables?|details?|policies|textuals?)(?:\s+textuals?)?\)(?:[\s-]*\(?parentheticals?\)?)?"
+    r"|(?<![\s(])(?:tables?|details?|policies|textuals?|parentheticals?)\d*(?:parentheticals?)?)$"
+)
+
+# CamelCase segments of a role name: "ConvertiblePromissoryNotesPayable" ->
+# Convertible, Promissory, Notes, Payable.  An all-caps run is one segment.
+_CAMEL_SEGMENT_RE = re.compile(r"[A-Z]+(?![a-z])|[A-Z]?[a-z]+|\d+")
+
+# The sort index a schema definition leads with: "0000017 - Disclosure - Debt".
+# It differs between a stem and its members, so it is no part of the family.
+_ROLE_INDEX_RE = re.compile(r"^\s*\d+\s*-\s*")
+
+
+def _role_family_key(definition: str) -> Tuple[str, ...]:
+    """The role definition as lowercased CamelCase segments, so that a stem
+    is compared with a member segment by segment and `Debt` never claims
+    `DebtorNotesDetails`.
+
+    Args:
+        definition: Role definition as written, so that CamelCase boundaries
+            are still visible.
+    """
+    definition = _ROLE_INDEX_RE.sub('', definition)
+    return tuple(segment.lower() for segment in _CAMEL_SEGMENT_RE.findall(definition))
+
+
+def _segments_match(a: str, b: str) -> bool:
+    """Two segments name the same word when they differ at most by a plural
+    marker.  gahc names its stem "ConvertiblePromissoryNotesPayable" and two
+    members "ConvertiblePromissoryNotePayableScheduleOf...".
+
+    Only a trailing "s" is tolerated, deliberately: "Inventory" against
+    "InventoriesDetails" or "Liability" against "LiabilitiesDetails" does not
+    match, so a member spelled with an "-ies" plural stays classified on its
+    own.  No committed fixture exhibits that shape; widen this when one does.
+    """
+    return a == b or a + 's' == b or b + 's' == a
+
+
+def _is_family_stem_of(stem_key: Tuple[str, ...], family_key: Tuple[str, ...]) -> bool:
+    """Whether `stem_key` is a proper, segment-aligned prefix of `family_key`."""
+    return (len(stem_key) < len(family_key)
+            and all(_segments_match(a, b) for a, b in zip(stem_key, family_key)))
+
+
+# A role name may lead with the section it sits in.  UNP spells most of one
+# family "DisclosureDebtDetails1" and two members of it "DebtDetails6", and
+# names the Leases stem "Leases" but its Tables "DisclosureLeasesTables", so the
+# marker is not part of the family name (edgartools-uqp2).
+_SECTION_MARKER_SEGMENTS = frozenset({'disclosure', 'disclosures', 'statement', 'statements'})
+
+
+def _without_section_marker(key: Tuple[str, ...]) -> Tuple[str, ...]:
+    """`key` without a leading section-marker segment, else `key` unchanged."""
+    return key[1:] if key and key[0] in _SECTION_MARKER_SEGMENTS else key
+
+
+def _leads_family(stem_key: Tuple[str, ...], family_key: Tuple[str, ...]) -> bool:
+    """`_is_family_stem_of`, retried with a leading section marker ignored on
+    either side.
+
+    The marker is dropped only as a fallback, never from the key itself: a
+    filing that names both a `Debt` family and a separate `DisclosureDebt`
+    family must keep them apart, and erasing the marker outright would merge
+    them.  Ignoring it only when nothing aligns without doing so leaves the
+    unambiguous case untouched, and `_role_family_stem` still ranks a stem that
+    aligns strictly above one that needs the fallback.
+    """
+    if _is_family_stem_of(stem_key, family_key):
+        return True
+    bare_stem = _without_section_marker(stem_key)
+    bare_family = _without_section_marker(family_key)
+    if bare_stem == stem_key and bare_family == family_key:
+        return False
+    if not bare_stem:
+        # A stem named only for its section ("Disclosure") says nothing about a
+        # family, and an empty key leads every other one.
+        return False
+    return _is_family_stem_of(bare_stem, bare_family)
+
+
+def _role_family_members(definitions: Iterable[str]) -> Set[str]:
+    """The role definitions that are Tables, Policies or Details members of a
+    family: each carries a member suffix and extends the name of another role
+    in the filing.  A role that only carries the suffix is a stem - Apple's
+    "Consolidated Financial Statement Details", gahc's
+    "SummaryOfSignificantAccountingPolicies" - and so is a member whose stem
+    the filing does not name, since nothing else stands for it.
+
+    Args:
+        definitions: Every role definition in the filing.
+    """
+    keys = {definition: _role_family_key(definition) for definition in definitions}
+    return {definition for definition, key in keys.items()
+            if _ROLE_FAMILY_SUFFIX_RE.search(definition.lower())
+            and any(other and _leads_family(other, key) for other in keys.values())}
+
+
+def _role_family_stem(family_key: Tuple[str, ...],
+                      stem_keys: Iterable[Tuple[str, ...]]) -> Optional[Tuple[str, ...]]:
+    """The stem a family member belongs to: the longest stem whose segments
+    lead the member's, so `NotesPayableRelatedPartyDetails` belongs to
+    `NotesPayableRelatedParty` rather than the shorter `NotesPayable`.  Two
+    stems of one length are told apart by how many segments match exactly
+    rather than by plural.  None when no stem leads the member.
+
+    Args:
+        family_key: The member's `_role_family_key`.
+        stem_keys: Family key of every stem role in the filing.
+    """
+    best_rank = None
+    best = None
+    for stem_key in stem_keys:
+        if not stem_key or not _leads_family(stem_key, family_key):
+            continue
+        # A stem that aligns without ignoring a section marker outranks one that
+        # needs the fallback, so `DebtDetails` prefers a `Debt` stem over a
+        # `DisclosureDebt` stem when the filing names both.
+        strict = _is_family_stem_of(stem_key, family_key)
+        rank = (strict, len(stem_key), sum(a == b for a, b in zip(stem_key, family_key)))
+        if best_rank is None or rank > best_rank:
+            best_rank, best = rank, stem_key
+    return best
+
+
+def _follows_disclosure_family(role_def: str, family_key: Tuple[str, ...],
+                               stem_declares_disclosure: Dict[Tuple[str, ...], bool]) -> bool:
+    """Whether a role that does not declare itself is a Tables or Details
+    member of a family whose stem does.  A member stays with its own family
+    when its stem does not declare a disclosure, whatever a shorter stem says.
+
+    Args:
+        role_def: Role definition, lowercased.
+        family_key: The role's `_role_family_key`.
+        stem_declares_disclosure: Family key of every role in the filing
+            that is not itself a Tables or Details role, mapped to whether
+            it declares a disclosure.
+    """
+    if not _ROLE_FAMILY_SUFFIX_RE.search(role_def):
+        return False
+    stem_key = _role_family_stem(family_key, stem_declares_disclosure)
+    return stem_key is not None and stem_declares_disclosure[stem_key]
+
+
+_XBRL_DOCUMENT_KINDS = ('schema', 'label', 'presentation', 'calculation', 'definition', 'instance')
+# Forms whose submissions are checked for size before reading their XBRL. The check
+# costs one index-page request, so it is limited to the annual and quarterly reports
+# that get_financials() reads and that carry the large submissions; every other form
+# keeps its single request for the .txt.
+_SELECTIVE_DOWNLOAD_FORMS = frozenset({'10-K', '10-KT', '10-Q', '10-QT', '20-F', '40-F'})
+_HOMEPAGE_SIC = re.compile(r'SIC:\s*(\d+)')
+
+
+class _SelectiveXBRLSources:
+    """The XBRL files of a large filing, fetched one by one instead of in the submission .txt."""
+
+    def __init__(self, attachments: 'XBRLAttachments', period_of_report: str,
+                 sic: Optional[str], filing_summary):
+        self.attachments = attachments
+        self.period_of_report = period_of_report
+        self.sic = sic
+        self.filing_summary = filing_summary
+
+
+def _submission_size(homepage, accession_no: str) -> Optional[int]:
+    """Bytes in the complete submission .txt, as the filing index page lists it."""
+    for attachment in homepage.attachments:
+        if attachment.document == f"{accession_no}.txt":
+            try:
+                return int(attachment.size)
+            except (TypeError, ValueError):
+                return None
+    return None
+
+
+def _selective_xbrl_sources(filing) -> Optional[_SelectiveXBRLSources]:
+    """The XBRL files of a large filing fetched individually, or None to read the whole submission.
+
+    A large submission is mostly exhibits, images and PDFs: VALE's FY2025 20-F is
+    169.5 MB, and its XBRL files are 0.76 MB of what goes over the wire. This
+    fetches the filing index page, then only the XBRL files and FilingSummary.xml,
+    and takes the period of report and SIC from the index page (edgartools-vk270.1).
+
+    None keeps today's path: the setting is off, the form is not an annual or
+    quarterly report, the submission is already loaded
+    or comes from local storage or datamule, it is at or below
+    ``selective_attachment_download_min_bytes``, or anything here fails. That path reads the
+    whole submission and reports any real error itself.
+    """
+    from edgar.settings import selective_attachment_download, selective_attachment_download_min_bytes
+    from edgar.storage import is_using_local_storage
+    from edgar.storage.datamule import is_using_datamule_storage
+
+    if not selective_attachment_download():
+        return None
+    form = (getattr(filing, 'form', None) or '').upper().removesuffix('/A')
+    if form not in _SELECTIVE_DOWNLOAD_FORMS:
+        return None
+    if getattr(filing, '_sgml', None) is not None:
+        return None
+    if is_using_local_storage() or is_using_datamule_storage():
+        return None
+    try:
+        homepage = filing.homepage
+        size = _submission_size(homepage, filing.accession_no)
+        if size is None or size <= selective_attachment_download_min_bytes:
+            return None
+        period_of_report = homepage.period_of_report
+        if not period_of_report:
+            return None
+        attachments = XBRLAttachments(homepage.attachments)
+        if not attachments.has_instance_document:
+            return None
+        attachments.prefetch()
+        sic = None
+        filers = homepage.get_filers()
+        if filers:
+            match = _HOMEPAGE_SIC.search(filers[0].identification or '')
+            sic = match.group(1) if match else None
+        filing_summary = _download_filing_summary(homepage.url)
+    except Exception as e:
+        log.debug("Reading the whole submission for %s; selective XBRL download unavailable: %s",
+                  getattr(filing, 'accession_no', '<unknown filing>'), e)
+        return None
+    return _SelectiveXBRLSources(attachments, period_of_report, sic, filing_summary)
+
+
+def _download_filing_summary(homepage_url: str):
+    """FilingSummary.xml from the filing folder, or None when it is missing or unreadable.
+
+    Its categories are optional: from_filing skips them on any failure.
+    """
+    from edgar.httprequests import download_file
+    from edgar.sgml.filing_summary import FilingSummary
+    try:
+        content = download_file(f"{homepage_url.rsplit('/', 1)[0]}/FilingSummary.xml")
+        if isinstance(content, bytes):
+            content = content.decode('utf-8', errors='replace')
+        if not content:
+            return None
+        filing_summary = FilingSummary.parse(content)
+        filing_summary.reports._filing_summary = filing_summary
+        return filing_summary
+    except Exception as e:
+        log.debug("No FilingSummary.xml at %s: %s", homepage_url, e)
+        return None
+
+
+def _capture_sgml_period_of_report(xbrl: "XBRL", filing) -> None:
+    """Record the filing header's period_of_report on `xbrl`, or say why not.
+
+    This is the second of the two dates `_get_validated_period_of_report()`
+    compares. When it is missing that method has nothing to check the XBRL date
+    against and returns it unvalidated — the same value it returns when the two
+    dates agree. Swallowing a failure here therefore does not degrade the
+    presentation, it turns off a correctness check while the result continues to
+    look checked, which is what makes it a bug rather than a guard
+    (bead edgartools-35jj).
+    """
+    try:
+        xbrl._sgml_period_of_report = filing.period_of_report
+    except Exception as e:
+        xbrl._period_validation_unavailable = f"{type(e).__name__}: {e}"
+        log.warning(
+            "Could not read period_of_report from the filing header for %s (%s). "
+            "XBRL/SGML date-discrepancy detection is disabled for this filing, so "
+            "period_of_report is the unvalidated XBRL date.",
+            getattr(filing, "accession_no", "<unknown filing>"), e,
+        )
+
+
+def _sic_code_from_header(sic: Optional[str]) -> Optional[str]:
+    """The bare SIC code in a filing header's SIC field, or None if there is none.
+
+    The full-text SEC header shows the SIC as 'NATIONAL COMMERCIAL BANKS [6021]',
+    or '[]' when the filer has none. The daily-feed header's ASSIGNED-SIC is
+    already the bare '6021'.
+    """
+    if not sic:
+        return None
+    code = sic.strip().rpartition("[")[2].rstrip("]")
+    return code if code.isdigit() else None
+
+
+# Members that aggregate other members of the same axis, rather than being a
+# disjoint part of the breakdown. Adding one of these to its own components
+# double-counts them.
+#
+# 'Total' in the local name catches the issuer's own total member, which is how
+# filers usually spell it (Disney files
+# dis:TotalexcludingredeemablenoncontrollinginterestMember). The named members
+# are the standard aggregates whose names do not say so: ParentMember is equity
+# attributable to the parent, i.e. every component except the noncontrolling
+# interest, and ConsolidatedEntitiesMember/ConsolidationEliminationsMember play
+# the same role on a consolidation axis.
+_AGGREGATE_MEMBER_NAMES = frozenset({
+    'parentmember',
+    'consolidatedentitiesmember',
+})
+
+
+# Axes whose members are not parts of one whole: the same figure for another
+# reporting entity (a parent-only or subsidiary column), another scenario, or
+# a restatement of it. Summing their members adds a figure to itself (GH #1703).
+_NON_ADDITIVE_AXES = frozenset({
+    'dei_LegalEntityAxis',
+    'srt_ConsolidatedEntitiesAxis',
+    'srt_ConsolidationItemsAxis',
+    'srt_RestatementAxis',
+    'srt_StatementScenarioAxis',
+    'us-gaap_StatementScenarioAxis',
+    'us-gaap_RelatedPartyTransactionsByRelatedPartyAxis',
+    'srt_CounterpartyNameAxis',
+})
+
+
+def _contains_a_subtotal(values: List[float], max_members: int = 12) -> bool:
+    """Whether one value equals the sum of two or more of the others.
+
+    Members on an axis the statement does not present carry no hierarchy to
+    say they are disjoint. When one of them is the sum of others, the axis
+    holds a subtotal beside its own parts (KB Home's construction and land
+    costs beside its housing and land detail), and adding everything counts
+    the parts twice (GH #1703). Past max_members the search is skipped.
+    """
+    # A zero is part of no double count: three zero members are not a subtotal.
+    values = [v for v in values if v]
+    if len(values) < 3 or len(values) > max_members:
+        return False
+    from itertools import combinations
+    scale = max(abs(v) for v in values)
+    tolerance = scale * 1e-6
+    for i, target in enumerate(values):
+        others = values[:i] + values[i + 1:]
+        for size in range(2, len(others) + 1):
+            for combo in combinations(others, size):
+                if abs(sum(combo) - target) <= tolerance:
+                    return True
+    return False
+
+
+def _is_aggregate_member(member: str) -> bool:
+    """Whether a dimension member aggregates other members of its axis.
+
+    Compared on the LOCAL NAME: members reach here with either separator
+    ('us-gaap:ParentMember' from a context, 'us-gaap_ParentMember' from the
+    rendered dimension info), and matching the qualified spelling silently
+    matches neither half the time.
+    """
+    if not member:
+        return False
+    local_name = member.split(':', 1)[-1]
+    if ':' not in member and '_' in local_name:
+        local_name = local_name.split('_', 1)[1]
+    lowered = local_name.lower()
+    return lowered in _AGGREGATE_MEMBER_NAMES or 'total' in lowered
+
+
+class XBRLFilingWithNoXbrlData(NotFoundError):
+    """Exception raised when a filing does not contain XBRL data."""
+
+    def __init__(self, message: str):
+        super().__init__(message)
+
+
+class XBRLAttachments:
+    """
+    An adapter for the Attachments class that provides easy access to the XBRL documents.
+    """
+
+    def __init__(self, attachments: Attachments):
+        self._documents = dict()
+        # The instance is read here to recognise it; keep that text so parsing
+        # does not read it again. An attachment without an in-memory SGML copy
+        # downloads on every .content access (edgartools-vk270.1).
+        self._contents = dict()
+        self._attachments = attachments
+        if attachments.data_files:
+            for attachment in attachments.data_files:
+                if attachment.document_type in ["XML", 'EX-101.INS'] and attachment.extension.endswith(
+                        ('.xml', '.XML')):
+                    content = attachment.content
+                    if content and '<xbrl' in content[:2000]:
+                        self._documents['instance'] = attachment
+                        self._contents['instance'] = content
+                elif attachment.document_type == 'EX-101.SCH':
+                    self._documents['schema'] = attachment
+                elif attachment.document_type == 'EX-101.DEF':
+                    self._documents['definition'] = attachment
+                elif attachment.document_type == 'EX-101.CAL':
+                    self._documents['calculation'] = attachment
+                elif attachment.document_type == 'EX-101.LAB':
+                    self._documents['label'] = attachment
+                elif attachment.document_type == 'EX-101.PRE':
+                    self._documents['presentation'] = attachment
+
+    @property
+    def empty(self):
+        return not self._documents
+
+    @property
+    def has_instance_document(self):
+        return 'instance' in self._documents
+
+    @property
+    def instance_only(self):
+        return len(self._documents) == 1 and 'instance' in self._documents
+
+    def get(self, doc_type: str):
+        return self._documents.get(doc_type)
+
+    def content(self, doc_type: str):
+        """The text of one XBRL document, or None when the filing has none of that type."""
+        if doc_type in self._contents:
+            return self._contents[doc_type]
+        attachment = self._documents.get(doc_type)
+        return attachment.content if attachment is not None else None
+
+    def inline_document(self):
+        """The inline XBRL document SEC extracted the instance from, or None.
+
+        SEC names an extracted instance after its source: `gecc-20241231.htm`
+        becomes `gecc-20241231_htm.xml`. Nothing is read here; the caller reads
+        `.content` only if it needs the document.
+        """
+        instance = self._documents.get('instance')
+        name = getattr(instance, 'document', None) or ''
+        if not name.lower().endswith('_htm.xml'):
+            return None
+        source = (name[:-len('_htm.xml')] + '.htm').lower()
+        for attachment in getattr(self._attachments, 'documents', None) or []:
+            if (getattr(attachment, 'document', None) or '').lower() == source:
+                return attachment
+        return None
+
+    def prefetch(self) -> None:
+        """Read every XBRL document now, so a failed download surfaces before parsing starts."""
+        for doc_type in self._documents:
+            if doc_type not in self._contents:
+                self._contents[doc_type] = self._documents[doc_type].content
+
+    def __rich__(self):
+        table = Table(Column("Type"),
+                      Column("Document"),
+                      title="XBRL Documents",
+                      box=box.SIMPLE)
+        for doc_type, attachment in self._documents.items():
+            table.add_row(doc_type, attachment.description)
+        return table
+
+    def __repr__(self):
+        return repr_rich(self)
+
+
+class XBRL:
+    """
+    Integrated XBRL parser that combines all linkbase parsers.
+
+    This is the top-level object that integrates all components of the XBRL parsing system,
+    providing access to facts organized according to presentation hierarchies and
+    allowing for dimensional analysis and calculation validation.
+    """
+
+    def __init__(self):
+        # Use the parser component
+        self.parser = XBRLParser()
+
+        # Statement resolver for matching statements
+        self._statement_resolver = None
+
+        # Cached indices for fast statement lookup (for backward compatibility)
+        self._statement_indices = {}
+        self._statement_by_standard_name = {}
+        self._statement_by_primary_concept = {}
+        self._statement_by_role_uri = {}
+        self._statement_by_role_name = {}
+        self._all_statements_cached = None
+        # GH #1468: role URI -> the co-registrant member a face statement belongs to
+        self._coregistrant_members: Optional[Dict[str, str]] = None
+
+        # SGML period_of_report for date discrepancy detection
+        self._sgml_period_of_report: Optional[str] = None
+        self._validated_period_of_report_cache: Optional[str] = None
+        self._period_of_report_warning_logged: bool = False
+        # The inline XBRL document to read footnotes from on first use, set only
+        # when the extracted instance had none (bead edgartools-s21p2).
+        self._inline_footnote_document = None
+        # Set when the SGML date could not be read at all, which turns the
+        # discrepancy check off rather than making it disagree. Carried so that
+        # "the dates agreed" and "we never had a second date" are distinguishable
+        # (bead edgartools-35jj).
+        self._period_validation_unavailable: Optional[str] = None
+
+        # Standardization cache for this XBRL instance (lazy-initialized)
+        self._standardization_cache = None
+
+        # Reverse index: element_name -> list of context_ids with facts (lazy-initialized)
+        self._element_context_index = None
+        self._prefix_variant_keys = None
+
+        # Most-used iso4217 measure among this filing's facts (lazy; '' when there is none)
+        self._reporting_currency_cache: Optional[str] = None
+        self._currency_choice_logged = False
+
+        # FilingSummary-based role categories (role_uri -> category string)
+        self._filing_summary_categories: Dict[str, str] = {}
+        # FilingSummary-based menu categories (role_uri -> MenuCategory string)
+        self._filing_summary_menu_categories: Dict[str, str] = {}
+
+        # Cache for statement concepts used by notes.py expands logic (lazy-initialized)
+        self._statement_concepts_cache = None
+
+        # Notes caches (lazy-initialized by notes.py)
+        self._notes_cache = None                  # Notes collection once built
+        self._concept_to_notes_cache = None       # Reverse index: concept_id → List[Note]
+        self._filing_summary = None               # FilingSummary for rich notes hierarchy
+
+    def _is_dimension_display_statement(self, statement_type: str, role_definition: str) -> bool:
+        """
+        Determine if a statement should display dimensioned line items.
+        Args:
+            statement_type: Type of statement ('BalanceSheet', 'IncomeStatement', etc.)
+            role_definition: The definition of the statement role
+        Returns:
+            bool: True if dimensions should be displayed, False otherwise
+        """
+        # Look for keywords in role definition that suggest dimensional breakdowns
+        dimension_keywords = [
+            'segment', 'geography', 'geographic', 'region', 'product', 'business',
+            'by country', 'by region', 'by product', 'by segment', 'revenues by'
+        ]
+
+        role_def_lower = role_definition.lower() if role_definition else ""
+
+        # For core financial statements, check if they contain segment information
+        if statement_type in ['BalanceSheet', 'IncomeStatement', 'CashFlowStatement',
+                              'StatementOfEquity', 'ComprehensiveIncome']:
+
+            # Allow dimensional display if the role definition suggests segment/product breakdown
+            if any(keyword in role_def_lower for keyword in dimension_keywords):
+                return True
+
+            # For income statements specifically, check if there are segment-related dimensional facts
+            if statement_type == 'IncomeStatement':
+                # Check if there are facts with ProductOrServiceAxis dimensions
+                try:
+                    # Look for revenue facts with ProductOrServiceAxis dimensions
+                    revenue_concepts = [
+                        'us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax',
+                        'us-gaap:Revenues',
+                        'us-gaap:SalesRevenueNet'
+                    ]
+
+                    for _fact_key, fact in self.parser.facts.items():
+                        # Check if this is a revenue-related concept
+                        concept_name = fact.element_id if hasattr(fact, 'element_id') else getattr(fact, 'concept',
+                                                                                                   str(fact))
+                        if any(revenue_concept in concept_name for revenue_concept in revenue_concepts):
+
+                            # Check if this fact has ProductOrServiceAxis dimension
+                            context = self.parser.contexts.get(fact.context_ref)
+                            if context and hasattr(context, 'dimensions') and context.dimensions:
+                                for dim_name, _dim_value in context.dimensions.items():
+                                    if 'ProductOrServiceAxis' in dim_name:
+                                        return True
+
+                    return False
+                except Exception:
+                    # If any error occurs, default to False
+                    return False
+
+            # For other core statements, skip dimensional display by default
+            return False
+
+        # For non-core statements, check if they contain dimensional breakdowns
+        return any(keyword in role_def_lower for keyword in dimension_keywords)
+
+    @property
+    def element_catalog(self):
+        return self.parser.element_catalog
+
+    @property
+    def contexts(self):
+        return self.parser.contexts
+
+    @property
+    def footnotes(self):
+        """Access to XBRL footnotes."""
+        self._load_inline_footnotes()
+        return self.parser.footnotes
+
+    def _load_inline_footnotes(self) -> None:
+        """Fill footnotes from the inline XBRL document when the instance had none.
+
+        Some SEC-extracted instances drop every footnoteLink that the inline
+        document carries as ix:footnote/ix:relationship (bead edgartools-s21p2).
+        Runs at most once, and only when from_filing found the instance empty of
+        footnotes; the document is read on first use, not at parse time.
+        """
+        document = getattr(self, '_inline_footnote_document', None)
+        if document is None:
+            return
+        self._inline_footnote_document = None
+        try:
+            content = document.content
+        except Exception as e:
+            log.warning(f"Could not read inline XBRL document {getattr(document, 'document', '')} "
+                        f"for its footnotes: {e}")
+            return
+        if not content:
+            return
+        marker = b'relationship' if isinstance(content, bytes) else 'relationship'
+        if marker in content:
+            self.parser.parse_inline_footnotes_content(content)
+
+    @property
+    def standardization(self):
+        """
+        Access the standardization cache for this XBRL instance.
+
+        The cache provides efficient label standardization by:
+        - Caching concept-to-label mappings
+        - Caching standardized statement data
+        - Using the module-level singleton mapper
+
+        Example:
+            >>> xbrl = filing.xbrl()
+            >>> # Get standardized label for a concept
+            >>> label = xbrl.standardization.get_standard_label(
+            ...     'us-gaap_Revenue', 'Revenues',
+            ...     {'statement_type': 'IncomeStatement'}
+            ... )
+            >>> # Standardize statement data with caching
+            >>> data = xbrl.standardization.standardize_statement_data(
+            ...     raw_data, 'IncomeStatement'
+            ... )
+
+        Returns:
+            StandardizationCache instance for this XBRL
+        """
+        if self._standardization_cache is None:
+            from edgar.xbrl.standardization import StandardizationCache
+            self._standardization_cache = StandardizationCache(self)
+        return self._standardization_cache
+
+    @property
+    def _facts(self):
+        return self.parser.facts
+
+    @property
+    def units(self):
+        return self.parser.units
+
+    @property
+    def presentation_roles(self):
+        return self.parser.presentation_roles
+
+    @property
+    def presentation_trees(self):
+        return self.parser.presentation_trees
+
+    @property
+    def calculation_roles(self):
+        return self.parser.calculation_roles
+
+    @property
+    def calculation_trees(self):
+        return self.parser.calculation_trees
+
+    @property
+    def definition_roles(self):
+        return self.parser.definition_roles
+
+    @property
+    def tables(self):
+        return self.parser.tables
+
+    @property
+    def axes(self):
+        return self.parser.axes
+
+    @property
+    def domains(self):
+        return self.parser.domains
+
+    @property
+    def axes_by_role(self):
+        """Axes grouped by the extended link role that declares them."""
+        return self.parser.axes_by_role
+
+    @property
+    def domains_by_role(self):
+        """Domains grouped by the extended link role that declares them."""
+        return self.parser.domains_by_role
+
+    def axes_for_role(self, role_uri: str) -> Dict[str, Axis]:
+        """
+        The axes declared for one statement role, keyed on element ID.
+
+        Prefer this over ``xbrl.axes`` whenever the role is known. An axis can
+        be attached to a different domain in each role it appears in, so
+        ``xbrl.axes`` can only offer a merged answer.
+
+        Args:
+            role_uri: The extended link role URI
+
+        Returns:
+            Mapping of element ID to Axis, empty if the role has no definition
+            linkbase.
+        """
+        return self.parser.axes_for_role(role_uri)
+
+    def domains_for_role(self, role_uri: str) -> Dict[str, Domain]:
+        """
+        The domains declared for one statement role, keyed on element ID.
+
+        Prefer this over ``xbrl.domains`` whenever the role is known. The same
+        domain routinely carries different members in different roles — Apple's
+        ``srt_ProductsAndServicesDomain`` splits revenue two ways on the income
+        statement and five ways in the revenue note — so ``xbrl.domains`` can
+        only offer the union.
+
+        Args:
+            role_uri: The extended link role URI
+
+        Returns:
+            Mapping of element ID to Domain, empty if the role has no
+            definition linkbase.
+        """
+        return self.parser.domains_for_role(role_uri)
+
+    @property
+    def entity_info(self):
+        return self.parser.entity_info
+
+    @property
+    def reporting_periods(self):
+        return self.parser.reporting_periods
+
+    def calculation_linkbase(self, include_abstract: bool = False) -> pd.DataFrame:
+        """Return the filing's calculation linkbase as a DataFrame of arcs.
+
+        Each row is one parent→child calculation relationship with its weight,
+        role, and taxonomy attribution. Useful for building per-filer concept
+        hierarchies (e.g., mapping `jpm:AssetManagementFees → us-gaap:NoninterestIncome`)
+        without parsing `_cal.xml` directly.
+
+        Args:
+            include_abstract: When False (default), abstract concepts are excluded.
+                Set True to include structural/grouping concepts.
+
+        Returns:
+            DataFrame with columns:
+                concept, concept_taxonomy, parent_concept, parent_taxonomy,
+                weight, role_uri, role_short, menucat, is_abstract, label
+
+            Root nodes (those without a parent) are always excluded — they have
+            no arc. Returns an empty DataFrame (with the documented columns) if
+            the filing has no calculation linkbase.
+
+        Notes:
+            - `weight` preserves the XBRL `weight` attribute sign. Real filings
+              use `-1.0` for contra-account rollups (e.g., MET's amortization
+              entries); do not flatten the sign downstream.
+            - `concept_taxonomy` is the prefix before the first `_` in the
+              element ID (`us-gaap`, `dei`, `srt`, or the filer's own prefix
+              like `jpm`, `tsla`).
+            - `menucat` is the SEC FilingSummary report tier when available,
+              as the full `MenuCategory` name (`Statements`, `Details`, `Notes`,
+              `Tables`, `Policies`, `Cover`), not a single letter. May be None
+              for older filings without FilingSummary.
+
+        Example:
+            >>> from edgar import Company
+            >>> jpm_10k = Company("JPM").latest("10-K")
+            >>> calc = jpm_10k.xbrl().calculation_linkbase()
+            >>> # Find extension concepts that roll up to a us-gaap parent
+            >>> extensions = calc[
+            ...     (calc.concept_taxonomy == 'jpm') &
+            ...     (calc.parent_taxonomy == 'us-gaap')
+            ... ]
+        """
+        columns = [
+            'concept', 'concept_taxonomy', 'parent_concept', 'parent_taxonomy',
+            'weight', 'role_uri', 'role_short', 'menucat', 'is_abstract', 'label',
+        ]
+        rows = []
+
+        for role_uri, tree in self.calculation_trees.items():
+            # Prefer schema-declared role definition (human-authored) over
+            # the derived form CalculationTree.definition.
+            role_short = (
+                self.parser.role_types.get(role_uri, {}).get('definition')
+                or tree.definition
+            )
+            menucat = self._filing_summary_menu_categories.get(role_uri)
+
+            # One row per filed edge. Iterating all_nodes would emit one row
+            # per concept, which silently drops the second and later parents of
+            # a concept that rolls up into more than one total.
+            for arc in tree.all_arcs:
+                element_id = arc.child_id
+
+                concept_tax, concept_local = split_element_id(element_id)
+                parent_tax, parent_local = split_element_id(arc.parent_id)
+
+                elem = self.element_catalog.get(element_id)
+                is_abstract = bool(elem.abstract) if elem else False
+                if is_abstract and not include_abstract:
+                    continue
+
+                label = ''
+                if elem and elem.labels:
+                    label = elem.labels.get(STANDARD_LABEL, '') or ''
+
+                rows.append({
+                    'concept': concept_local,
+                    'concept_taxonomy': concept_tax,
+                    'parent_concept': parent_local,
+                    'parent_taxonomy': parent_tax,
+                    'weight': arc.weight,
+                    'role_uri': role_uri,
+                    'role_short': role_short,
+                    'menucat': menucat,
+                    'is_abstract': is_abstract,
+                    'label': label,
+                })
+
+        return pd.DataFrame(rows, columns=columns)
+
+    @property
+    def period_of_report(self) -> Optional[str]:
+        """Get the document period end date, with discrepancy detection."""
+        return self._get_validated_period_of_report()
+
+    @property
+    def period_validation_unavailable(self) -> Optional[str]:
+        """Why the XBRL/SGML date cross-check could not run, or None if it could.
+
+        `period_of_report` normally validates the XBRL date against the SGML
+        header date. When the header date cannot be read there is nothing to
+        check against and the XBRL date is returned as-is — the same value the
+        check would return when the dates agree. This says which of the two
+        happened.
+        """
+        return self._period_validation_unavailable
+
+    def _get_xbrl_period_of_report(self) -> Optional[str]:
+        """Get the raw XBRL document_period_end_date without validation."""
+        if 'document_period_end_date' in self.entity_info:
+            period = self.entity_info['document_period_end_date']
+            return period.strftime('%Y-%m-%d') if isinstance(period, datetime.date) else period
+        return None
+
+    def _get_validated_period_of_report(self) -> Optional[str]:
+        """
+        Get period_of_report with discrepancy detection and correction.
+
+        When XBRL and SGML header dates differ, uses heuristics to choose
+        the correct date by examining which year has actual annual data.
+        Results are cached to avoid repeated computation and warning spam.
+        """
+        # Return cached result if available
+        if self._validated_period_of_report_cache is not None:
+            return self._validated_period_of_report_cache
+
+        xbrl_date = self._get_xbrl_period_of_report()
+        sgml_date = self._sgml_period_of_report
+
+        # If no SGML date or dates match, return XBRL date
+        if not sgml_date or xbrl_date == sgml_date:
+            self._validated_period_of_report_cache = xbrl_date
+            return xbrl_date
+
+        # Dates differ - apply heuristics
+        log.debug(f"Date discrepancy: XBRL={xbrl_date}, SGML={sgml_date}")
+
+        # Find annual periods in actual data
+        annual_periods = self._find_annual_periods()
+
+        if not annual_periods:
+            # No annual periods found, fall back to XBRL date
+            self._validated_period_of_report_cache = xbrl_date
+            return xbrl_date
+
+        # Extract years from both dates
+        xbrl_year = int(xbrl_date[:4]) if xbrl_date else None
+        sgml_year = int(sgml_date[:4]) if sgml_date else None
+
+        # Check if any annual period ends in the SGML year
+        sgml_year_has_annual = False
+
+        for period in annual_periods:
+            end_date = period.get('end_date', '')
+            if end_date:
+                period_year = int(end_date[:4])
+                if period_year == sgml_year:
+                    sgml_year_has_annual = True
+                    break
+
+        # Decision logic:
+        # The SGML header is authoritative. If SGML year has annual data present,
+        # prefer SGML date over potentially incorrect XBRL DocumentPeriodEndDate.
+        if sgml_year_has_annual:
+            if not self._period_of_report_warning_logged:
+                log.warning(
+                    f"Correcting document_period_end_date: XBRL has {xbrl_date}, "
+                    f"but SGML header indicates {sgml_date} and data contains {sgml_year} annual period. "
+                    f"Using SGML date: {sgml_date}"
+                )
+                self._period_of_report_warning_logged = True
+            self._validated_period_of_report_cache = sgml_date
+            return sgml_date
+
+        # Fall back to XBRL date
+        self._validated_period_of_report_cache = xbrl_date
+        return xbrl_date
+
+    def _find_annual_periods(self) -> List[Dict]:
+        """
+        Find periods that are 300-370 days (annual periods).
+
+        Returns:
+            List of period dicts with annual duration
+        """
+        annual = []
+        for period in self.reporting_periods:
+            period_key = period.get('key', '')
+            if 'duration' in period_key:
+                start = period.get('start_date')
+                end = period.get('end_date')
+                if start and end:
+                    try:
+                        start_dt = datetime.datetime.strptime(start, '%Y-%m-%d')
+                        end_dt = datetime.datetime.strptime(end, '%Y-%m-%d')
+                        days = (end_dt - start_dt).days
+                        if 300 <= days <= 370:
+                            annual.append(period)
+                    except (ValueError, TypeError):
+                        pass
+        return annual
+
+    @property
+    def entity_name(self):
+        return self.entity_info.get('entity_name')
+
+    @property
+    def document_type(self):
+        return self.entity_info.get('document_type')
+
+    @property
+    def context_period_map(self):
+        return self.parser.context_period_map
+
+    @property
+    def element_context_index(self) -> Dict[str, List[str]]:
+        """Reverse index: element_name -> list of context_ids with facts.
+
+        Built lazily on first access by scanning all parsed facts.
+        Used by _find_facts_for_element() to avoid iterating all contexts.
+        """
+        if self._element_context_index is None:
+            index: Dict[str, List[str]] = {}
+            for fact in self.parser.facts.values():
+                elem = fact.element_id.replace(':', '_')
+                if elem not in index:
+                    index[elem] = []
+                index[elem].append(fact.context_ref)
+            self._element_context_index = index
+        return self._element_context_index
+
+    def _fact_element_key(self, element_name: str) -> str:
+        """The key the instance's facts use for a linkbase element ID.
+
+        A linkbase names an element by its schema fragment, the instance by
+        its own prefix, and the two can differ. The FASB supplement schema
+        gives its elements 'us-gaap_' fragments while filings declare them as
+        us-gaap-supplement:, so Gladstone Investment's total expenses row was
+        blank although the three facts were filed (GH #1680). When the element
+        ID has no facts, a fact key with the same local name under a prefix
+        that extends the element's prefix ('us-gaap' -> 'us-gaap-supplement')
+        is used, provided exactly one exists.
+        """
+        index = self.element_context_index
+        if element_name in index or '_' not in element_name:
+            return element_name
+        if self._prefix_variant_keys is None:
+            variants: Dict[Tuple[str, str], List[str]] = {}
+            for key in index:
+                prefix, _, local = key.partition('_')
+                if '-' in prefix and local:
+                    base = prefix.split('-', 1)[0]
+                    variants.setdefault((base, local), []).append(key)
+            self._prefix_variant_keys = variants
+        prefix, _, local = element_name.partition('_')
+        candidates = [key for key in self._prefix_variant_keys.get((prefix.split('-', 1)[0], local), [])
+                      if key.partition('_')[0].startswith(prefix + '-')]
+        return candidates[0] if len(candidates) == 1 else element_name
+
+    @classmethod
+    def from_directory(cls, directory_path: Union[str, Path]) -> 'XBRL':
+        """
+        Parse all XBRL files in a directory.
+        Args:
+            directory_path: Path to directory containing XBRL files
+        Returns:
+            XBRL object with parsed data
+        """
+        xbrl = cls()
+        xbrl.parser.parse_directory(directory_path)
+
+        # Try to create legacy instance as well for compatibility
+        directory = Path(directory_path)
+        for file_path in directory.glob("*"):
+            if file_path.is_file() and file_path.name.lower().endswith('.xml') and '<xbrl' in file_path.read_text()[
+                :2000]:
+                break
+
+        return xbrl
+
+    @classmethod
+    def from_files(cls, instance_file: Optional[Union[str, Path]] = None,
+                   schema_file: Optional[Union[str, Path]] = None,
+                   presentation_file: Optional[Union[str, Path]] = None,
+                   calculation_file: Optional[Union[str, Path]] = None,
+                   definition_file: Optional[Union[str, Path]] = None,
+                   label_file: Optional[Union[str, Path]] = None) -> 'XBRL':
+        """
+        Create an XBRL object from individual files.
+        Args:
+            instance_file: Path to instance document file
+            schema_file: Path to schema file
+            presentation_file: Path to presentation linkbase file
+            calculation_file: Path to calculation linkbase file
+            definition_file: Path to definition linkbase file
+            label_file: Path to label linkbase file
+
+        Returns:
+            XBRL object with parsed data
+        """
+        xbrl = cls()
+
+        # Parse schema first
+        if schema_file:
+            xbrl.parser.parse_schema(schema_file)
+
+        # Parse linkbase files
+        if label_file:
+            xbrl.parser.parse_labels(label_file)
+
+        if presentation_file:
+            xbrl.parser.parse_presentation(presentation_file)
+
+        if calculation_file:
+            xbrl.parser.parse_calculation(calculation_file)
+
+        if definition_file:
+            xbrl.parser.parse_definition(definition_file)
+
+        # Parse instance last
+        if instance_file:
+            xbrl.parser.parse_instance(instance_file)
+
+        return xbrl
+
+    @classmethod
+    def from_filing(cls, filing) -> Optional['XBRL']:
+        """
+        Create an XBRL object from a Filing object.
+
+        Args:
+            filing: Filing object with attachments containing XBRL files
+
+        Returns:
+            XBRL object with parsed data, or `None` when the filing carries no
+            XBRL attachments at all — a property of the filing, not a failure to
+            read it, and one this keeps answering with a quiet `None` in 6.0.
+        """
+        if filing.form.endswith("/A"):
+            log.debug(dedent(f"""
+            {filing}
+            is an amended filing and may not contain full XBRL data e.g. some statements might be missing.
+            Consider using the original filing instead if available with `get_filings(form="10-K", amendments=False)`
+            """))
+
+        xbrl = cls()
+
+        # A large submission is mostly exhibits and PDFs; fetch just its XBRL files
+        # when that is possible, else read the whole submission (edgartools-vk270.1).
+        selective = _selective_xbrl_sources(filing)
+        xbrl_attachments = selective.attachments if selective else XBRLAttachments(filing.attachments)
+
+        if xbrl_attachments.empty:
+            # Silent on purpose. `filing.xbrl()` answering None for a filing
+            # with no XBRL is a true absence, not a failure, and docs/upgrade/
+            # 6.0.md commits to it staying that way. The silent-None bug this
+            # module was implicated in (edgartools-07lk.10.1) is one level up,
+            # where `Financials` wraps this None into a truthy object whose
+            # every accessor answers None — so that is where the warning went.
+            log.debug(f"No XBRL attachments found in filing {filing}")
+            return None
+
+        if xbrl_attachments.get('schema'):
+            xbrl.parser.parse_schema_content(xbrl_attachments.content('schema'))
+
+        if xbrl_attachments.get('label'):
+            xbrl.parser.parse_labels_content(xbrl_attachments.content('label'))
+
+        if xbrl_attachments.get('presentation'):
+            xbrl.parser.parse_presentation_content(xbrl_attachments.content('presentation'))
+
+        if xbrl_attachments.get('calculation'):
+            xbrl.parser.parse_calculation_content(xbrl_attachments.content('calculation'))
+
+        if xbrl_attachments.get('definition'):
+            xbrl.parser.parse_definition_content(xbrl_attachments.content('definition'))
+
+        if xbrl_attachments.get('instance'):
+            xbrl.parser.parse_instance_content(xbrl_attachments.content('instance'))
+            if not xbrl.parser.footnotes:
+                # Read lazily: most filings with no footnoteLink have no footnotes,
+                # and the inline document can be a large download (edgartools-s21p2).
+                xbrl._inline_footnote_document = xbrl_attachments.inline_document()
+        elif not xbrl_attachments.empty:
+            # Filing bundle is in local storage AND has linkbases, but the XBRL
+            # instance document itself is missing. This is typical for iXBRL filings
+            # filed before SEC's Oct-2020 feed format change, when the inline-XBRL
+            # data was embedded in the .htm file but not extracted to a separate
+            # _htm.xml in the feed bundle. Fall back to fetching just the instance
+            # from the filing homepage if network fallback is allowed.
+            from edgar.storage import is_using_local_storage, is_network_fallback_allowed
+            if is_using_local_storage() and is_network_fallback_allowed():
+                homepage_xbrl = XBRLAttachments(filing.homepage.attachments)
+                if homepage_xbrl.get('instance'):
+                    log.info(
+                        f"XBRL instance missing from local SGML for {filing.accession_no} "
+                        f"(common for iXBRL filings before SEC's Oct-2020 feed format change). "
+                        f"Fetching just the instance from the SEC homepage (network fallback)."
+                    )
+                    xbrl.parser.parse_instance_content(homepage_xbrl.get('instance').content)
+                    if not xbrl.parser.footnotes:
+                        xbrl._inline_footnote_document = homepage_xbrl.inline_document()
+                else:
+                    log.warning(
+                        f"XBRL instance document not found for {filing.accession_no} — "
+                        f"missing from both local SGML and the SEC filing homepage. "
+                        f"Entity info and facts will be empty."
+                    )
+            else:
+                log.warning(
+                    f"XBRL instance missing from local SGML for {filing.accession_no} "
+                    f"and network fallback is disabled. Either re-enable fallback "
+                    f"(use_local_storage(..., allow_network_fallback=True)) or re-download "
+                    f"the filing — entity info and facts will be empty."
+                )
+
+        # Capture SGML period_of_report for date discrepancy detection. The
+        # selective path takes it from the index page: filing.period_of_report
+        # would load the whole submission.
+        if selective:
+            xbrl._sgml_period_of_report = selective.period_of_report
+        else:
+            _capture_sgml_period_of_report(xbrl, filing)
+
+        # Try to set industry from filing header SIC for industry-specific standardization
+        try:
+            if selective:
+                if selective.sic:
+                    xbrl.standardization.set_industry_from_sic(selective.sic)
+            elif hasattr(filing, '_sgml') and filing._sgml is not None:
+                # Only use SIC if header is already loaded (no extra network call)
+                header = filing._sgml.header
+                if header and header.filers:
+                    company = header.filers[0].company_information
+                    sic = _sic_code_from_header(company.sic) if company else None
+                    if sic:
+                        xbrl.standardization.set_industry_from_sic(sic)
+        except Exception as e:
+            log.debug(
+                "Could not set the industry from the filing header SIC for %s: %s",
+                getattr(filing, "accession_no", "<unknown filing>"),
+                e,
+            )
+
+        # Load authoritative categories from FilingSummary.xml. On today's path the
+        # SGML is already loaded from filing.attachments above, so this is zero-cost;
+        # the selective path fetched FilingSummary.xml on its own.
+        try:
+            if selective:
+                filing_summary = selective.filing_summary
+            else:
+                sgml = filing.sgml()
+                filing_summary = sgml.filing_summary if sgml else None
+            if filing_summary:
+                _MENU_CATEGORY_TO_CLASSIFICATION = {
+                    'Notes': 'note',
+                    'Tables': 'note',
+                    'Policies': 'note',
+                    'Details': 'disclosure',
+                    'Cover': 'document',
+                }
+                for report in filing_summary.reports:
+                    if report.role and report.menu_category:
+                        classification = _MENU_CATEGORY_TO_CLASSIFICATION.get(report.menu_category)
+                        if classification:
+                            xbrl._filing_summary_categories[report.role] = classification
+                        xbrl._filing_summary_menu_categories[report.role] = report.menu_category
+                xbrl._filing_summary = filing_summary
+        except Exception:
+            pass
+
+        return xbrl
+
+    @property
+    def statements(self):
+        from edgar.xbrl.statements import Statements
+        return Statements(self)
+
+    @property
+    def fund_statements(self):
+        """
+        Access fund-specific statements (Schedule of Investments, Financial Highlights).
+
+        This property provides specialized access to financial statements that are
+        specific to investment companies (BDCs, closed-end funds, interval funds, etc.).
+
+        Returns:
+            FundStatements: Interface for fund statement access
+
+        Example:
+            >>> xbrl = filing.xbrl()
+            >>> if xbrl.fund_statements.is_fund_filing():
+            ...     soi = xbrl.fund_statements.schedule_of_investments()
+            ...     if soi:
+            ...         print(soi)
+        """
+        from edgar.xbrl.fund_statements import FundStatements
+        if not hasattr(self, '_fund_statements'):
+            self._fund_statements = FundStatements(self)
+        return self._fund_statements
+
+    def notes(self) -> List:
+        """
+        Get all note sections from the XBRL filing.
+
+        Returns:
+            List of Statement objects for notes
+
+        Example:
+            >>> xbrl = filing.xbrl()
+            >>> for note in xbrl.notes():
+            ...     print(note.title)
+        """
+        return self.statements.notes()
+
+    def disclosures(self) -> List:
+        """
+        Get all disclosure sections from the XBRL filing.
+
+        Returns:
+            List of Statement objects for disclosures
+
+        Example:
+            >>> xbrl = filing.xbrl()
+            >>> for disc in xbrl.disclosures():
+            ...     print(disc.title)
+        """
+        return self.statements.disclosures()
+
+    def list_tables(self) -> Dict[str, List]:
+        """
+        List all tables in the XBRL filing, organized by category.
+
+        Returns a dict with keys: 'statement', 'note', 'disclosure', 'document', 'other'.
+        Each value is a list of statement dicts with 'index', 'definition', 'role_name', etc.
+
+        Example:
+            >>> xbrl = filing.xbrl()
+            >>> tables = xbrl.list_tables()
+            >>> for note in tables['note']:
+            ...     print(note['definition'])
+        """
+        return self.statements.get_statements_by_category()
+
+    def get_table(self, name: str) -> Optional[Any]:
+        """
+        Get a table (statement, note, or disclosure) by name with smart resolution.
+
+        Searches in order: exact type match, role_name contains, definition contains.
+        Works for any table in the filing — financial statements, notes, or disclosures.
+
+        Args:
+            name: Table name to search for (e.g. 'IncomeStatement', 'debt', 'revenue recognition')
+
+        Returns:
+            Statement if found, None otherwise
+
+        Example:
+            >>> xbrl = filing.xbrl()
+            >>> debt_note = xbrl.get_table("debt")
+            >>> revenue = xbrl.get_table("revenue recognition")
+        """
+        return self.statements.get(name)
+
+    def get_disclosure(self, role_uri: str) -> Optional[Any]:
+        """
+        Get a disclosure or note by its exact role URI.
+
+        For advanced users who know the specific XBRL role URI.
+
+        Args:
+            role_uri: Full role URI (e.g. 'http://company.com/role/DebtDisclosure')
+
+        Returns:
+            Statement if the role exists, None otherwise
+
+        Example:
+            >>> xbrl = filing.xbrl()
+            >>> tables = xbrl.list_tables()
+            >>> role = tables['disclosure'][0]['role']
+            >>> stmt = xbrl.get_disclosure(role)
+        """
+        from edgar.xbrl.statements import Statement
+        if role_uri in self.presentation_trees:
+            return Statement(self, role_uri)
+        return None
+
+    @property
+    def facts(self):
+        from edgar.xbrl.facts import FactsView
+        if not hasattr(self, '_facts_view'):
+            self._facts_view = FactsView(self)
+        return self._facts_view
+
+    @property
+    def current_period(self):
+        """
+        Convenient access to current period financial data.
+
+        Provides simplified access to the most recent period's financial data
+        without comparative information. This addresses common use cases where
+        users only need the current period data.
+
+        Returns:
+            CurrentPeriodView: Interface for accessing current period data
+
+        Example:
+            >>> xbrl = filing.xbrl()
+            >>> current = xbrl.current_period
+            >>> balance_sheet = current.balance_sheet()
+            >>> income = current.income_statement(raw_concepts=True)
+        """
+        from edgar.xbrl.current_period import CurrentPeriodView
+        if not hasattr(self, '_current_period_view'):
+            self._current_period_view = CurrentPeriodView(self)
+        return self._current_period_view
+
+    def query(self,
+              include_dimensions: bool = False,
+              include_contexts: bool = False,
+              include_element_info: bool = False) -> 'FactQuery':
+        """
+        Start a new query for XBRL facts.
+        """
+        fact_query = self.facts.query()
+        # Explicitly set the include_dimensions flag based on the parameter
+        fact_query._include_dimensions = include_dimensions
+        if not include_contexts:
+            fact_query = fact_query.exclude_contexts()
+        if not include_element_info:
+            fact_query = fact_query.exclude_element_info()
+        return fact_query
+
+    def get_all_statements(self) -> List[Dict[str, Any]]:
+        """
+        Get all available financial statements.
+
+        Returns:
+            List of statement metadata (role, definition, element count)
+        """
+        # Return cached result if available
+        if self._all_statements_cached is not None:
+            return self._all_statements_cached
+
+        statements = []
+
+        # Reset indices
+        self._statement_indices = {}
+        self._statement_by_standard_name = {}
+        self._statement_by_primary_concept = {}
+        self._statement_by_role_uri = {}
+        self._statement_by_role_name = {}
+
+        # Family key of every stem role and whether it declares itself a
+        # disclosure, so that a Tables or Details role can follow its nearest
+        # stem below (issue #1218).  Every stem is recorded, not only the
+        # declaring ones, so that `NotesPayableRelatedPartyDetails` resolves to
+        # `NotesPayableRelatedParty` and not past it to `NotesPayable`.  Roles
+        # that are themselves Tables or Details are not stems: gahc's
+        # `...DetailsParenthetical` must reach the family stem, not the
+        # `...Details` it extends.  A definition with no segments at all is
+        # a prefix of every other and is left out.
+        definitions = [tree.definition for tree in self.presentation_trees.values()
+                       if isinstance(tree.definition, str)]
+        members = _role_family_members(definitions)
+        stem_declares_disclosure: Dict[Tuple[str, ...], bool] = {}
+        for tree in self.presentation_trees.values():
+            if not isinstance(tree.definition, str) or tree.definition in members:
+                continue
+            key = _role_family_key(tree.definition)
+            if not key:
+                continue
+            role_def = tree.definition.lower()
+            declares = (_declares_disclosure(role_def, next(iter(tree.all_nodes)))
+                        and not _names_notes_section(role_def))
+            # Two trees spell one definition only when a filing repeats a
+            # role; the family is the same either way.
+            stem_declares_disclosure[key] = stem_declares_disclosure.get(key, False) or declares
+
+        for role, tree in self.presentation_trees.items():
+            # Check if this role appears to be a financial statement
+            role_def = tree.definition.lower()
+            statement_type = None
+            primary_concept = next(iter(tree.all_nodes))
+            # Typed by the abstract under a declared statement's line items when
+            # it opens with a table (GH #1838); primary_concept stays literal.
+            typing_concept = _statement_typing_concept(tree, self._filing_summary_menu_categories.get(role))
+            statement_category = None
+
+            # First try to match using statement_to_concepts (for backward compatibility)
+            for statement_alias, statement_info in statement_to_concepts.items():
+                if typing_concept == statement_info.concept:
+                    if 'parenthetical' in role_def:
+                        statement_type = f"{statement_alias}Parenthetical"
+                    else:
+                        statement_type = statement_alias
+                    if 'BalanceSheet' not in statement_type:
+                        break
+
+            # If we didn't find a match, try IFRS concept → type mapping
+            if not statement_type:
+                _IFRS_CONCEPT_TO_TYPE = {
+                    "ifrs-full_StatementOfProfitOrLossAbstract": "IncomeStatement",
+                    "ifrs-full_IncomeStatementAbstract": "IncomeStatement",
+                    "ifrs-full_StatementOfFinancialPositionAbstract": "BalanceSheet",
+                    "ifrs-full_StatementOfCashFlowsAbstract": "CashFlowStatement",
+                    "ifrs-full_StatementOfChangesInEquityAbstract": "StatementOfEquity",
+                    "ifrs-full_StatementOfComprehensiveIncomeAbstract": "ComprehensiveIncome",
+                    "ifrs-full_StatementOfProfitOrLossAndOtherComprehensiveIncomeAbstract": "ComprehensiveIncome",
+                }
+                matched_type = _IFRS_CONCEPT_TO_TYPE.get(typing_concept)
+                if matched_type:
+                    if 'parenthetical' in role_def:
+                        statement_type = f"{matched_type}Parenthetical"
+                    else:
+                        statement_type = matched_type
+
+            # Use FilingSummary.xml authoritative categories if available (Fix 2)
+            if not statement_type and role in self._filing_summary_categories:
+                fs_category = self._filing_summary_categories[role]
+                fs_menu = self._filing_summary_menu_categories.get(role, '')
+                statement_category = fs_category
+                # Derive a type name from the menu category
+                if fs_menu == 'Notes':
+                    statement_type = "Notes"
+                elif fs_menu == 'Tables':
+                    statement_type = "NoteTable"
+                elif fs_menu == 'Policies':
+                    statement_type = "AccountingPolicies"
+                elif fs_menu == 'Details':
+                    statement_type = "Disclosures"
+                elif fs_menu == 'Cover':
+                    statement_type = "CoverPage"
+
+            # Fall back to keyword-based patterns for notes and disclosures
+            if not statement_type:
+                if 'us-gaap_NotesToFinancialStatementsAbstract' in primary_concept:
+                    statement_type = "Notes"
+                    statement_category = "note"
+                elif 'note' in role_def:
+                    # The bare keyword cannot tell the notes to the financial
+                    # statements from a disclosure whose subject happens to be
+                    # notes payable, so a role that declares itself a disclosure
+                    # is taken at its word unless the definition names the notes
+                    # section itself (issue #1207).
+                    #
+                    # In a filing that falls back to role names only the family
+                    # stem carries that evidence: gahc's
+                    # `ConvertiblePromissoryNotesPayable` hangs from
+                    # us-gaap_DebtDisclosureAbstract, while its `Tables` and
+                    # `ScheduleOf...Details` children hang from a debt-balance
+                    # abstract.  Those follow their stem so the family stays
+                    # together across notes() and disclosures() (issue #1218).
+                    if _names_notes_section(role_def):
+                        statement_type = "Notes"
+                        statement_category = "note"
+                    elif (_declares_disclosure(role_def, primary_concept)
+                          or _follows_disclosure_family(role_def, _role_family_key(tree.definition),
+                                                        stem_declares_disclosure)):
+                        statement_type = "Disclosures"
+                        statement_category = "disclosure"
+                    else:
+                        statement_type = "Notes"
+                        statement_category = "note"
+                elif 'us-gaap_DisclosuresAbstract' in primary_concept or 'disclosure' in role_def:
+                    statement_type = "Disclosures"
+                    statement_category = "disclosure"
+                elif 'us-gaap_AccountingPoliciesAbstract' in primary_concept or 'accounting policies' in role_def:
+                    statement_type = "AccountingPolicies"
+                    statement_category = "note"
+                elif 'us-gaap_SegmentDisclosureAbstract' in primary_concept or 'segment' in role_def:
+                    statement_type = "SegmentDisclosure"
+                    statement_category = "disclosure"
+            # Try to extract role name from URI
+            role_name = role.split('/')[-1] if '/' in role else role.split('#')[-1] if '#' in role else ''
+
+            # Create the statement metadata
+            statement = {
+                'role': role,
+                'definition': tree.definition,
+                'element_count': len(tree.all_nodes),
+                'type': statement_type,
+                'primary_concept': primary_concept,
+                'role_name': role_name,
+                'category': statement_category,  # This will be None for backward compatibility unless set above
+                'menu_category': self._filing_summary_menu_categories.get(role)  # From FilingSummary.xml
+            }
+
+            statements.append(statement)
+
+            # Build lookup indices
+            # By role URI
+            self._statement_by_role_uri[role] = statement
+
+            # By role name (short name)
+            if role_name:
+                role_name_lower = role_name.lower()
+                if role_name_lower not in self._statement_by_role_name:
+                    self._statement_by_role_name[role_name_lower] = []
+                self._statement_by_role_name[role_name_lower].append(statement)
+
+            # By standard name
+            if statement_type:
+                if statement_type not in self._statement_by_standard_name:
+                    self._statement_by_standard_name[statement_type] = []
+                self._statement_by_standard_name[statement_type].append(statement)
+
+            # By primary concept
+            if primary_concept:
+                if primary_concept not in self._statement_by_primary_concept:
+                    self._statement_by_primary_concept[primary_concept] = []
+                self._statement_by_primary_concept[primary_concept].append(statement)
+
+            # Also index by definition (without spaces, lowercase)
+            if statement['definition']:
+                def_key = statement['definition'].lower().replace(' ', '')
+                if def_key not in self._statement_indices:
+                    self._statement_indices[def_key] = []
+                self._statement_indices[def_key].append(statement)
+
+        # Cache the result
+        self._all_statements_cached = statements
+        return statements
+
+    def get_statement_by_type(self, statement_type: str, include_dimensions: bool = False) -> Optional[Dict[str, Any]]:
+        """
+        Get the first statement matching the given type.
+
+        Args:
+            statement_type: Type of statement ('BalanceSheet', 'IncomeStatement', 'Notes', etc.)
+            include_dimensions: Whether to include dimensional segment data (default: False)
+
+        Returns:
+            Statement data if found, None otherwise
+        """
+        # Use find_statement instead of the flawed index-based lookup
+        matching_statements, found_role, actual_statement_type = self.find_statement(statement_type)
+
+        if not found_role or not matching_statements:
+            return None
+
+        # Get statement data using the found role
+        statement_data = self.get_statement(found_role, should_display_dimensions=include_dimensions)
+
+        if statement_data:
+            # Extract periods from the statement data
+            periods = {}
+            for item in statement_data:
+                for period_id, _value in item.get('values', {}).items():
+                    if period_id not in periods:
+                        # Get period label from reporting_periods
+                        period_label = period_id
+                        for period in self.reporting_periods:
+                            if period['key'] == period_id:
+                                period_label = period['label']
+                                break
+                        periods[period_id] = {'label': period_label}
+
+            return {
+                'role': found_role,
+                'definition': matching_statements[0]['definition'],
+                'statement_type': actual_statement_type,
+                'periods': periods,
+                'data': statement_data
+            }
+
+        return None
+
+    @classmethod
+    def stitch_statements(cls, xbrl_list: List['XBRL'],
+                          statement_type: str = 'IncomeStatement',
+                          period_type: str = 'RECENT_PERIODS',
+                          max_periods: int = 3,
+                          standard: bool = True) -> Dict[str, Any]:
+        """
+        Stitch together statements from multiple XBRL objects.
+
+        Args:
+            xbrl_list: List of XBRL objects, should be from the same company and ordered by date
+            statement_type: Type of statement to stitch ('IncomeStatement', 'BalanceSheet', etc.)
+            period_type: Type of period view to generate
+            max_periods: Maximum number of periods to include (default: 3)
+            standard: Whether to use standardized concept labels (default: True)
+
+        Returns:
+            Stitched statement data
+        """
+        from edgar.xbrl.stitching import stitch_statements as _stitch_statements
+        return _stitch_statements(xbrl_list, statement_type, period_type, max_periods, standard)
+
+    def render_stitched_statement(self, stitched_data: Dict[str, Any],
+                                  statement_title: str,
+                                  statement_type: str) -> 'RichTable':
+        """
+        Render a stitched statement.
+
+        Args:
+            stitched_data: Stitched statement data
+            statement_title: Title of the statement
+            statement_type: Type of statement ('BalanceSheet', 'IncomeStatement', etc.)
+
+        Returns:
+            RichTable: A formatted table representation of the stitched statement
+        """
+        from edgar.xbrl.stitching import render_stitched_statement as _render_stitched_statement
+        return _render_stitched_statement(stitched_data, statement_title, statement_type, self.entity_info)
+
+    def _get_valid_dimensional_members(self, tree) -> Dict[str, Set[str]]:
+        """
+        Extract valid dimensional members from a presentation tree.
+
+        The presentation linkbase defines which dimensional members should appear
+        on a statement. This function builds a mapping from axis to valid members
+        by walking everything the tree nests under each Axis node.
+
+        Pattern in presentation tree:
+        - Axis nodes (e.g., PropertyPlantAndEquipmentByTypeAxis) have Domain children
+        - Domain nodes (e.g., PropertyPlantAndEquipmentTypeDomain) have Member children
+        - Members may nest further members, at any depth
+
+        Only the domain's direct children used to count, so a face line the filer
+        nests under a member vanished from every view but DETAILED: Tesla's
+        Automotive sales, regulatory credits and leasing, which sit under
+        AutomotiveRevenuesMember (GH #1759).
+
+        Args:
+            tree: PresentationTree for the statement
+
+        Returns:
+            Dict mapping axis names (normalized) to sets of valid member names (normalized)
+        """
+        return {axis: set(parents) for axis, parents in self._get_dimensional_member_parents(tree).items()}
+
+    @staticmethod
+    def _get_dimensional_member_parents(tree) -> Dict[str, Dict[str, Optional[str]]]:
+        """Each axis's members in a presentation tree, mapped to the member they nest under.
+
+        Keyed by normalized axis, then normalized member. The parent is None for
+        the domain and for the domain's direct children (the top of the breakdown),
+        and otherwise the enclosing member, so a caller can tell a member from
+        the sub-members already inside it.
+        """
+        result: Dict[str, Dict[str, Optional[str]]] = {}
+        for node_id, node in tree.all_nodes.items():
+            if not node_id.endswith('Axis') or not node.children:
+                continue
+            axis_name = node_id.replace(':', '_')
+            parents: Dict[str, Optional[str]] = {}
+            heads = set()
+            # The domain heads the breakdown; its children are top-level members.
+            stack = [(child, None, True) for child in node.children]
+            while stack:
+                child_id, parent_member, is_head = stack.pop()
+                member = child_id.replace(':', '_')
+                if member in parents:
+                    continue
+                parents[member] = parent_member
+                child_node = tree.all_nodes.get(child_id)
+                is_domain = is_head and 'Domain' in child_id
+                if is_domain:
+                    heads.add(member)
+                if child_node is None:
+                    continue
+                # A domain's children are the top level; below that, each
+                # member encloses its own children.
+                enclosing = None if is_domain else member
+                for grandchild in child_node.children:
+                    stack.append((grandchild, enclosing, False))
+            # An axis presented with its domain alone names no members, and
+            # does not restrict which ones a statement shows.
+            if set(parents) - heads:
+                result[axis_name] = parents
+        return result
+
+    def get_statement(self, role_or_type: str,
+                      period_filter: Optional[str] = None,
+                      should_display_dimensions: Optional[bool] = None,
+                      view: Optional['StatementView'] = None) -> List[Dict[str, Any]]:
+        """
+        Get a financial statement by role URI, statement type, or statement short name.
+
+        Args:
+            role_or_type: Can be one of:
+                - Extended link role URI (e.g. "http://apple.com/role/ConsolidatedStatementOfIncome")
+                - Statement type name (e.g. "BalanceSheet")
+                - Statement short name (e.g. "ConsolidatedStatementOfIncome")
+            period_filter: Optional period key to filter facts
+            should_display_dimensions: Whether to display dimensions for this statement.
+                If None, the method will determine based on statement type and role.
+            view: StatementView controlling dimensional filtering:
+                  STANDARD: Strict member filtering per presentation linkbase
+                  DETAILED: Relaxed filtering - show all dimensional facts (fixes GH-574)
+                  SUMMARY: No dimensional facts shown
+
+        Returns:
+            List of line items with values
+        """
+        from edgar.xbrl.presentation import StatementView
+        # Use the centralized statement finder to get statement information
+        matching_statements, found_role, actual_statement_type = self.find_statement(role_or_type)
+
+        # If no matching statement found, return empty list
+        if not found_role or found_role not in self.presentation_trees:
+            return []
+
+        tree = self.presentation_trees[found_role]
+
+        # If should_display_dimensions wasn't provided, default to True
+        # Issue #504: Always include dimensional data by default - users can filter themselves if needed
+        if should_display_dimensions is None:
+            should_display_dimensions = True
+
+        # Get valid dimensional members from presentation tree
+        # This ensures we only show members that are actually defined in the linkbase
+        member_parents = self._get_dimensional_member_parents(tree)
+        valid_dimensional_members = ({axis: set(parents) for axis, parents in member_parents.items()}
+                                     if should_display_dimensions else {})
+
+        # Generate line items recursively, from EVERY root the role declares.
+        # Walking only tree.root_element_id left everything beneath the second
+        # and later roots unreachable, which silently truncated the statement --
+        # Union Pacific's Leases Details returned 13 rows from a 22-node tree,
+        # and its consolidated statement of comprehensive income is multi-root
+        # too, so this reached a primary face statement (edgartools-0q0d).
+        line_items = []
+        for root_id in tree.root_element_ids:
+            self._generate_line_items(root_id, tree.all_nodes, line_items, period_filter, None,
+                                      should_display_dimensions, valid_dimensional_members, view,
+                                      statement_role=found_role, member_parents=member_parents)
+
+        # Apply revenue deduplication for income statements to fix Issue #438
+        if actual_statement_type == 'IncomeStatement':
+            from edgar.xbrl.deduplication_strategy import RevenueDeduplicator
+            line_items = RevenueDeduplicator.deduplicate_statement_items(line_items)
+
+        # Issue #575: Reorder items so components appear before their totals
+        # This fixes cases where the presentation linkbase has incorrect ordering
+        # (e.g., IESC filing puts Cash at the end instead of with Current Assets)
+        if actual_statement_type == 'BalanceSheet':
+            line_items = self._reorder_by_calculation_parent(line_items)
+
+        # Issue edgartools-os99: Adjust levels when calculation tree reveals flat subtotal patterns
+        line_items = self._adjust_levels_by_calculation_parent(line_items)
+
+        line_items = self._prune_empty_structural_items(line_items)
+
+        return line_items
+
+    @staticmethod
+    def _prune_empty_structural_items(line_items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Drop abstract line items whose subtree carries no filed value.
+
+        A presentation linkbase declares its hypercube inline -- ``[Table]``,
+        ``[Axis]``, ``[Domain]``, then one node per axis member -- and every one
+        of those nodes becomes a line item even though no fact ever hangs off it.
+        Tesla's operations statement emits four automotive member headings that
+        way, so a view filtering the dimensional facts leaves a run of labels
+        that read like data rows and are permanently empty (GH #1224). Keep an
+        abstract row only when it, or something under it, carries a value.
+        """
+        def carries_value(item: Dict[str, Any]) -> bool:
+            return bool(item.get('has_values')) or bool(item.get('values'))
+
+        def is_structural(item: Dict[str, Any]) -> bool:
+            # A hypercube node is not a line item whichever way the filing was
+            # loaded. from_files() reads the schema and marks these abstract;
+            # from_directory() does not always find the .xsd, and then only the
+            # concept name and the bracketed standard label say what they are.
+            if item.get('is_abstract'):
+                return True
+            concept = item.get('concept') or ''
+            label = item.get('label') or ''
+            return (concept.endswith(('Axis', 'Domain', 'Member', 'LineItems', 'Table'))
+                    or any(bracket in label for bracket in
+                           ('[Axis]', '[Domain]', '[Member]', '[Line Items]', '[Table]')))
+
+        pruned = []
+        for index, item in enumerate(line_items):
+            if is_structural(item) and not carries_value(item):
+                level = item.get('level', 0)
+                subtree = itertools.takewhile(
+                    lambda descendant: descendant.get('level', 0) > level,
+                    line_items[index + 1:]
+                )
+                if not any(carries_value(descendant) for descendant in subtree):
+                    continue
+            pruned.append(item)
+        return pruned
+
+    def _generate_line_items(self, element_id: str, nodes: Dict[str, PresentationNode],
+                             result: List[Dict[str, Any]], period_filter: Optional[str] = None,
+                             path: Optional[List[str]] = None, should_display_dimensions: bool = False,
+                             valid_dimensional_members: Optional[Dict[str, Set[str]]] = None,
+                             view: Optional['StatementView'] = None,
+                             statement_role: Optional[str] = None,
+                             preferred_label_override: Optional[str] = None,
+                             member_parents: Optional[Dict[str, Dict[str, Optional[str]]]] = None) -> None:
+        """
+        Recursively generate line items for a statement.
+
+        Args:
+            element_id: Current element ID
+            nodes: Dictionary of presentation nodes
+            result: List to append line items to
+            period_filter: Optional period key to filter facts
+            path: Current path in hierarchy
+            should_display_dimensions: Whether to display dimensions for this statement
+            valid_dimensional_members: Dict mapping axis names to sets of valid member names
+                from the presentation linkbase. Only facts with members in this set will be shown.
+            view: StatementView controlling dimensional filtering:
+                  STANDARD: Strict member filtering per presentation linkbase
+                  DETAILED: Relaxed filtering - show all dimensional facts (fixes GH-574)
+                  SUMMARY: No dimensional facts shown
+            statement_role: Role URI of the statement being generated (GH-712)
+            preferred_label_override: Preferred label role for *this* reference to
+                the element, taken from the parent's child arc. Distinguishes
+                roll-forward references that share one node but use different label
+                roles (e.g. cash-flow periodStart vs periodEnd balances).
+                (edgartools-0609)
+            member_parents: Each presented axis's members mapped to the member
+                they nest under (see _get_dimensional_member_parents), so a
+                synthesized total does not add a member to its own sub-members.
+        """
+        from edgar.xbrl.presentation import StatementView
+        if element_id not in nodes:
+            return
+
+        # Update path
+        if path is None:
+            path = []
+
+        current_path = path + [element_id]
+
+        # Get node information
+        node = nodes[element_id]
+
+        # This OCCURRENCE's position, taken from the walk rather than from the
+        # shared node. `nodes` is keyed by element ID, so a concept presented
+        # more than once in a role — a roll-forward's beginning and ending
+        # balance, a total repeated under two sections — has a single entry
+        # whose `parent` and `depth` are whichever occurrence the parser wrote
+        # last. Reading them here gave every earlier occurrence the last one's
+        # parent and indentation. The path is the occurrence (edgartools-f07v).
+        occurrence_parent = path[-1] if path else None
+        occurrence_depth = len(path)
+
+        # edgartools-0609: Honor this reference's preferred label when it differs
+        # from the shared node's (roll-forward concepts referenced more than once).
+        effective_preferred_label = (
+            preferred_label_override
+            if preferred_label_override is not None
+            else node.preferred_label
+        )
+
+        # Get label
+        if (preferred_label_override is not None
+                and preferred_label_override != node.preferred_label):
+            from edgar.xbrl.models import select_display_label
+            label = select_display_label(
+                labels=node.labels,
+                standard_label=node.standard_label,
+                preferred_label=effective_preferred_label,
+                element_id=element_id
+            )
+        else:
+            label = node.display_label
+
+        # Get values and decimals across periods
+        values = {}
+        decimals = {}  # Store decimals info for each period
+        units = {}  # Store unit_ref for each period
+        period_types = {}  # Store period_type ('instant' or 'duration') for each period
+
+        # Issue #463: Get balance and weight from element catalog and calculation trees
+        # (same approach as FactsView.get_facts())
+        balance = None  # Debit/credit classification from XBRL schema
+        weight = None   # Calculation weight from calculation linkbase
+
+        # Get balance from element catalog
+        element_id_normalized = element_id.replace(':', '_')
+        if element_id_normalized in self.element_catalog:
+            element = self.element_catalog[element_id_normalized]
+            balance = element.balance
+            if balance is None:
+                # Fallback to static US-GAAP mapping
+                from edgar.xbrl.parsers.concepts import get_balance_type
+                balance = get_balance_type(element_id)
+
+        # Get weight and calculation parent from calculation trees (Issue #463, #514, GH-712)
+        # A calculation relationship belongs to its own role (XBRL 2.1 section
+        # 3.5.3.9.7.3), so a statement row reads only the statement role's network
+        # and has no weight or parent when that network has no arc for it. Taking
+        # them from another role gave Sonoco's income-statement share count the
+        # EPS note's parent (GH #1702).
+        calculation_parent = None
+        if hasattr(self, 'calculation_trees') and self.calculation_trees:
+            # GH-712: Prefer calc tree matching this statement's role URI
+            if statement_role and statement_role in self.calculation_trees:
+                calc_tree = self.calculation_trees[statement_role]
+                if element_id_normalized in calc_tree.all_nodes:
+                    calc_node = calc_tree.all_nodes[element_id_normalized]
+                    weight = calc_node.weight
+                    calculation_parent = calc_node.parent
+
+            # Fallback only when no statement role is known
+            if weight is None and not statement_role:
+                for calc_tree in self.calculation_trees.values():
+                    if element_id_normalized in calc_tree.all_nodes:
+                        calc_node = calc_tree.all_nodes[element_id_normalized]
+                        weight = calc_node.weight
+                        calculation_parent = calc_node.parent
+                        break
+
+        # Calculate preferred_sign from preferred_label (for Issue #463)
+        # This determines display transformation: -1 = negate, 1 = as-is, None = not specified
+        preferred_sign_value = None
+        if effective_preferred_label:
+            # Negation is decided by the role's local name, which covers every
+            # namespace version and the legacy xbrl.us LRR roles (see
+            # is_negated_label_role). The Facts API reads the same helper so the
+            # two surfaces cannot disagree about a sign.
+            preferred_sign_value = -1 if is_negated_label_role(effective_preferred_label) else 1
+
+        # Find facts for any of these concept names
+        all_relevant_facts = self._find_facts_for_element(node.element_name, period_filter)
+
+        # GH #1468: a co-registrant's own face statement reads that registrant's facts
+        coregistrant_member = self._coregistrant_member(statement_role)
+        if coregistrant_member:
+            all_relevant_facts = _project_coregistrant_facts(all_relevant_facts, coregistrant_member)
+
+        # Group facts by period for better selection
+        facts_by_period = {}
+
+        # Process all found facts and group by period
+        for context_id, wrapped_fact in all_relevant_facts.items():
+            # Get period key for this context
+            period_key = self.context_period_map.get(context_id)
+            if not period_key:
+                continue  # Skip if no period key found
+
+            # Initialize period entry if not exists
+            if period_key not in facts_by_period:
+                facts_by_period[period_key] = []
+
+            # Add this fact to the period
+            facts_by_period[period_key].append((context_id, wrapped_fact))
+
+        # should_display_dimensions is now passed as a parameter from the calling method
+
+        # Process facts by period, with different handling based on statement type
+        from collections import defaultdict
+        dimensioned_facts = defaultdict(list)  # For dimensioned statement types
+
+        for period_key, period_facts in facts_by_period.items():
+            if should_display_dimensions:
+                # For statements that should display dimensions, group facts by dimension
+                # Issue #564: Collect non-dimensioned facts separately to select most precise
+                non_dimensioned_facts_for_period = []
+
+                for context_id, wrapped_fact in period_facts:
+                    fact = wrapped_fact['fact']
+                    dimension_info = wrapped_fact['dimension_info']
+                    dimension_key = wrapped_fact['dimension_key']
+
+                    if dimension_info:
+                        # Check if this dimensional fact has valid members per the presentation linkbase
+                        # This filters out facts from other disclosures that happen to use the same concept
+                        # but with different dimensional members (e.g., revenue members on balance sheet)
+                        is_valid_dimension = True
+
+                        # DETAILED view bypasses strict member filtering (GH-574 fix)
+                        # This restores iPhone/iPad/Mac data for companies like AAPL
+                        if view == StatementView.DETAILED:
+                            # Show all dimensional facts regardless of presentation linkbase
+                            is_valid_dimension = True
+                        elif valid_dimensional_members:
+                            # STANDARD view: strict filtering per presentation linkbase
+                            for dim_data in dimension_info:
+                                # Get the axis and member from the dimension info
+                                axis = dim_data.get('dimension', '').replace(':', '_')
+                                member = dim_data.get('member', '').replace(':', '_')
+
+                                # If this axis is defined in the presentation tree,
+                                # check if the member is valid
+                                if axis in valid_dimensional_members:
+                                    if member not in valid_dimensional_members[axis]:
+                                        # Member not in presentation tree - skip this fact
+                                        is_valid_dimension = False
+                                        break
+
+                        if not is_valid_dimension:
+                            # Skip this dimensional fact - member not in presentation linkbase
+                            continue
+
+                        # Group by the members themselves, not only their labels:
+                        # two members of one axis can share a display label (GE
+                        # labels both SubsidiariesGeccMember and GECapitalMember
+                        # "GE Capital"), and grouping by label let one member's
+                        # amounts overwrite the other's (GH #1682).
+                        member_identity = tuple(sorted(
+                            (str(d.get('dimension', '')).replace(':', '_'),
+                             str(d.get('member', '')).replace(':', '_'))
+                            for d in dimension_info))
+
+                        # Store dimensioned fact with the full dimension metadata
+                        dimensioned_facts[(dimension_key, member_identity)].append(
+                            (period_key, fact, dimension_info))
+                    else:
+                        # Collect non-dimensioned facts to select most precise later
+                        non_dimensioned_facts_for_period.append((context_id, wrapped_fact))
+
+                # Issue #564: Select the most precise non-dimensioned fact for this period
+                # (Multiple contexts may map to same period; select highest precision)
+                if non_dimensioned_facts_for_period and not values.get(period_key):
+                    if len(non_dimensioned_facts_for_period) == 1:
+                        context_id, wrapped_fact = non_dimensioned_facts_for_period[0]
+                        fact = wrapped_fact['fact']
+                    else:
+                        # Multiple non-dimensioned contexts for same period - select by precision
+                        candidates = self._prefer_reporting_currency(
+                            non_dimensioned_facts_for_period, fact_of=lambda x: x[1]['fact'])
+                        best = max(candidates,
+                                   key=lambda x: self._get_fact_precision(x[1]['fact']))
+                        context_id, wrapped_fact = best
+                        fact = wrapped_fact['fact']
+
+                    # Store the selected fact's value
+                    values[period_key] = fact.numeric_value if fact.numeric_value is not None else fact.value
+
+                    # Store the decimals info for scaling and for accuracy
+                    fact_decimals = normalize_decimals(fact.decimals)
+                    if fact_decimals is not None:
+                        decimals[period_key] = fact_decimals
+
+                    # Store unit_ref for this period
+                    units[period_key] = fact.unit_ref
+
+                    # Store period_type from context
+                    if context_id in self.contexts:
+                        context = self.contexts[context_id]
+                        if hasattr(context, 'period') and context.period:
+                            pt = context.period.get('type') if isinstance(context.period, dict) else getattr(context.period, 'type', None)
+                            period_types[period_key] = pt
+
+                elif not non_dimensioned_facts_for_period and not values.get(period_key):
+                    # Issue #646: No non-dimensional total — compute from dimensional members
+                    # Use only facts that passed is_valid_dimension filtering
+                    valid_dim_facts = [
+                        (cid, wf) for cid, wf in period_facts
+                        if wf['dimension_info'] and len(wf['dimension_info']) == 1  # Skip multi-axis facts
+                    ]
+                    # Re-apply is_valid_dimension filter (match the logic above)
+                    filtered_dim_facts = []
+                    for cid, wf in valid_dim_facts:
+                        dim_info = wf['dimension_info']
+                        is_valid = True
+                        if view != StatementView.DETAILED and valid_dimensional_members:
+                            for dim_data in dim_info:
+                                axis_key = dim_data.get('dimension', '').replace(':', '_')
+                                member_key = dim_data.get('member', '').replace(':', '_')
+                                if axis_key in valid_dimensional_members:
+                                    if member_key not in valid_dimensional_members[axis_key]:
+                                        is_valid = False
+                                        break
+                        if is_valid:
+                            filtered_dim_facts.append((cid, wf))
+
+                    synthetic = self._compute_synthetic_total(filtered_dim_facts, element_id_normalized,
+                                                              member_parents)
+                    if synthetic:
+                        self._store_synthetic_total(synthetic, period_key, values, decimals,
+                                                    units, period_types)
+
+            else:
+                # For standard financial statements, prefer non-dimensioned facts
+                # Issue #564: Select by (1) fewest dimensions, (2) highest precision
+                # Issue #646: When only dimensional facts exist, compute total from members
+                non_dim_facts = [(cid, wf) for cid, wf in period_facts if not wf['dimension_info']]
+
+                if non_dim_facts:
+                    # Normal path: select best non-dimensional fact
+                    if len(non_dim_facts) == 1:
+                        context_id, wrapped_fact = non_dim_facts[0]
+                        fact = wrapped_fact['fact']
+                    else:
+                        candidates = self._prefer_reporting_currency(non_dim_facts, fact_of=lambda x: x[1]['fact'])
+                        best = min(candidates,
+                                   key=lambda x: (len(x[1]['dimension_info']),
+                                                  -self._get_fact_precision(x[1]['fact'])))
+                        context_id, wrapped_fact = best
+                        fact = wrapped_fact['fact']
+
+                    values[period_key] = fact.numeric_value if fact.numeric_value is not None else fact.value
+
+                    # Store the decimals info for scaling and for accuracy
+                    fact_decimals = normalize_decimals(fact.decimals)
+                    if fact_decimals is not None:
+                        decimals[period_key] = fact_decimals
+
+                    units[period_key] = fact.unit_ref
+
+                    if context_id in self.contexts:
+                        context = self.contexts[context_id]
+                        if hasattr(context, 'period') and context.period:
+                            pt = context.period.get('type') if isinstance(context.period, dict) else getattr(context.period, 'type', None)
+                            period_types[period_key] = pt
+                else:
+                    # Issue #646: No non-dimensional facts — compute total from dimensional members
+                    # Only use single-axis facts to avoid double-counting cross-dimensioned facts
+                    dim_facts = [
+                        (cid, wf) for cid, wf in period_facts
+                        if wf['dimension_info'] and len(wf['dimension_info']) == 1
+                    ]
+                    synthetic = self._compute_synthetic_total(dim_facts, element_id_normalized,
+                                                              member_parents)
+                    if synthetic:
+                        self._store_synthetic_total(synthetic, period_key, values, decimals,
+                                                    units, period_types)
+
+        # Create preferred_signs dict for all periods (same value for all periods of this concept)
+        preferred_signs = {}
+        if preferred_sign_value is not None:
+            for period_key in values.keys():
+                preferred_signs[period_key] = preferred_sign_value
+
+        # For dimensional statements with dimension data, handle the parent item specially
+        if should_display_dimensions and dimensioned_facts:
+            # Create parent line item with total values AND dimensional children
+            # This ensures users see both the total (e.g., Total Revenue = $25,500M)
+            # and the dimensional breakdown (e.g., Auto Revenue = $19,878M, Energy = $3,014M)
+            line_item = {
+                'concept': element_id,
+                'name': node.element_name,
+                'all_names': [node.element_name],
+                'label': label,  # Keep original label, don't add colon
+                'values': values,  # Show the total values
+                'decimals': decimals,  # Include decimals for formatting
+                'units': units,  # Include unit_ref for each period
+                'period_types': period_types,  # Include period_type for each period
+                'preferred_signs': preferred_signs,  # Include preferred_sign for display (Issue #463)
+                'balance': balance,  # Include balance (debit/credit) for display (Issue #463)
+                'weight': weight,  # Include calculation weight for metadata (Issue #463)
+                'parent': occurrence_parent,  # Presentation tree parent (may be abstract) (Issue #514)
+                'calculation_parent': calculation_parent,  # Calculation tree parent (metric) (Issue #514 refinement)
+                'level': occurrence_depth,
+                'preferred_label': effective_preferred_label,
+                'is_abstract': node.is_abstract,  # Issue #450: Use node's actual abstract flag
+                'children': node.children,
+                'has_values': len(values) > 0,  # True if we have total values
+                'has_dimension_children': True,  # Mark as having dimension children
+                'is_company_preferred_label': node.is_company_preferred_label  # Skip standardization if company-preferred
+            }
+        else:
+            # Non-dimensional case: Create normal line item with values
+            line_item = {
+                'concept': element_id,
+                'name': node.element_name,
+                'all_names': [node.element_name],
+                'label': label,
+                'values': values,
+                'decimals': decimals,  # Add decimals info for formatting
+                'units': units,  # Include unit_ref for each period
+                'period_types': period_types,  # Include period_type for each period
+                'preferred_signs': preferred_signs,  # Include preferred_sign for display (Issue #463)
+                'balance': balance,  # Include balance (debit/credit) for display (Issue #463)
+                'weight': weight,  # Include calculation weight for metadata (Issue #463)
+                'parent': occurrence_parent,  # Presentation tree parent (may be abstract) (Issue #514)
+                'calculation_parent': calculation_parent,  # Calculation tree parent (metric) (Issue #514 refinement)
+                'level': occurrence_depth,
+                'preferred_label': effective_preferred_label,
+                'is_abstract': node.is_abstract,
+                'children': node.children,
+                'has_values': len(values) > 0,  # Flag to indicate if we found values
+                'is_company_preferred_label': node.is_company_preferred_label  # Skip standardization if company-preferred
+            }
+
+        # Add to result
+        result.append(line_item)
+
+        # For dimensional statements, add dimensioned facts as child line items
+        if should_display_dimensions and dimensioned_facts:
+            # Track dimensional items added for this concept (for hierarchy post-processing)
+            dim_items_added = []
+            # Add each dimension as a child line item with increased depth
+            for (dim_key, _member_identity), facts_list in dimensioned_facts.items():
+                dim_values = {}
+                dim_decimals = {}
+                dim_units = {}  # Store unit_ref for each period
+                dim_period_types = {}  # Store period_type for each period
+                dim_metadata = None  # Store metadata from the first fact
+
+                # Collect values for each period
+                for fact_data in facts_list:
+                    try:
+                        # Unpack with consistent 3-part tuples from our updated code
+                        period_key, fact, dimensions_info = fact_data
+
+                        # Store the dimension metadata from the first fact
+                        if dim_metadata is None:
+                            dim_metadata = dimensions_info
+
+                        # Extract value from fact
+                        dim_values[period_key] = fact.numeric_value if fact.numeric_value is not None else fact.value
+                    except (ValueError, TypeError, IndexError) as e:
+                        # Try to handle older format (period_key, fact) tuple for backward compatibility
+                        try:
+                            if isinstance(fact_data, tuple) and len(fact_data) == 2:
+                                period_key, fact = fact_data
+                                dim_values[
+                                    period_key] = fact.numeric_value if fact.numeric_value is not None else fact.value
+                        except Exception:
+                            # Log the error and continue
+                            log.warning(f"Error processing dimension fact data: {e}")
+                            continue
+
+                    # Store decimals
+                    fact_decimals = normalize_decimals(fact.decimals)
+                    if fact_decimals is not None:
+                        dim_decimals[period_key] = fact_decimals
+
+                    # Store unit_ref for this period
+                    dim_units[period_key] = fact.unit_ref
+
+                    # Store period_type from context
+                    context_id = fact.context_ref
+                    if context_id in self.contexts:
+                        context = self.contexts[context_id]
+                        if hasattr(context, 'period') and context.period:
+                            pt = context.period.get('type') if isinstance(context.period, dict) else getattr(context.period, 'type', None)
+                            dim_period_types[period_key] = pt
+
+                # For better display, use the member label for dimension items,
+                # but make sure we don't add the parent concept name as well
+
+                # Default to the full dimension key (e.g., "Region: Americas")
+                display_label = dim_key
+
+                # Try various member label formats based on dimension structure
+                if dim_metadata:
+                    if len(dim_metadata) == 1:
+                        # For single dimensions, just use the member label (e.g., "Americas")
+                        display_label = dim_metadata[0]['member_label']
+                    else:
+                        # For multiple dimensions, create a combined label with all member names
+                        # (e.g., "Americas - iPhone")
+                        member_labels = [info['member_label'] for info in dim_metadata if 'member_label' in info]
+                        if member_labels:
+                            display_label = " - ".join(member_labels)
+
+                # Create preferred_signs dict for dimensional line items (same value for all periods)
+                dim_preferred_signs = {}
+                if preferred_sign_value is not None:
+                    for period_key in dim_values.keys():
+                        dim_preferred_signs[period_key] = preferred_sign_value
+
+                # Create dimension line item
+                dim_line_item = {
+                    'concept': element_id,  # Use same concept
+                    'name': node.element_name,
+                    'all_names': [node.element_name],
+                    'label': display_label,  # Use optimized dimension label
+                    'full_dimension_label': dim_key,  # Keep full dimension notation for reference
+                    'values': dim_values,
+                    'decimals': dim_decimals,
+                    'units': dim_units,  # Include unit_ref for each period
+                    'period_types': dim_period_types,  # Include period_type for each period
+                    'preferred_signs': dim_preferred_signs,  # Include preferred_sign for display (Issue #463)
+                    'level': occurrence_depth + 1,  # Increase depth by 1
+                    'preferred_label': node.preferred_label,
+                    'is_abstract': False,
+                    'children': [],
+                    'has_values': len(dim_values) > 0,
+                    'is_dimension': True,  # Mark as a dimension item
+                    'dimension_metadata': dim_metadata  # Store full dimension information
+                }
+
+                # Collect (don't add to result yet — hierarchy may reorder)
+                dim_items_added.append(dim_line_item)
+
+            # Post-process: apply member hierarchy from definition linkbase
+            if dim_items_added:
+                self._apply_member_hierarchy(dim_items_added, statement_role)
+            # Now add to result in correct order
+            result.extend(dim_items_added)
+
+        # Process children
+        # edgartools-0609: pass each child reference's own preferred label so
+        # roll-forward concepts (same element_id referenced twice) render with the
+        # correct periodStart/periodEnd label and value mapping.
+        child_labels = node.child_preferred_labels
+        for idx, child_id in enumerate(node.children):
+            child_override = child_labels[idx] if idx < len(child_labels) else None
+            self._generate_line_items(child_id, nodes, result, period_filter, current_path,
+                                      should_display_dimensions, valid_dimensional_members, view,
+                                      statement_role=statement_role,
+                                      preferred_label_override=child_override,
+                                      member_parents=member_parents)
+
+    def _apply_member_hierarchy(self, dim_items: List[Dict[str, Any]],
+                                statement_role: Optional[str] = None) -> None:
+        """Adjust level of dimensional items based on definition linkbase member hierarchy.
+
+        The definition linkbase defines member-to-member relationships (e.g.,
+        AutomotiveRevenuesMember → AutomotiveSalesMember). This method uses
+        those relationships to set proper nesting depth for dimensional items.
+
+        Only single-axis rows participate. A two-axis fact's first member is
+        often a shared qualifier (``OperatingSegmentsMember``) that several
+        distinct combinations share; keying the map on ``meta[0]`` last-wins
+        those rows away as soon as any same-axis parent/child pair activates
+        the reorder (GH #1331).
+
+        A member filed on two different axes at once does not participate
+        either. ``member_to_item`` is keyed on the member alone, so the two
+        rows would collide and the earlier one would be dropped; the domain
+        hierarchy cannot say which axis's row it nests, so neither is
+        reordered and both pass through (edgartools-3h3q).
+
+        A domain-member network belongs to its extended link role (XBRL
+        Dimensions 1.0 section 2.4), so with ``statement_role`` given only that
+        role's member relationships nest rows. The union across roles nested
+        Tesla's "Services and other" under a subtotal member that only a note
+        declares (GH #1701). A role with no domain-member arcs falls back to the
+        union, so filings without a per-role definition network keep their nesting.
+        """
+        member_to_item = {}
+        ambiguous = set()
+        for item in dim_items:
+            meta = item.get('dimension_metadata') or []
+            if len(meta) != 1:
+                continue
+            member_id = meta[0].get('member')
+            if not member_id:
+                continue
+            if member_id in member_to_item:
+                ambiguous.add(member_id)
+                continue
+            member_to_item[member_id] = item
+        for member_id in ambiguous:
+            member_to_item.pop(member_id, None)
+
+        if len(member_to_item) <= 1:
+            return
+
+        member_ids = set(member_to_item.keys())
+        # A role with no domain-member arcs of its own (no definition network
+        # for the statement) keeps the cross-role union, as before GH #1701.
+        domains = (self.parser.domains_for_role(statement_role) if statement_role else None) or self.parser.domains
+
+        # Find members that are parents of other members in our set
+        member_children = {}
+        for member_id in member_ids:
+            if member_id in domains and domains[member_id].members:
+                children_in_set = [m for m in domains[member_id].members if m in member_ids]
+                if children_in_set:
+                    member_children[member_id] = children_in_set
+
+        if not member_children:
+            return
+
+        # Compute depth offset: children get +1 relative to their parent
+        depth_offset = {m: 0 for m in member_ids}
+
+        def set_depth(parent_id, parent_depth):
+            for child_id in member_children.get(parent_id, []):
+                new_depth = parent_depth + 1
+                if new_depth > depth_offset[child_id]:
+                    depth_offset[child_id] = new_depth
+                    set_depth(child_id, new_depth)
+
+        for parent_id in member_children:
+            if depth_offset[parent_id] == 0:
+                set_depth(parent_id, 0)
+
+        # Apply depth offsets to levels
+        for member_id, item in member_to_item.items():
+            item['level'] += depth_offset[member_id]
+
+        # Reorder single-axis parents before their children; leave every other
+        # row (including multi-axis combinations) at its original position.
+        child_members = {child for children in member_children.values() for child in children}
+        ordered: List[Dict[str, Any]] = []
+        processed = set()
+
+        def add_with_children(member_id):
+            if member_id in processed:
+                return
+            processed.add(member_id)
+            ordered.append(member_to_item[member_id])
+            for child_id in member_children.get(member_id, []):
+                add_with_children(child_id)
+
+        for item in dim_items:
+            meta = item.get('dimension_metadata') or []
+            if len(meta) != 1:
+                ordered.append(item)
+                continue
+            member_id = meta[0].get('member')
+            if member_id in processed:
+                continue
+            if member_id in child_members:
+                continue
+            if member_id in member_to_item:
+                add_with_children(member_id)
+            else:
+                ordered.append(item)
+
+        for member_id in member_to_item:
+            if member_id not in processed:
+                add_with_children(member_id)
+
+        dim_items[:] = ordered
+
+    @staticmethod
+    def _reorder_by_calculation_parent(line_items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Reorder line items so that components appear before their totals.
+
+        Issue #575: Some filings (e.g., IESC) have presentation linkbase orders that
+        put components after their totals (e.g., Cash at the end instead of with
+        Current Assets). This method uses the calculation_parent relationship to
+        move misplaced items to appear just before their calculation parent.
+
+        Args:
+            line_items: List of line items from the presentation tree
+
+        Returns:
+            Reordered list with components before their totals
+        """
+        if not line_items:
+            return line_items
+
+        # Build a concept -> index map
+        concept_to_index = {item['concept']: i for i, item in enumerate(line_items)}
+
+        # Find items that need to be moved (appear after their calculation parent)
+        items_to_move = []
+        for i, item in enumerate(line_items):
+            calc_parent = item.get('calculation_parent')
+            if calc_parent and calc_parent in concept_to_index:
+                parent_index = concept_to_index[calc_parent]
+                if i > parent_index:
+                    # This item appears after its parent - needs to be moved
+                    items_to_move.append((i, item, calc_parent))
+
+        if not items_to_move:
+            return line_items
+
+        # Remove items that need to be moved (in reverse order to preserve indices)
+        result = list(line_items)
+        for i, item, _ in sorted(items_to_move, key=lambda x: x[0], reverse=True):
+            result.pop(i)
+
+        # Re-insert items before their calculation parent
+        # Process in order of where they should be inserted
+        for _, item, calc_parent in sorted(items_to_move, key=lambda x: concept_to_index.get(x[2], 0)):
+            # Find current index of the calculation parent in the result
+            parent_index = None
+            for j, r_item in enumerate(result):
+                if r_item['concept'] == calc_parent:
+                    parent_index = j
+                    break
+
+            if parent_index is not None:
+                # Insert before the parent
+                result.insert(parent_index, item)
+            else:
+                # Parent not found (shouldn't happen), append at end
+                result.append(item)
+
+        return result
+
+    @staticmethod
+    def _adjust_levels_by_calculation_parent(line_items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Adjust levels so children indent under their calculation parent totals.
+
+        When the presentation tree puts components at the same level as their
+        subtotal, use the calculation tree to indent the components.
+        Only fires when all 4 conditions are met (very conservative).
+        """
+        if not line_items:
+            return line_items
+
+        from edgar.xbrl.models import TOTAL_LABEL
+
+        # Build concept -> index map
+        concept_to_index = {item['concept']: i for i, item in enumerate(line_items)}
+
+        for item in line_items:
+            calc_parent = item.get('calculation_parent')
+            if not calc_parent or calc_parent not in concept_to_index:
+                continue
+
+            parent_idx = concept_to_index[calc_parent]
+            item_idx = concept_to_index[item['concept']]
+            parent_item = line_items[parent_idx]
+
+            # All 4 conditions must be true
+            if (parent_idx > item_idx                                    # parent appears after (subtotal pattern)
+                    and parent_item['level'] == item['level']            # same level
+                    and parent_item.get('preferred_label') == TOTAL_LABEL):  # parent has total label
+                item['level'] += 1
+
+        return line_items
+
+    def _compute_synthetic_total(self, dim_facts, element_id_normalized, member_parents=None):
+        """
+        Issue #646: Compute a synthetic total from single-axis dimensional members.
+
+        When a concept has only dimensional facts (no non-dimensional total),
+        group by axis, pick the axis with the most members, and sum their values.
+
+        Guards:
+        - Skips per-share and ratio concepts (summing them is meaningless)
+        - Expects only single-axis facts (caller must filter multi-axis facts)
+        - Skips members nested under another member that has a fact, when
+          member_parents (from _get_dimensional_member_parents) says so
+
+        Returns None if not computable, else a dict with 'total', 'computed'
+        (True for a sum, False when the total is one filed fact), 'unit_ref',
+        'decimals' and 'component_context_ids'. 'fact' and 'context_id' name
+        the filed fact, and are None for a sum.
+        """
+        if not dim_facts:
+            return None
+
+        # Guard: don't synthesize totals for per-share or ratio concepts
+        if self._is_per_share_or_ratio_concept(element_id_normalized):
+            return None
+
+        dim_facts = self._facts_in_statement_scope(dim_facts, member_parents or {})
+
+        axis_groups = self._group_by_axis(dim_facts)
+        if not axis_groups:
+            return None
+
+        # Pick the axis with most members (most complete breakdown)
+        best_axis = max(axis_groups.values(), key=len)
+
+        # A member the statement nests under another member is already inside
+        # it: Tesla's Automotive sales is part of AutomotiveRevenuesMember. Keep
+        # only the outermost members that carry a fact (GH #1759).
+        axis_key = best_axis[0][1]['dimension_info'][0].get('dimension', '').replace(':', '_')
+        parents = (member_parents or {}).get(axis_key)
+        if parents:
+            best_axis = self._outermost_members(best_axis, parents)
+
+        if self._units_do_not_add(best_axis):
+            return None
+
+        # Sharing an axis does not make members disjoint. A statement of
+        # shareholders' equity breaks equity down by component AND carries the
+        # filer's own subtotals as members of the same axis, so adding
+        # everything counts the components two or three times over: Disney's
+        # 2022-10-01 beginning balance came out as $292,766,000,000 against a
+        # filed $98,879,000,000, because the four components, their
+        # ParentMember subtotal, the noncontrolling interest and the issuer's
+        # own total member were all added together (gh #1281).
+        aggregates, components = self._split_aggregate_members(best_axis)
+
+        if aggregates:
+            return self._aggregate_total(best_axis, aggregates, components)
+
+        # No aggregate members: a genuine disjoint breakdown, which is the case
+        # this helper was added for (gh #646 -- Disney's own cost of services
+        # and cost of products summing to total costs).
+        if self._breakdown_sum_misleads(best_axis, parents, element_id_normalized):
+            return None
+
+        if len(best_axis) == 1:
+            cid, wf, value = best_axis[0]
+            return self._filed_total(value, wf['fact'], cid)
+
+        return self._summed_total(best_axis)
+
+    def _is_per_share_or_ratio_concept(self, element_id) -> bool:
+        """Whether the catalog types this concept as per-share or pure."""
+        element = self.element_catalog.get(element_id)
+        if not element:
+            return False
+        dt = (element.data_type or '').lower()
+        return 'pershare' in dt or 'pure' in dt
+
+    @staticmethod
+    def _group_by_axis(dim_facts):
+        """(context_id, fact, value) entries of the numeric facts, grouped by axis."""
+        from collections import defaultdict
+        axis_groups = defaultdict(list)
+        for cid, wf in dim_facts:
+            dim_info = wf['dimension_info']
+            val = wf['fact'].numeric_value
+            if val is not None:
+                axis = dim_info[0].get('dimension', '')
+                axis_groups[axis].append((cid, wf, val))
+        return axis_groups
+
+    @staticmethod
+    def _outermost_members(entries, parents):
+        """The entries whose member is not nested under another entry's member."""
+        present = {(entry[1]['dimension_info'][0].get('member') or '').replace(':', '_')
+                   for entry in entries}
+
+        def nested_in_present(member):
+            seen = set()
+            parent = parents.get(member)
+            while parent and parent not in seen:
+                if parent in present:
+                    return True
+                seen.add(parent)
+                parent = parents.get(parent)
+            return False
+
+        return [entry for entry in entries
+                if not nested_in_present(
+                    (entry[1]['dimension_info'][0].get('member') or '').replace(':', '_'))]
+
+    def _units_do_not_add(self, entries) -> bool:
+        """Whether the entries' units rule out adding them up."""
+        # The catalog only types the filer's own extension concepts, so a
+        # us-gaap per-share concept passes the check above untyped. The facts'
+        # units say it for every concept: a divide unit (USD per share) or a
+        # pure one (a percentage) is an intensive amount that does not add up.
+        # Constellation Brands' basic EPS came out as 19.92, the Class A 10.44
+        # and Class B 9.48 added together (GH #1683). One member alone is a
+        # filed value, not a sum.
+        if len(entries) > 1 and any(self._is_non_additive_unit(entry[1]['fact'].unit_ref)
+                                    for entry in entries):
+            return True
+
+        # Amounts in different units do not add: MXN 327M and USD 19M are not
+        # 346M of anything (GH #1689). Nor is a smaller axis then a better
+        # answer, so there is no total.
+        return len({entry[1]['fact'].unit_ref for entry in entries}) > 1
+
+    @staticmethod
+    def _split_aggregate_members(entries):
+        """Split entries into (aggregate members, component members)."""
+        aggregates, components = [], []
+        for entry in entries:
+            member = (entry[1]['dimension_info'][0].get('member') or '')
+            (aggregates if _is_aggregate_member(member) else components).append(entry)
+        return aggregates, components
+
+    def _aggregate_total(self, entries, aggregates, components) -> Dict[str, Any]:
+        """The filed total among the aggregate members of an axis."""
+        # The filing states its own total; report that rather than adding
+        # anything up. Never fall through to the sum here: an aggregate and
+        # its own components in one group is exactly the double count.
+        #
+        # Which aggregate is THE total is settled by agreement with the
+        # components when there are any, since a filing can carry several
+        # nested subtotals -- Disney files ParentMember at 95,008 AND a
+        # total-equity member at 98,879, and only the latter covers the
+        # whole axis.
+        component_total = sum(v for _, _, v in components)
+        if components:
+            scale = max((abs(v) for _, _, v in entries), default=0)
+            tolerance = max(abs(component_total), scale) * 1e-6
+            for cid, wf, value in aggregates:
+                if abs(value - component_total) <= tolerance:
+                    return self._filed_total(value, wf['fact'], cid)
+
+        # Either the group is nothing but an aggregate -- Coca-Cola tags
+        # shareowners' equity solely against ParentMember, so there is no
+        # arithmetic to do and no ambiguity -- or several aggregates are
+        # present and none reconciles, which happens when the members are
+        # not parts of one whole at all (Apple's receivable concentration
+        # lists two named customers beside a carriers total). In both cases
+        # a filed total is a better answer than a sum that mixes levels,
+        # so prefer the filer's explicitly named total.
+        named = [e for e in aggregates
+                 if 'total' in (e[1]['dimension_info'][0].get('member') or '').lower()]
+        cid, wf, value = max(named or aggregates, key=lambda e: abs(e[2]))
+        return self._filed_total(value, wf['fact'], cid)
+
+    def _breakdown_sum_misleads(self, entries, parents, element_id) -> bool:
+        """Whether adding a disjoint breakdown would give a partial or double count."""
+        if len(entries) > 1 and parents and not self._presented_members_covered(entries, parents,
+                                                                                element_id):
+            return True
+
+        # On an axis the statement does not present there is no hierarchy to
+        # say the members are disjoint; one that is the sum of others is a
+        # subtotal beside its parts (GH #1703).
+        return not parents and _contains_a_subtotal([v for _, _, v in entries])
+
+    @staticmethod
+    def _summed_total(entries) -> Dict[str, Any]:
+        """A synthetic-total result that adds up the entries."""
+        # A sum is no filed fact: it carries no single context or fact id, its
+        # precision is that of its least precise component, and it says it was
+        # computed (GH #1689).
+        component_facts = [wf['fact'] for _, wf, _ in entries]
+        precisions = [normalize_decimals(f.decimals) for f in component_facts]
+        finite = [d for d in precisions if isinstance(d, int)]
+        return {
+            'total': sum(v for _, _, v in entries),
+            'computed': True,
+            'fact': None,
+            'context_id': None,
+            'component_context_ids': [cid for cid, _, _ in entries],
+            'unit_ref': component_facts[0].unit_ref,
+            'decimals': min(finite) if finite else next((d for d in precisions if d is not None), None),
+        }
+
+    def _presented_members_covered(self, entries, parents, element_id=None) -> bool:
+        """Whether the members with facts make up every member the axis presents.
+
+        A balance is the sum of every component the statement presents. When a
+        presented component has no balance, the sum of the rest is a partial
+        that looks like a total: Coca-Cola files no common-stock component of
+        StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest,
+        so its 2021 year-end equity came out 23,100M against 24,860M filed. A
+        member counts as covered when it, a member it nests under, or every
+        member nested under it has a fact.
+
+        An uncovered member is a gap only when it belongs to this concept's
+        breakdown: it sits inside a member that also encloses a summed one
+        (Coca-Cola's common stock, beside capital surplus under ParentMember),
+        or it carries this concept in another context (Golub's unaffiliated
+        issuers, filed at other dates). Disney's derivative table presents
+        liability locations beside the asset ones; they never carry an asset
+        concept, so its 275M + 635M of gross derivative assets still adds up.
+
+        Flows are left alone: a component with no net income or dividend line
+        is a zero, not a gap. The caller applies this to sums only; one
+        member's fact is a filed value.
+        """
+        if self._context_period_type(entries[0][0]) != 'instant':
+            return True
+
+        present = {(entry[1]['dimension_info'][0].get('member') or '').replace(':', '_') for entry in entries}
+        children = self._member_children(parents)
+
+        uncovered = [m for m in parents
+                     if not m.endswith('Domain') and not self._member_covered(m, present, parents, children)]
+        if not uncovered:
+            return True
+        enclosing = self._enclosing_members
+        summed_enclosing = set().union(*(enclosing(m, parents) for m in present))
+        axis = (entries[0][1]['dimension_info'][0].get('dimension') or '').replace(':', '_')
+        elsewhere = self._members_carrying(element_id, axis) if element_id else set()
+        return not any(m in elsewhere or enclosing(m, parents) & summed_enclosing for m in uncovered)
+
+    def _context_period_type(self, context_id) -> Optional[str]:
+        """The period type ('instant' or 'duration') of a context, if known."""
+        context = self.contexts.get(context_id)
+        period = getattr(context, 'period', None) if context is not None else None
+        return period.get('type') if isinstance(period, dict) else getattr(period, 'type', None)
+
+    @staticmethod
+    def _member_children(parents) -> Dict[str, List[str]]:
+        """The members nested directly under each member."""
+        children: Dict[str, List[str]] = {}
+        for member, parent in parents.items():
+            if parent:
+                children.setdefault(parent, []).append(member)
+        return children
+
+    @staticmethod
+    def _member_covered(member, present, parents, children, seen=()) -> bool:
+        """Whether a member, a member it nests under, or every member nested under it has a fact."""
+        if member in present:
+            return True
+        parent = parents.get(member)
+        while parent:
+            if parent in present:
+                return True
+            parent = parents.get(parent)
+        kids = [k for k in children.get(member, []) if k not in seen]
+        return bool(kids) and all(XBRL._member_covered(k, present, parents, children, seen + (member,))
+                                  for k in kids)
+
+    @staticmethod
+    def _enclosing_members(member, parents) -> Set[str]:
+        """Every member a member nests under."""
+        found, parent = set(), parents.get(member)
+        while parent and parent not in found:
+            found.add(parent)
+            parent = parents.get(parent)
+        return found
+
+    def _members_carrying(self, element_id, axis) -> Set[str]:
+        """The members of an axis that carry a fact of this concept in any context."""
+        members = set()
+        for context_id in self.element_context_index.get(element_id, []):
+            context = self.contexts.get(context_id)
+            for dim, member in (getattr(context, 'dimensions', None) or {}).items():
+                if dim.replace(':', '_') == axis:
+                    members.add(str(member).replace(':', '_'))
+        return members
+
+    @staticmethod
+    def _facts_in_statement_scope(dim_facts, member_parents):
+        """The dimensional facts a statement's synthesized plain row may add up.
+
+        A concept's facts come from every disclosure that uses it, not only the
+        statement being built. Deutsche Bank's consolidated cash flow tags its
+        figures with dei:LegalEntityAxis = consolidatedBankEntityMember, and the
+        parent-only note uses the same concept with DeutscheBankAGMember; adding
+        both read operating cash flow 2024 as EUR -58,501 million against a
+        filed -28,584 million (GH #1703).
+
+        - On an axis the statement's presentation tree declares, only the
+          declared members are in scope, in every view (DETAILED relaxes which
+          dimensional rows are shown, not what the plain row adds up).
+        - When the concept has facts on a declared axis, those are the
+          statement's own breakdown and facts on other axes are out of scope.
+        - Otherwise, axes whose members are other entities, scenarios or
+          restatements of one figure (never parts of it) are out of scope.
+        """
+        def axis_and_member(wf):
+            dim = wf['dimension_info'][0]
+            return ((dim.get('dimension') or '').replace(':', '_'),
+                    (dim.get('member') or '').replace(':', '_'))
+
+        declared = [(cid, wf) for cid, wf in dim_facts
+                    if axis_and_member(wf)[0] in member_parents]
+        if declared:
+            return [(cid, wf) for cid, wf in declared
+                    if axis_and_member(wf)[1] in member_parents[axis_and_member(wf)[0]]]
+        return [(cid, wf) for cid, wf in dim_facts
+                if axis_and_member(wf)[0] not in _NON_ADDITIVE_AXES]
+
+    def _store_synthetic_total(self, synthetic, period_key, values, decimals, units, period_types) -> None:
+        """Write a `_compute_synthetic_total()` result into a line item's period maps."""
+        values[period_key] = synthetic['total']
+        if synthetic['decimals'] is not None:
+            decimals[period_key] = synthetic['decimals']
+        units[period_key] = synthetic['unit_ref']
+        # Every component shares the period, so any one context gives its type.
+        context = self.contexts.get(synthetic['component_context_ids'][0])
+        if context is not None and getattr(context, 'period', None):
+            period = context.period
+            period_types[period_key] = (period.get('type') if isinstance(period, dict)
+                                        else getattr(period, 'type', None))
+
+    @staticmethod
+    def _filed_total(value, fact, context_id) -> Dict[str, Any]:
+        """A synthetic-total result that is one filed fact, not a sum."""
+        return {
+            'total': value,
+            'computed': False,
+            'fact': fact,
+            'context_id': context_id,
+            'component_context_ids': [context_id],
+            'unit_ref': fact.unit_ref,
+            'decimals': normalize_decimals(fact.decimals),
+        }
+
+    def _is_non_additive_unit(self, unit_ref: Optional[str]) -> bool:
+        """Whether amounts in this unit are ratios that cannot be summed.
+
+        True for a divide unit (USD per share) and for xbrli:pure (percentages,
+        ratios). Shares, currencies and other simple measures add up.
+        """
+        unit = self.units.get(unit_ref) if unit_ref else None
+        if not unit:
+            return False
+        if unit.get('type') == 'divide':
+            return True
+        measure = (unit.get('measure') or '').split(':')[-1].lower()
+        return measure == 'pure'
+
+    @staticmethod
+    def _get_fact_precision(fact) -> int:
+        """
+        Get a numeric precision value for a fact based on its decimals attribute.
+
+        Higher return value = more precise:
+        - INF (infinite precision) returns 1_000_000
+        - Numeric decimals return their value (e.g., -6 for millions, 2 for hundredths)
+        - None or invalid returns -1_000_000: unknown accuracy, below any stated
+          one. It used to score 0, above every negative decimals, so a fact with
+          no stated accuracy beat one rounded to thousands (GH #1765). A fact
+          filed with @precision has its decimals inferred at parse time.
+        - A valueless (nil) fact returns -2_000_000, below any valued fact, because
+          its missing decimals says nothing about precision (GH #1750)
+
+        Args:
+            fact: An XBRL Fact object with a decimals attribute
+
+        Returns:
+            Integer precision value for comparison (higher = more precise)
+        """
+        if fact.numeric_value is None and fact.value in (None, ''):
+            return -2_000_000  # Nil/valueless: never outranks a fact with a value
+        if fact.decimals == 'INF':
+            return 1_000_000  # Infinite precision = highest
+        elif fact.decimals is not None:
+            try:
+                return int(fact.decimals)
+            except (ValueError, TypeError):
+                return -1_000_000
+        return -1_000_000  # Unknown accuracy: below any stated one, above nil
+
+    @staticmethod
+    def _select_most_precise_fact(facts: list):
+        """
+        Select the most precise fact from a list of facts.
+
+        When multiple facts exist for the same concept/context with different
+        precision (decimals attribute), this selects the one with highest precision.
+        This is critical for maintaining data accuracy (Issue #564).
+
+        Args:
+            facts: List of Fact objects to choose from
+
+        Returns:
+            The fact with highest precision, or None if list is empty
+        """
+        if not facts:
+            return None
+        if len(facts) == 1:
+            return facts[0]
+
+        best_fact = None
+        best_precision = None
+
+        for fact in facts:
+            precision = XBRL._get_fact_precision(fact)
+            if best_precision is None or precision > best_precision:
+                best_precision = precision
+                best_fact = fact
+
+        return best_fact
+
+    def _currency_measure(self, unit_ref: Optional[str]) -> Optional[str]:
+        """The iso4217 measure a fact's unit denominates its value in, else None."""
+        return unit_currency_measure(self.parser.units.get(unit_ref)) if unit_ref else None
+
+    def _reporting_currency(self) -> Optional[str]:
+        """
+        The iso4217 measure most of this filing's facts are reported in.
+
+        A tie in the count goes to the currency of an undimensioned us-gaap:Assets
+        fact, then to the alphabetically first measure, so the choice never
+        depends on fact order.
+        """
+        if self._reporting_currency_cache is None:
+            counts: Dict[str, int] = {}
+            for fact in self.parser.facts.values():
+                measure = self._currency_measure(fact.unit_ref)
+                if measure:
+                    counts[measure] = counts.get(measure, 0) + 1
+            choice = ''
+            if counts:
+                top = max(counts.values())
+                tied = sorted(m for m, n in counts.items() if n == top)
+                choice = tied[0]
+                if len(tied) > 1:
+                    for fact in self.parser.facts.values():
+                        context = self.contexts.get(fact.context_ref)
+                        if (fact.element_id in ('us-gaap:Assets', 'us-gaap_Assets') and context is not None
+                                and not context.dimensions):
+                            measure = self._currency_measure(fact.unit_ref)
+                            if measure in tied:
+                                choice = measure
+                                break
+            self._reporting_currency_cache = choice
+        return self._reporting_currency_cache or None
+
+    def _prefer_reporting_currency(self, items: list, fact_of=None) -> list:
+        """
+        Narrow candidates in different units to those in the reporting currency.
+
+        Facts in different currencies are different data points (XBRL 2.1 §4.10,
+        U-Equal), but a statement cell holds one value. Ranking them by decimals
+        alone let a CAD or EUR amount replace the USD one in a USD statement
+        (GH #1704). Facts in other units stay reachable through xbrl.facts.
+
+        When duplicates differ by unit, the statement shows the reporting-currency
+        amount even where the foreign fact is the exact face amount (for example
+        EUR-denominated notes, such as Netflix's, tagged in EUR beside a USD
+        equivalent). A warning is logged once per filing when this happens.
+
+        ``fact_of`` maps an item to its Fact, for callers whose candidates are
+        wrapped (context id, fact dict) pairs; by default items are Facts.
+        """
+        fact_of = fact_of or (lambda item: item)
+        if len(items) < 2 or len({fact_of(i).unit_ref for i in items}) < 2:
+            return items
+        currency = self._reporting_currency()
+        preferred = [i for i in items if currency and self._currency_measure(fact_of(i).unit_ref) == currency]
+        if preferred and len(preferred) < len(items) and not self._currency_choice_logged:
+            kept = {id(i) for i in preferred}
+            dropped = sorted({str(fact_of(i).unit_ref) for i in items if id(i) not in kept})
+            log.warning(
+                "%s is reported in %s and in %s for the same period; statements show the %s amount. "
+                "All amounts remain in xbrl.facts. Logged once per filing (GH #1704).",
+                fact_of(items[0]).element_id, currency, ", ".join(dropped), currency,
+            )
+            self._currency_choice_logged = True
+        return preferred or items
+
+    def _coregistrant_member(self, role: Optional[str]) -> Optional[str]:
+        """
+        Return the legal-entity member whose own face statement this role is, or None.
+
+        GH #1468: a filing for several registrants (AAL with American Airlines,
+        Inc.; Duke with its utilities) gives each subsidiary its own statement
+        roles. Their presentation trees list dei:LegalEntityAxis with the domain
+        and one member, so under XBRL rules the undimensioned facts -- the
+        parent's -- fill the plain rows, and SEC's R-file viewer shows them that
+        way. The filing's HTML shows only the subsidiary. A role counts as the
+        subsidiary's own statement when it:
+
+        - is a face statement (FilingSummary 'Statements' menu, or a classified
+          statement type when the filing has no FilingSummary),
+        - names exactly one dei:LegalEntityAxis member, and
+        - has a sibling face statement of the same kind without the axis, which
+          is the parent's.
+
+        The sibling check matters: Simon Property, NextEra and Dominion file one
+        combined role per statement holding the parent's facts plus one
+        subsidiary member, and that role is the parent's own statement. Notes
+        and details roles with a single member legitimately show both entities
+        and are never matched.
+        """
+        if not role:
+            return None
+        if self._coregistrant_members is None:
+            self._coregistrant_members = self._find_coregistrant_members()
+        return self._coregistrant_members.get(role)
+
+    def _find_coregistrant_members(self) -> Dict[str, str]:
+        has_filing_summary = bool(self._filing_summary_menu_categories)
+        face_types = set(statement_to_concepts)
+
+        def is_face(statement: Dict[str, Any]) -> bool:
+            if has_filing_summary:
+                return (statement.get('menu_category') or '').lower() == 'statements'
+            statement_type = statement.get('type') or ''
+            return statement_type.removesuffix('Parenthetical') in face_types
+
+        def kind(statement: Dict[str, Any]) -> Tuple[Any, Any, bool]:
+            parenthetical = 'parenthetical' in (statement.get('definition') or '').lower()
+            return statement.get('primary_concept'), statement.get('type'), parenthetical
+
+        candidates = {}
+        plain_kinds = []
+        for statement in self.get_all_statements():
+            tree = self.presentation_trees.get(statement['role'])
+            if tree is None or not is_face(statement):
+                continue
+            members = _legal_entity_members(tree.all_nodes)
+            if members is None:
+                plain_kinds.append(kind(statement))
+            elif len(members) == 1:
+                candidates[statement['role']] = (members[0], kind(statement))
+
+        coregistrant_members = {}
+        for role, (member, (concept, statement_type, parenthetical)) in candidates.items():
+            if any((concept == plain_concept or (statement_type and statement_type == plain_type))
+                   and parenthetical == plain_parenthetical
+                   for plain_concept, plain_type, plain_parenthetical in plain_kinds):
+                coregistrant_members[role] = member
+        return coregistrant_members
+
+    def _describe_dimension(self, dim_name: str, dim_value: str, typed: bool,
+                            nil: bool = False) -> Dict[str, Any]:
+        """One context dimension with display labels, for `_find_facts_for_element`."""
+        # An explicit member is a QName naming a concept, keyed in the catalog
+        # with '_'. A typed value is data: it is rewritten only when it too is a
+        # QName (a QName.domain typed axis names concepts), so '10:30' stays as
+        # filed (gh #1761).
+        if not typed or _QNAME.match(dim_value):
+            dim_value = dim_value.replace(":", "_")
+        dim_label = dim_name
+        mem_label = dim_value
+        dim_element = self.element_catalog.get(dim_name)
+        mem_element = self.element_catalog.get(dim_value)
+
+        # Try to get human-readable dimension name
+        if dim_element is not None:
+            for role in ['http://www.xbrl.org/2003/role/terseLabel',
+                         'http://www.xbrl.org/2003/role/label',
+                         'http://www.xbrl.org/2003/role/verboseLabel']:
+                if role in dim_element.labels:
+                    dim_label = dim_element.labels[role]
+                    break
+
+        # Try to get human-readable member name. Prefer verboseLabel, which
+        # provides full accounting terms (e.g., "Rental equipment, net" vs
+        # "Sales of rental equipment")
+        if mem_element is not None:
+            for role in ['http://www.xbrl.org/2003/role/verboseLabel',
+                         'http://www.xbrl.org/2003/role/terseLabel',
+                         'http://www.xbrl.org/2003/role/label']:
+                if role in mem_element.labels:
+                    mem_label = mem_element.labels[role]
+                    break
+
+        # Clean up labels (remove [Axis], [Member], etc.)
+        dim_label = dim_label.replace('[Axis]', '').replace('[Domain]', '').strip()
+        mem_label = NIL_MEMBER_LABEL if nil else mem_label.replace('[Member]', '').strip()
+        format_key = f"{dim_label}: {mem_label}"
+        return {
+            'dimension': dim_name,
+            'member': dim_value,
+            'dimension_label': dim_label,
+            'member_label': mem_label,
+            'format_key': format_key,
+            'dimension_element': dim_element,
+            'member_element': mem_element
+        }
+
+    def _find_facts_for_element(self, element_name: str, period_filter: Optional[str] = None,
+                                dimensions: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+        """
+        Find facts for a specific element, optionally filtered by period and dimensions.
+        Args:
+            element_name: Element name to find facts for
+            period_filter: Optional period key to filter contexts
+            dimensions: Optional dictionary of dimension names to dimension values to filter by
+        Returns:
+            Dictionary of facts by context ID with dimension information attached
+        """
+        if not element_name:
+            return {}  # No element name provided
+
+        relevant_facts = {}
+
+        # Use reverse index to only check contexts that actually have facts for this element
+        element_name = self._fact_element_key(element_name)
+        context_ids = self.element_context_index.get(element_name, [])
+        for context_id in context_ids:
+            # Issue #564: Get ALL facts for this element/context and select the most precise
+            facts_list = self.parser.get_facts_by_key(element_name, context_id)
+            fact = self._select_most_precise_fact(self._prefer_reporting_currency(facts_list))
+
+            if fact:
+                # If period filter is specified, check if context matches period
+                if period_filter:
+                    period_key = self.context_period_map.get(context_id)
+                    if period_key != period_filter:
+                        continue  # Skip if period doesn't match
+
+                # If dimensions are specified, check if context has matching dimensions
+                if dimensions:
+                    context = self.contexts.get(context_id)
+                    if not context or not hasattr(context, 'dimensions'):
+                        continue  # Skip if context doesn't have dimensions
+
+                    # Check if all specified dimensions match
+                    matches_all_dimensions = True
+                    for dim_name, dim_value in dimensions.items():
+                        # Normalize dimension name if it contains a colon
+                        normalized_dim_name = dim_name.replace(':', '_')
+
+                        # Check if this dimension exists and matches the expected value
+                        if normalized_dim_name not in context.dimensions or context.dimensions[
+                            normalized_dim_name] != dim_value:
+                            matches_all_dimensions = False
+                            break
+
+                    if not matches_all_dimensions:
+                        continue  # Skip if dimensions don't match
+
+                # Get the context and extract dimension information
+                context = self.contexts.get(context_id)
+
+                # Create a wrapper around the fact with dimension information
+                wrapped_fact = {
+                    'fact': fact,
+                    'dimension_info': [],
+                    'dimension_key': ""
+                }
+
+                if context and hasattr(context, 'dimensions') and context.dimensions:
+                    # Build rich dimension information with formatted labels
+                    dimension_info = []
+                    dim_keys = []
+
+                    typed_dimensions = getattr(self.parser, 'typed_dimensions', ())
+                    for dim_name, dim_value in sorted(context.dimensions.items()):
+                        info = self._describe_dimension(dim_name, dim_value, dim_name in typed_dimensions,
+                                                        nil=dim_name in context.nil_dimensions)
+                        dim_keys.append(info['format_key'])
+                        dimension_info.append(info)
+
+                    # Store dimension information in the wrapper
+                    wrapped_fact['dimension_info'] = dimension_info
+                    wrapped_fact['dimension_key'] = ", ".join(sorted(dim_keys))
+
+                # If we get here, all filters passed
+                relevant_facts[context_id] = wrapped_fact
+
+        return relevant_facts
+
+    def get_period_views(self, statement_type: str) -> List[Dict[str, Any]]:
+        """
+        Get available period views for a statement type.
+        Args:
+            statement_type: Type of statement to get period views for
+
+        Returns:
+            List of period view options with name, description, and period keys
+        """
+        return get_period_views(self, statement_type)
+
+    def get_statements_by_category(self, category: str) -> List[Dict[str, Any]]:
+        """
+        Get all statements matching a specific category.
+        Args:
+            category: Category of statements to find ('statement', 'note', 'disclosure', 'document', or 'other')
+        Returns:
+            List of statement metadata matching the category
+        """
+        # Ensure indices are built
+        if not self._all_statements_cached:
+            self.get_all_statements()
+
+        result = []
+
+        # Find all statements with matching category
+        for stmt in self._all_statements_cached:
+            if stmt.get('category') == category:
+                result.append(stmt)
+
+        return result
+
+    def find_statement(self, statement_type: str, is_parenthetical: bool = False) -> Tuple[
+        List[Dict[str, Any]], Optional[str], str]:
+        """
+        Find a statement by type, role, or name.
+
+        Args:
+            statement_type: Type of statement (e.g., "BalanceSheet") or role URI or statement name
+            is_parenthetical: Whether to look for a parenthetical statement
+        Returns:
+            Tuple of:
+                - List of matching statements
+                - Found role URI (or None if not found)
+                - Actual statement type (may be different from input if matched by role/name)
+        """
+        # Literal role identifiers must not enter canonical/name guessing.
+        if statement_type.lower().startswith(('http://', 'https://')):
+            tree = self.presentation_trees.get(statement_type)
+            if tree is None:
+                return [], None, statement_type
+            matching_statements = [
+                stmt for stmt in self.get_all_statements()
+                if stmt.get('role') == statement_type
+            ]
+            if not matching_statements:
+                # A tree can be available without catalog classification.
+                matching_statements = [{
+                    'role': statement_type,
+                    'definition': tree.definition,
+                    'element_count': len(tree.all_nodes),
+                    'type': None,
+                }]
+            return matching_statements, statement_type, matching_statements[0]['type']
+
+        # Initialize statement resolver if not already done
+        if self._statement_resolver is None:
+            self._statement_resolver = StatementResolver(self)
+
+        # Use the enhanced statement resolver
+        matching_statements, found_role, actual_statement_type, confidence = self._statement_resolver.find_statement(
+            statement_type, is_parenthetical
+        )
+
+        # For backward compatibility, ensure indices are built
+        if not self._all_statements_cached:
+            self.get_all_statements()
+
+        # If we couldn't find anything with the resolver, fall back to the old implementation
+        if not matching_statements:
+            # Original implementation (fallback)
+            matching_statements = []
+            found_role = None
+            actual_statement_type = statement_type
+
+            # Try to find the statement by standard name first
+            if statement_type in self._statement_by_standard_name:
+                matching_statements = self._statement_by_standard_name[statement_type]
+                if matching_statements:
+                    found_role = matching_statements[0]['role']
+
+            # Issue #518: Special fallback for IncomeStatement -> ComprehensiveIncome
+            # Many filings have ComprehensiveIncome instead of separate IncomeStatement
+            if not matching_statements and statement_type == 'IncomeStatement':
+                if 'ComprehensiveIncome' in self._statement_by_standard_name:
+                    matching_statements = self._statement_by_standard_name['ComprehensiveIncome']
+                    if matching_statements:
+                        found_role = matching_statements[0]['role']
+                        if VERBOSE_EXCEPTIONS:
+                            log.info("IncomeStatement not found, using ComprehensiveIncome as fallback")
+
+            # If not found by standard name, try by role URI
+            if not matching_statements and statement_type.startswith(
+                    'http') and statement_type in self._statement_by_role_uri:
+                matching_statements = [self._statement_by_role_uri[statement_type]]
+                found_role = statement_type
+
+            # If not found, try by role name (case-insensitive)
+            if not matching_statements:
+                role_or_type_lower = statement_type.lower()
+                if role_or_type_lower in self._statement_by_role_name:
+                    matching_statements = self._statement_by_role_name[role_or_type_lower]
+                    if matching_statements:
+                        found_role = matching_statements[0]['role']
+
+            # If still not found, try by definition
+            if not matching_statements:
+                def_key = statement_type.lower().replace(' ', '')
+                if def_key in self._statement_indices:
+                    matching_statements = self._statement_indices[def_key]
+                    if matching_statements:
+                        found_role = matching_statements[0]['role']
+
+            # If still not found, try partial matching on role name
+            if not matching_statements:
+                for role_name, statements in self._statement_by_role_name.items():
+                    if statement_type.lower() in role_name:
+                        matching_statements = statements
+                        found_role = statements[0]['role']
+                        break
+
+            # Issue #518: Validate statement type matches to prevent returning wrong statement
+            # Don't return CashFlowStatement when IncomeStatement was requested
+            if matching_statements and matching_statements[0].get('type'):
+                matched_type = matching_statements[0]['type']
+                financial_statement_types = ['BalanceSheet', 'IncomeStatement', 'CashFlowStatement',
+                                             'ComprehensiveIncome', 'StatementOfEquity']
+                # If requesting a specific financial statement and got a different one, reject it
+                if statement_type in financial_statement_types and matched_type != statement_type:
+                    if VERBOSE_EXCEPTIONS:
+                        log.warning(f"Found {matched_type} when looking for {statement_type}, rejecting type mismatch")
+                    matching_statements = []
+                    found_role = None
+
+            # Update actual statement type if we found a match
+            if matching_statements and matching_statements[0]['type']:
+                actual_statement_type = matching_statements[0]['type']
+
+        return matching_statements, found_role, actual_statement_type
+
+    def render_statement(self, statement_type: str = "BalanceSheet",
+                         period_filter: Optional[str] = None,
+                         period_view: Optional[str] = None,
+                         standard: bool = True,
+                         show_date_range: bool = False,
+                         parenthetical: bool = False,
+                         include_dimensions: bool = False,
+                         view: Optional['StatementView'] = None) -> Optional[RenderedStatement]:
+        """
+        Render a statement in a rich table format similar to how it would appear in an actual filing.
+        Args:
+            statement_type: Type of statement to render (e.g., "BalanceSheet", "IncomeStatement")
+                           or a specific statement role/name (e.g., "CONSOLIDATEDBALANCESHEETS")
+            period_filter: Optional period key to filter by specific reporting period
+            period_view: Optional name of a predefined period view (e.g., "Quarterly: Current vs Previous")
+            standard: Whether to use standardized concept labels (default: True)
+            show_date_range: Whether to show full date ranges for duration periods (default: False)
+            parenthetical: Whether to look for a parenthetical statement (default: False)
+            include_dimensions: Whether to include dimensional segment data (default: False)
+            view: StatementView controlling dimensional filtering (STANDARD, DETAILED, SUMMARY)
+        Returns:
+            RichTable: A formatted table representation of the statement
+        """
+        from edgar.xbrl.presentation import StatementView
+
+        # Find the statement using the unified statement finder with parenthetical support
+        matching_statements, found_role, actual_statement_type = self.find_statement(statement_type, parenthetical)
+        statement_identifier = statement_type
+        if parenthetical:
+            if not found_role:
+                return None
+            statement_identifier = found_role
+            # Resolve the selected role's own kind rather than the primary name.
+            matching_statements, _, actual_statement_type = self.find_statement(found_role)
+
+        # Get statement definition from matching statements
+        role_definition = ""
+        if matching_statements:
+            role_definition = matching_statements[0]['definition']
+
+        # Issue #569: Always get full dimensional data from get_statement
+        # Then filter breakdown dimensions (geographic, segment) in render_statement
+        # This ensures face-level classification dimensions (PPE type, equity) are shown
+        should_display_dimensions = True
+
+        # Get the statement data with all dimensional data, passing view for filtering
+        statement_data = self.get_statement(statement_identifier, period_filter, should_display_dimensions, view=view)
+        if not statement_data:
+            return None
+
+        # Merge adjacent same-label rows with complementary NaN values (Issue #3n9t)
+        from edgar.xbrl.statements import _merge_complementary_rows
+        statement_data = _merge_complementary_rows(statement_data)
+        if not statement_data:
+            return None
+
+        # Get the statement title
+        statement_info = statement_to_concepts.get(actual_statement_type)
+        if statement_info:
+            statement_title = statement_info.title
+        else:
+            # Try to get a nice title from the role definition
+            if role_definition:
+                statement_title = role_definition.split(' - ')[-1].strip()
+            else:
+                statement_title = statement_type
+
+        # Add "Parenthetical" to the title if appropriate
+        if parenthetical and 'parenthetical' not in statement_title.lower():
+            statement_title = f"{statement_title} (Parenthetical)"
+
+        # GH #1469: honour period_filter the way Statement.to_dataframe()
+        # does, and let an instant-only note choose its own instants.
+        # period_view stays unwired here: its views can name periods that
+        # reporting_periods lacks, which would drop columns (edgartools-vsmia).
+        from edgar.xbrl.periods import determine_periods_to_display
+        periods_to_display = determine_periods_to_display(
+            self, actual_statement_type,
+            period_filter=period_filter,
+            statement_data=statement_data
+        )
+
+        # Render the statement
+        # Issue #569: Pass include_dimensions to filter breakdown dimensions in render
+        # Issue #577/cf9o: Pass role_uri for definition linkbase-based filtering
+        # StatementView: Pass view for STANDARD/DETAILED/SUMMARY filtering
+        return render_statement(
+            statement_data,
+            periods_to_display,
+            statement_title,
+            actual_statement_type,
+            self.entity_info,
+            standard,
+            show_date_range,
+            show_comparisons=True,
+            xbrl_instance=self,
+            include_dimensions=include_dimensions,
+            role_uri=found_role,
+            view=view
+        )
+
+    def _element_catalog_entry(self, element_id: Optional[str]):
+        """Catalog entry for a concept id. The id itself is not rewritten.
+
+        Try the exact key first. A qualified id (``prefix:Local_Name``) then
+        tries the parser's namespace-separator spelling (``prefix_Local_Name``):
+        only the first colon changes, the same boundary as
+        ``BaseParser._normalize_element_id`` and ``facts._concept_spellings``.
+        An exact entry is never replaced by that fallback, and a local name
+        is never searched on its own. (GH #1711)
+        """
+        if not element_id:
+            return None
+        element = self.element_catalog.get(element_id)
+        if element is not None or ':' not in element_id:
+            return element
+        prefix, local_name = element_id.split(':', 1)
+        return self.element_catalog.get(f"{prefix}_{local_name}")
+
+    def to_pandas(self, statement_role: Optional[str] = None, standard: bool = True) -> Dict[str, pd.DataFrame]:
+        """
+        Convert XBRL data to pandas DataFrames.
+
+        Facts include element_name, element_type, element_period_type,
+        element_balance and element_label when the concept is in the catalog.
+        Lookup tries the stored id, then only its namespace ``:`` changed to ``_``.
+
+        Args:
+            statement_role: Optional role URI to convert only a specific statement
+            standard: Whether to use standardized concept labels (default: True)
+        Returns:
+            Dictionary of DataFrames for different aspects of the XBRL data
+        """
+
+        dataframes = {}
+
+        # Convert contexts to DataFrame
+        context_data = []
+        for context_id, context in self.contexts.items():
+            ctx_dict = context.model_dump()
+            ctx_dict['context_id'] = context_id
+
+            # Extract entity info
+            if 'entity' in ctx_dict and ctx_dict['entity']:
+                ctx_dict['entity_identifier'] = ctx_dict['entity'].get('identifier')
+                ctx_dict['entity_scheme'] = ctx_dict['entity'].get('scheme')
+
+            # Extract period info
+            if 'period' in ctx_dict and ctx_dict['period']:
+                ctx_dict['period_type'] = ctx_dict['period'].get('type')
+                if ctx_dict['period_type'] == 'instant':
+                    ctx_dict['period_instant'] = ctx_dict['period'].get('instant')
+                elif ctx_dict['period_type'] == 'duration':
+                    ctx_dict['period_start'] = ctx_dict['period'].get('startDate')
+                    ctx_dict['period_end'] = ctx_dict['period'].get('endDate')
+
+            # Extract dimensions
+            if 'dimensions' in ctx_dict and ctx_dict['dimensions']:
+                for dim_name, dim_value in ctx_dict['dimensions'].items():
+                    dim_key = f"dim_{dim_name.replace(':', '_')}"
+                    ctx_dict[dim_key] = dim_value
+
+            context_data.append(ctx_dict)
+
+        if context_data:
+            dataframes['contexts'] = pd.DataFrame(context_data)
+
+        # Convert facts to DataFrame
+        fact_data = []
+        for fact_key, fact in self._facts.items():
+            fact_dict = fact.model_dump()
+            fact_dict['fact_key'] = fact_key
+
+            # Try to get additional information
+            if fact.context_ref in self.contexts:
+                context = self.contexts[fact.context_ref]
+
+                # Add period information
+                if 'period' in context.model_dump() and context.period:
+                    fact_dict['period_type'] = context.period.get('type')
+                    if fact_dict['period_type'] == 'instant':
+                        fact_dict['period_instant'] = context.period.get('instant')
+                    elif fact_dict['period_type'] == 'duration':
+                        fact_dict['period_start'] = context.period.get('startDate')
+                        fact_dict['period_end'] = context.period.get('endDate')
+
+                # Add entity information
+                if 'entity' in context.model_dump() and context.entity:
+                    fact_dict['entity_identifier'] = context.entity.get('identifier')
+
+                # Add dimensions
+                if 'dimensions' in context.model_dump() and context.dimensions:
+                    for dim_name, dim_value in context.dimensions.items():
+                        dim_key = f"dim_{dim_name.replace(':', '_')}"
+                        fact_dict[dim_key] = dim_value
+
+            # GH #1711: catalog keys use prefix_LocalName; facts keep prefix:LocalName.
+            element = self._element_catalog_entry(fact.element_id)
+            if element is not None:
+                fact_dict['element_name'] = element.name
+                fact_dict['element_type'] = element.data_type
+                fact_dict['element_period_type'] = element.period_type
+                fact_dict['element_balance'] = element.balance
+
+                # Add label
+                label = None
+                if element.labels:
+                    # Try standard label first
+                    label = element.labels.get(STANDARD_LABEL)
+                    if not label:
+                        # Take first available label
+                        label = next(iter(element.labels.values()), None)
+                fact_dict['element_label'] = label
+
+            fact_data.append(fact_dict)
+
+        if fact_data:
+            dataframes['facts'] = pd.DataFrame(fact_data)
+
+        # Convert entity info to DataFrame
+        if self.entity_info:
+            dataframes['entity_info'] = pd.DataFrame([self.entity_info])
+
+        # Convert specific statement if requested
+        if statement_role:
+            # Try direct role URI
+            statement_data = self.get_statement(statement_role)
+
+            # If not found, try by statement type
+            if not statement_data and not statement_role.startswith('http'):
+                # Find the role for this statement type
+                all_statements = self.get_all_statements()
+                matching_statements = [stmt for stmt in all_statements if stmt['type'] == statement_role]
+
+                if matching_statements:
+                    role = matching_statements[0]['role']
+                    statement_data = self.get_statement(role)
+
+            # Convert statement data to DataFrame if found
+            if statement_data:
+                # Apply standardization if requested
+                if standard:
+                    # Get statement type for context
+                    stmt_type = statement_role
+                    if not stmt_type.startswith('http'):
+                        stmt_type = statement_role
+                    else:
+                        # Try to determine statement type from role
+                        all_statements = self.get_all_statements()
+                        for stmt in all_statements:
+                            if stmt['role'] == statement_role:
+                                stmt_type = stmt['type']
+                                break
+
+                    # Apply standardization using XBRL instance's cache (disable statement caching
+                    # for consistency with other call sites where input data varies)
+                    statement_data = self.standardization.standardize_statement_data(
+                        statement_data, stmt_type, use_cache=False
+                    )
+
+                # Create rows for the DataFrame
+                rows = []
+
+                # Add columns for all found periods
+                all_periods = set()
+                for item in statement_data:
+                    for period in item.get('values', {}).keys():
+                        all_periods.add(period)
+
+                # Sort periods (typically instant or duration_start_end format)
+                sorted_periods = sorted(all_periods)
+
+                for item in statement_data:
+                    row = {
+                        'concept': item['concept'],
+                        'label': item['label'],
+                        'level': item['level'],
+                        'is_abstract': item['is_abstract'],
+                        'has_values': item.get('has_values', False),
+                    }
+
+                    # Add original label if standardized
+                    if 'original_label' in item:
+                        row['original_label'] = item['original_label']
+
+                    # Add period values
+                    for period in sorted_periods:
+                        value = item.get('values', {}).get(period)
+                        row[period] = value
+
+                    rows.append(row)
+
+                if rows:
+                    dataframes['statement'] = pd.DataFrame(rows)
+                    # Rename columns to remove duration/instant prefixes
+                    dataframes['statement'].columns = [
+                        col.replace('duration_', '').replace('instant_', '')
+                        for col in dataframes['statement'].columns
+                    ]
+
+        return dataframes
+
+    def get_footnotes_for_fact(self, fact_id: str) -> List['Footnote']:
+        """Get all footnotes associated with a specific fact ID.
+        Args:
+            fact_id: The ID of the fact to get footnotes for
+        Returns:
+            List of Footnote objects associated with the fact
+        """
+        self._load_inline_footnotes()
+        footnotes = []
+
+        # First check if any fact has this ID and get its footnote references
+        for fact in self.parser.facts.values():
+            if fact.fact_id == fact_id:
+                # Get the footnote objects for each footnote ID
+                for footnote_id in fact.footnotes:
+                    if footnote_id in self.parser.footnotes:
+                        footnotes.append(self.parser.footnotes[footnote_id])
+                break
+
+        return footnotes
+
+    def get_facts_with_footnotes(self) -> Dict[str, 'Fact']:
+        """Get all facts that have associated footnotes.
+        Returns:
+            Dictionary of fact_key -> Fact for all facts with footnotes
+        """
+        self._load_inline_footnotes()
+        facts_with_footnotes = {}
+        for key, fact in self.parser.facts.items():
+            if fact.footnotes:
+                facts_with_footnotes[key] = fact
+        return facts_with_footnotes
+
+    def get_currency_for_fact(self, element_name: str, period_key: str) -> Optional[str]:
+        """
+        Get currency for a specific fact/period on-demand with caching.
+
+        Args:
+            element_name: The XBRL element name
+            period_key: The period key to look up
+
+        Returns:
+            Currency measure string (e.g., 'iso4217:EUR') or None if not found
+        """
+        # Create cache key
+        cache_key = f"{element_name}_{period_key}"
+
+        # Check cache first
+        if not hasattr(self, '_currency_cache'):
+            self._currency_cache = {}
+
+        if cache_key in self._currency_cache:
+            return self._currency_cache[cache_key]
+
+        # Find facts for this element and period
+        facts = self._find_facts_for_element(element_name, period_key)
+
+        # Look for the first fact with currency information
+        currency_measure = None
+        for _, wrapped_fact in facts.items():
+            fact = wrapped_fact['fact']
+            if hasattr(fact, 'unit_ref') and fact.unit_ref and fact.unit_ref in self.units:
+                # A divided unit (USD per share) carries its currency in the
+                # numerator and has no 'measure' key, so testing for that key
+                # dropped the currency symbol from every per-share cell once
+                # divided units began parsing correctly (edgartools-uetp).
+                measure = unit_currency_measure(self.units[fact.unit_ref])
+                if measure:
+                    currency_measure = measure
+                    break
+
+        # Cache the result (including None values to avoid repeated lookups)
+        self._currency_cache[cache_key] = currency_measure
+        return currency_measure
+
+    # =========================================================================
+    # DEFINITION LINKBASE - DIMENSION VALIDATION
+    # =========================================================================
+
+    def get_valid_dimensions_for_role(self, role_uri: str) -> set:
+        """
+        Get axes (dimensions) that are valid for a statement role per definition linkbase.
+
+        The definition linkbase declares which dimensions are valid for each statement
+        via hypercube (table) definitions. This is the authoritative source for determining
+        whether a dimensional fact is a "face value" or a "breakdown".
+
+        Args:
+            role_uri: The statement role URI (e.g., "http://company.com/role/IncomeStatement")
+
+        Returns:
+            Set of axis element IDs that are valid for this role.
+            Returns empty set if no hypercube definitions exist for this role.
+
+        Example:
+            >>> xbrl = filing.xbrl()
+            >>> axes = xbrl.get_valid_dimensions_for_role(
+            ...     "http://www.boeing.com/role/ConsolidatedStatementsofOperations"
+            ... )
+            >>> print(axes)
+            {'srt_ProductOrServiceAxis'}
+        """
+        if not hasattr(self, '_valid_dimensions_cache'):
+            self._valid_dimensions_cache = {}
+
+        if role_uri in self._valid_dimensions_cache:
+            return self._valid_dimensions_cache[role_uri]
+
+        valid_axes = set()
+
+        # Get tables defined for this role
+        if role_uri in self.tables:
+            for table in self.tables[role_uri]:
+                valid_axes.update(table.axes)
+
+        self._valid_dimensions_cache[role_uri] = valid_axes
+        return valid_axes
+
+    def _normalize_axis_id(self, axis_id: str) -> str:
+        """
+        Normalize axis ID to consistent format for comparison.
+
+        Handles both formats:
+        - Underscore format: srt_ProductOrServiceAxis (from definition linkbase)
+        - Colon format: srt:ProductOrServiceAxis (from dimension metadata)
+
+        Returns the base axis name for comparison.
+        """
+        # Extract just the axis name (after prefix)
+        if ':' in axis_id:
+            return axis_id.split(':', 1)[1]
+        if '_' in axis_id:
+            # Handle cases like 'srt_ProductOrServiceAxis' -> 'ProductOrServiceAxis'
+            # But also handle 'us-gaap_StatementTable' correctly
+            parts = axis_id.split('_', 1)
+            if len(parts) == 2:
+                return parts[1]
+        return axis_id
+
+    def is_dimension_valid_for_role(self, dimension: str, role_uri: str) -> bool:
+        """
+        Check if a dimension (axis) is declared valid for a statement role.
+
+        This checks the definition linkbase hypercube declarations to determine
+        if a dimension should be treated as a "face value" dimension for this
+        statement (as opposed to a breakdown/detail dimension).
+
+        Args:
+            dimension: The dimension/axis name (e.g., "srt:ProductOrServiceAxis")
+            role_uri: The statement role URI
+
+        Returns:
+            True if the dimension is declared valid for this role's hypercubes.
+            False if not declared (meaning it's likely a breakdown dimension).
+
+        Example:
+            >>> xbrl.is_dimension_valid_for_role(
+            ...     "srt:ProductOrServiceAxis",
+            ...     "http://www.boeing.com/role/ConsolidatedStatementsofOperations"
+            ... )
+            True
+        """
+        valid_axes = self.get_valid_dimensions_for_role(role_uri)
+
+        if not valid_axes:
+            # No definition linkbase data for this role
+            return False
+
+        # Normalize the input dimension for comparison
+        dim_normalized = self._normalize_axis_id(dimension)
+
+        # Check if any valid axis matches
+        for axis in valid_axes:
+            axis_normalized = self._normalize_axis_id(axis)
+            if dim_normalized == axis_normalized:
+                return True
+
+        return False
+
+    def has_definition_linkbase_for_role(self, role_uri: str) -> bool:
+        """
+        Check if definition linkbase data exists for a statement role.
+
+        This is useful for determining whether to use definition linkbase-based
+        dimension filtering or fall back to heuristic-based filtering.
+
+        Args:
+            role_uri: The statement role URI
+
+        Returns:
+            True if hypercube/table definitions exist for this role.
+        """
+        return role_uri in self.tables and len(self.tables[role_uri]) > 0
+
+    def presented_axes_for_role(self, role_uri: str) -> Optional[Dict[str, bool]]:
+        """The axes a role's presentation tree shows, as 'prefix_AxisName'.
+
+        Each maps to whether the tree names members under it; an axis shown
+        with only its domain (Disney's dei_LegalEntityAxis > EntityDomain)
+        names none. None when the role has no presentation tree. A role
+        without a definition linkbase still lists, in its presentation tree,
+        every axis it prints; IFRS filers such as SAP file no hypercubes for
+        their face statements (GH #1670).
+        """
+        cache = self.__dict__.setdefault('_presented_axes_cache', {})
+        if role_uri not in cache:
+            tree = self.presentation_trees.get(role_uri)
+            if tree is None:
+                cache[role_uri] = None
+            else:
+                with_members = self._get_dimensional_member_parents(tree)
+                cache[role_uri] = {node_id.replace(':', '_'): node_id.replace(':', '_') in with_members
+                                   for node_id in tree.all_nodes if node_id.endswith('Axis')}
+        return cache[role_uri]
+
+    def __rich__(self):
+        """Rich representation for pretty printing in console."""
+        return generate_rich_representation(self)
+
+    def __repr__(self):
+        return repr_rich(self.__rich__())
+
+
+    def to_context(self, max_tokens: int = 2000) -> str:
+        """
+        Get AI-optimized text representation of XBRL document.
+
+        Returns a compact Markdown-KV format optimized for LLM consumption,
+        including entity information, filing details, period coverage, available
+        statements, and common usage patterns.
+
+        This format uses 64.7% fewer tokens than the visual repr() format while
+        retaining all essential information.
+
+        Args:
+            max_tokens: Target token budget (currently not enforced, reserved for future use)
+
+        Returns:
+            Compact Markdown-KV text representation optimized for AI consumption
+
+        Example:
+            >>> xbrl = filing.xbrl()
+            >>> text = xbrl.to_context()
+            >>> print(text)
+            **Entity:** Apple Inc. (AAPL)
+            **CIK:** 0000320193
+            **Form:** 10-K
+            ...
+        """
+        lines = []
+
+        # Entity information
+        if self.entity_info:
+            entity_name = self.entity_info.get('entity_name', 'Unknown Entity')
+            ticker = self.entity_info.get('ticker', '')
+            cik = self.entity_info.get('identifier', '')
+
+            # Entity line with ticker if available
+            entity_line = f"**Entity:** {entity_name}"
+            if ticker:
+                entity_line += f" ({ticker})"
+            lines.append(entity_line)
+
+            if cik:
+                lines.append(f"**CIK:** {cik}")
+
+            # Filing details
+            doc_type = self.entity_info.get('document_type', '')
+            if doc_type:
+                lines.append(f"**Form:** {doc_type}")
+
+            fiscal_year = self.entity_info.get('fiscal_year', '')
+            fiscal_period = self.entity_info.get('fiscal_period', '')
+            period_end = self.entity_info.get('document_period_end_date', '')
+
+            if fiscal_period and fiscal_year:
+                period_display = f"Fiscal Year {fiscal_year}" if fiscal_period == 'FY' else f"{fiscal_period} {fiscal_year}"
+                if period_end:
+                    period_display += f" (ended {period_end})"
+                lines.append(f"**Fiscal Period:** {period_display}")
+
+            # Data volume
+            lines.append(f"**Facts:** {len(self._facts):,}")
+            lines.append(f"**Contexts:** {len(self.contexts):,}")
+
+        # Period coverage
+        if self.reporting_periods:
+            lines.append("")
+            lines.append("**Available Data Coverage:**")
+
+            # Categorize periods
+            annual_periods = []
+            quarterly_periods = []
+
+            for period in self.reporting_periods[:10]:
+                label = period.get('label', '')
+                if not label:
+                    continue
+
+                if 'Annual:' in label or 'FY' in label.upper():
+                    # Extract fiscal year
+                    import re
+                    year_match = re.search(r'to .* (\d{4})', label)
+                    if year_match:
+                        annual_periods.append(f"FY {year_match.group(1)}")
+                    else:
+                        annual_periods.append(label)
+                elif 'Quarterly:' in label or any(q in label for q in ['Q1', 'Q2', 'Q3', 'Q4']):
+                    clean_label = label.replace('Quarterly:', '').strip()
+                    quarterly_periods.append(clean_label)
+
+            if annual_periods:
+                lines.append(f"  Annual: {', '.join(annual_periods[:3])}")
+            if quarterly_periods:
+                lines.append(f"  Quarterly: {', '.join(quarterly_periods[:2])}")
+
+        # Available statements
+        statements = self.get_all_statements()
+        if statements:
+            lines.append("")
+            lines.append("**Available Statements:**")
+            # Group by core vs other statements
+            core_statements = set()
+            other_statements = []
+
+            core_types = {'IncomeStatement', 'BalanceSheet', 'CashFlowStatement',
+                         'StatementOfEquity', 'ComprehensiveIncome'}
+
+            for stmt in statements:
+                stmt_type = stmt.get('type', '')
+                if stmt_type in core_types:
+                    core_statements.add(stmt_type)
+                elif stmt_type:
+                    other_statements.append(stmt_type)
+
+            # Show core statements first (in consistent order)
+            if core_statements:
+                ordered_core = [s for s in ['IncomeStatement', 'ComprehensiveIncome', 'BalanceSheet',
+                                            'StatementOfEquity', 'CashFlowStatement'] if s in core_statements]
+                lines.append(f"  Core: {', '.join(ordered_core)}")
+            if other_statements and len(other_statements) <= 5:
+                lines.append(f"  Other: {', '.join(other_statements)}")
+            elif other_statements:
+                lines.append(f"  Other: {len(other_statements)} additional statements")
+
+        # Common actions (compact version)
+        lines.append("")
+        lines.append("**Common Actions:**")
+        lines.append("  # List all available statements")
+        lines.append("  xbrl.statements")
+        lines.append("")
+        lines.append("  # View core financial statements")
+        lines.append("  stmt = xbrl.statements.income_statement()")
+        lines.append("  stmt = xbrl.statements.balance_sheet()")
+        lines.append("  stmt = xbrl.statements.cash_flow_statement()")
+        lines.append("  stmt = xbrl.statements.statement_of_equity()")
+        lines.append("  stmt = xbrl.statements.comprehensive_income()")
+        lines.append("")
+        lines.append("  # Get current period only (returns XBRL with filtered context)")
+        lines.append("  current = xbrl.current_period")
+        lines.append("  stmt = current.income_statement()")
+        lines.append("")
+        lines.append("  # Convert statement to DataFrame")
+        lines.append("  df = stmt.to_dataframe()")
+        lines.append("")
+        lines.append("  # Query specific facts")
+        lines.append("  revenue = xbrl.facts.query().by_concept('Revenue').to_dataframe()")
+        lines.append("")
+        lines.append("💡 Use xbrl.docs for comprehensive API guide")
+
+        return "\n".join(lines)
+
+    def text(self, max_tokens: int = 2000) -> str:
+        """
+        Deprecated: Use to_context() instead.
+
+        Get AI-optimized text representation of XBRL document.
+        This method is deprecated and will be removed in a future version.
+        Use to_context() for consistent naming with other AI-native methods.
+
+        Args:
+            max_tokens: Target token budget (currently not enforced, reserved for future use)
+
+        Returns:
+            Compact Markdown-KV text representation optimized for AI consumption
+        """
+        import warnings
+        warnings.warn(
+            "XBRL.text() is deprecated and will be removed in a future version. "
+            "Use XBRL.to_context() instead for consistent naming.",
+            DeprecationWarning,
+            stacklevel=2
+        )
+        return self.to_context(max_tokens=max_tokens)
+
+    @property
+    def docs(self):
+        """
+        Get comprehensive documentation for the XBRL class.
+
+        Returns a Docs object with detailed API documentation including usage patterns,
+        examples, and guidance for working with XBRL data. The documentation is searchable
+        using the .search() method.
+
+        Returns:
+            Docs: Documentation object with rich display and search capabilities
+
+        Example:
+            >>> xbrl.docs  # Display full documentation
+            >>> xbrl.docs.search("extract revenue")  # Search for specific topics
+        """
+        from edgar.richtools import Docs
+        return Docs(self)
+
+
+_LEGAL_ENTITY_AXIS = 'dei_LegalEntityAxis'
+
+
+def _legal_entity_members(nodes: Dict[str, PresentationNode]) -> Optional[List[str]]:
+    """Return the dei:LegalEntityAxis members under a presentation tree, or None without the axis."""
+    axis = nodes.get(_LEGAL_ENTITY_AXIS)
+    if axis is None:
+        return None
+    members = []
+    pending = list(axis.children)
+    while pending:
+        element_id = pending.pop()
+        if not element_id.endswith('Domain'):
+            members.append(element_id)
+        node = nodes.get(element_id)
+        if node is not None:
+            pending.extend(node.children)
+    return members
+
+
+def _project_coregistrant_facts(facts: Dict[str, Any], member: str) -> Dict[str, Any]:
+    """
+    Keep one co-registrant's facts and present them as the statement's own (GH #1468).
+
+    A fact tagged with the member loses that axis and keeps any other (equity
+    components, consolidation items), so it lands on the plain row or the same
+    breakdown row the parent's fact would. Undimensioned facts are the
+    parent's, and facts for other legal entities belong to other statements;
+    both are dropped.
+    """
+    projected = {}
+    for context_id, wrapped_fact in facts.items():
+        dimension_info = wrapped_fact['dimension_info']
+        own = [info for info in dimension_info
+               if info['dimension'].replace(':', '_') == _LEGAL_ENTITY_AXIS
+               and info['member'].replace(':', '_') == member]
+        if not own:
+            continue
+        remaining = [info for info in dimension_info if info not in own]
+        projected[context_id] = {
+            **wrapped_fact,
+            'dimension_info': remaining,
+            'dimension_key': ", ".join(sorted(info['format_key'] for info in remaining)),
+        }
+    return projected
