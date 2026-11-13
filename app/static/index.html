@@ -1898,7 +1898,6 @@
        ======================================================================== */
     function renderStep2Extraction() {
       return `
-        ${pauseBanner}
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
           <div>
             <span class="caption-ui" style="font-weight: 700; color: var(--primary);">STEP 2: FINANCIAL DATA EXTRACTION</span>
@@ -2262,6 +2261,7 @@
       const isBalanced = (delta === 0);
 
       return `
+        ${pauseBanner}
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
           <div>
             <span class="caption-ui" style="font-weight: 700; color: var(--primary);">STEP 3: FINANCIAL VALIDATION AGENT 1</span>
