@@ -755,11 +755,11 @@
 
     // Presets with two-letter monograms (no emoji)
     const PRESETS = [
-      { monogram: "AA", company: "Apple Inc.", cik: "0000320193", year: 2024, scenarioKey: "clean_aapl", tag: "Clean baseline" },
-      { monogram: "WM", company: "Walmart Inc.", cik: "0000104169", year: 2026, scenarioKey: "tampered_wmt", tag: "Wrong column ($15,357M Δ)" },
+      { monogram: "CB", company: "Combine", cik: "0000320193", year: 2026, scenarioKey: "apple_combine", tag: "3 Invariant Flaws (M1+M2+M3)" },
       { monogram: "AS", company: "Apple_Segmentation", cik: "0000320193", year: 2026, scenarioKey: "apple_segmentation", tag: "Segment roll-up (-$11,861M Δ)" },
       { monogram: "AY", company: "YOY_apple", cik: "0000320193", year: 2026, scenarioKey: "yoy_apple", tag: "YoY scale 1000x (+122,353% Δ)" },
-      { monogram: "CB", company: "Combine", cik: "0000320193", year: 2026, scenarioKey: "apple_combine", tag: "Unified Stress-Test (M1+M2+M3)" }
+      { monogram: "WM", company: "Walmart Inc.", cik: "0000104169", year: 2026, scenarioKey: "tampered_wmt", tag: "Wrong column ($15,357M Δ)" },
+      { monogram: "AA", company: "Apple Inc. (Clean)", cik: "0000320193", year: 2024, scenarioKey: "clean_aapl", tag: "Clean baseline (0 flaws)" }
     ];
 
     // Global Application State
@@ -769,8 +769,8 @@
       maxCompletedStep: 0,
       threadId: "thread_standby",
       runId: null,
-      selectedPreset: PRESETS[1], // Default to Walmart Inc. (WM)
-      activeScenario: "tampered_wmt",
+      selectedPreset: PRESETS[0], // Default to Combine (CB) with all 3 flaws
+      activeScenario: "apple_combine",
       anomalySelection: "none",
       isRunning: false,
       isPaused: false,
@@ -1153,7 +1153,7 @@
             <div class="body-ui" style="font-size: 0.8125rem;">
               <strong>Adversarial Test Catalog:</strong> <code>SEG-TEST-01-MATH-MISMATCH</code> — Triggers human review escalation at Step 4 Segment Validation Agent.
             </div>
-            <button class="btn btn-primary btn-sm" onclick="selectPreset(2); startAuditWorkflow();">
+            <button class="btn btn-primary btn-sm" onclick="selectPresetByScenario('apple_segmentation'); startAuditWorkflow();">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
               Run Apple_Segmentation audit
             </button>
@@ -1266,7 +1266,7 @@
             <div class="body-ui" style="font-size: 0.8125rem;">
               <strong>Adversarial Test Catalog:</strong> <code>YOY-TEST-01-UNIT-SCALE-1000X</code> & <code>YOY-TEST-02-SIGN-REVERSAL</code> — Triggers human review escalation at Step 5 YoY Comparing Agent.
             </div>
-            <button class="btn btn-primary btn-sm" onclick="selectPreset(3); startAuditWorkflow();">
+            <button class="btn btn-primary btn-sm" onclick="selectPresetByScenario('yoy_apple'); startAuditWorkflow();">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
               Run YOY_apple audit
             </button>
@@ -1371,7 +1371,7 @@
             <div class="body-ui" style="font-size: 0.8125rem;">
               <strong>Adversarial Test Catalog:</strong> <code>UNIFIED-STRESS-TEST-M1-M2-M3</code> — Demonstrates full autonomous agentic pipeline with sequential human review checkpoints.
             </div>
-            <button class="btn btn-primary btn-sm" onclick="selectPreset(4); startAuditWorkflow();">
+            <button class="btn btn-primary btn-sm" onclick="selectPresetByScenario('apple_combine'); startAuditWorkflow();">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
               Run Combine unified audit
             </button>
@@ -1414,16 +1414,23 @@
               company: `SEC Registrant (CIK ${val})`,
               cik: val,
               year: 2026,
-              scenarioKey: "clean_aapl",
+              scenarioKey: "apple_combine",
               tag: "Custom CIK submission"
             };
-            appState.activeScenario = "clean_aapl";
+            appState.activeScenario = "apple_combine";
           }
         }
         updateCollapsedLaunchpad();
       } else {
         fb.innerText = "Must be a 10-digit SEC CIK.";
         fb.style.color = "var(--warn)";
+      }
+    }
+
+    function selectPresetByScenario(scenarioKey) {
+      const idx = PRESETS.findIndex(p => p.scenarioKey === scenarioKey);
+      if (idx !== -1) {
+        selectPreset(idx);
       }
     }
 
@@ -1675,10 +1682,10 @@
               company: `SEC Registrant (CIK ${enteredCik})`,
               cik: enteredCik,
               year: 2026,
-              scenarioKey: "clean_aapl",
+              scenarioKey: "apple_combine",
               tag: "Custom CIK submission"
             };
-            appState.activeScenario = "clean_aapl";
+            appState.activeScenario = "apple_combine";
           }
         }
       }
@@ -2178,30 +2185,382 @@
     }
 
     /* Slide-out Review Drawer */
-    function openReviewDrawer(flaggedItem) {
-      const item = flaggedItem || appState.activeFlaggedItem || appState.activeTimeline?.flagged_item;
-      if (!item) return;
+    let currentDrawerFlawIndex = 0;
+
+    const COMBINE_FLAWS = [
+      {
+        flawId: "m1_liabilities",
+        stepId: 3,
+        checkpoint: "CP-01_PAUSED",
+        agent: "Asset Auditing Agent",
+        agentSub: "Accounting Equation Invariant (F1: A = L + E)",
+        metric_name: "total_liabilities",
+        display_name: "Total Liabilities (L)",
+        extracted_value: 285508,
+        expected_value: 292455,
+        unit: "USD millions",
+        delta: -6947,
+        reason: "Dual-Anchor Triangulation (F1: A = L + E failure): Extracted total_liabilities ($285,508M) equals prior-year FY2025 value. Expected $292,455M (gap = -$6,947M). Blame isolated to Total Liabilities column carryover transposition.",
+        snippet: "Total liabilities: $285,508 (Prior Period FY2025 column carryover error)",
+        source_url: "https://www.sec.gov/Archives/edgar/data/320193/000032019326000026/aapl-20260926.htm"
+      },
+      {
+        flawId: "m2_segments",
+        stepId: 4,
+        checkpoint: "CP-02_PAUSED",
+        agent: "Segment Validation Agent",
+        agentSub: "ASC 280 Operating Segment Roll-up",
+        metric_name: "segment:Rest of Asia Pacific",
+        display_name: "Rest of Asia Pacific Segment Net Sales",
+        extracted_value: 28000,
+        expected_value: 39861,
+        unit: "USD millions",
+        delta: -11861,
+        reason: "Segment Reconciliation Failed: sum(segments) + corporate - eliminations = $466,973M != Consolidated $478,834M (diff = -$11,861M). Rest of Asia Pacific extracted as $28,000M but Note disclosures confirm $39,861M (Grounding confidence 0.60 < 0.85).",
+        snippet: "Segment Operating Performance | Rest of Asia Pacific | $39,861 | $33,696",
+        source_url: "https://www.sec.gov/Archives/edgar/data/320193/000032019326000026/aapl-20260926.htm"
+      },
+      {
+        flawId: "m3_yoy",
+        stepId: 5,
+        checkpoint: "CP-03_PAUSED",
+        agent: "YoY Comparing Agent",
+        agentSub: "Multi-Period Variance & Sign Integrity",
+        metric_name: "revenue",
+        display_name: "Total Net Sales & Net Income",
+        extracted_value: 478834000,
+        expected_value: 478834,
+        unit: "USD millions",
+        delta: 478355166,
+        reason: "Revenue changed by +122,352.98% (~1225x, 391,035M -> 478,834,000M), far exceeding the 50.0% threshold. Unit scale misread (1000x mismatch). Also detected: net_income sign flip (-$115,000M loss vs prior $93,736M profit).",
+        snippet: "Total net sales | $ 478,834,000 | $ 391,035 (Note 1 - Summary of Significant Accounting Policies)",
+        source_url: "https://www.sec.gov/Archives/edgar/data/320193/000032019326000026/aapl-20260926.htm"
+      }
+    ];
+
+    function openReviewDrawer(flaggedItem, explicitFlawIdx = null) {
       document.getElementById("drawerOverlay").style.display = "block";
       document.getElementById("reviewDrawer").classList.add("open");
 
-      document.getElementById("drawerCheckpointTag").innerText = appState.activeCheckpoint || "CP-03_PAUSED";
-      document.getElementById("drawerAgentTag").innerText = item.agent || "Validation Agent Invariant";
-      document.getElementById("drawerReasonText").innerText = item.reason;
-      document.getElementById("drawerMetricName").innerText = item.metric_name;
-      document.getElementById("drawerReportedVal").innerText = `$${Number(item.extracted_value).toLocaleString()}M`;
-      document.getElementById("drawerExpectedVal").innerText = `$${Number(item.expected_value).toLocaleString()}M`;
+      const isCombine = (appState.activeScenario === "apple_combine");
+      if (isCombine) {
+        if (explicitFlawIdx !== null) {
+          currentDrawerFlawIndex = explicitFlawIdx;
+        } else if (appState.currentStep === 4) {
+          currentDrawerFlawIndex = 1;
+        } else if (appState.currentStep === 5) {
+          currentDrawerFlawIndex = 2;
+        } else {
+          currentDrawerFlawIndex = 0;
+        }
+        renderCombineMultiFlawDrawer(currentDrawerFlawIndex);
+      } else {
+        renderSingleFlawDrawer(flaggedItem);
+      }
+    }
 
-      // Highlight exact figure in source snippet
+    function switchDrawerFlaw(idx) {
+      currentDrawerFlawIndex = idx;
+      renderCombineMultiFlawDrawer(idx);
+    }
+
+    function renderCombineMultiFlawDrawer(flawIdx) {
+      currentDrawerFlawIndex = flawIdx;
+      const f = COMBINE_FLAWS[flawIdx];
+      appState.activeFlaggedItem = f;
+
+      const titleEl = document.getElementById("drawerTitle");
+      if (titleEl) titleEl.innerText = "3 Invariant Flaws Raised for Review";
+
+      // Check status of each flaw in current memory
+      const m1Fixed = appState.metrics.some(m => m.name.toLowerCase().includes("liabilities") && Number(m.value) === 292455);
+      const m2Fixed = appState.metrics.some(m => (m.name.toLowerCase().includes("asia") || m.name.toLowerCase().includes("pacific")) && Number(m.value) === 39861);
+      const m3Fixed = appState.metrics.some(m => m.name.toLowerCase().includes("revenue") && Number(m.value) === 478834);
+
+      const flawStatus = [m1Fixed, m2Fixed, m3Fixed];
+
+      const valStr = Number(f.expected_value).toLocaleString();
+      let snip = escapeHtml(f.snippet || "");
+      if (snip.includes(valStr)) {
+        snip = snip.replace(valStr, `<span class="evidence-highlight">${valStr}</span>`);
+      }
+
+      const bodyHtml = `
+        <div style="background: #FFFBEB; border: 1px solid var(--warn); border-radius: 6px; padding: 10px 14px; margin-bottom: 14px;">
+          <div style="display: flex; align-items: center; justify-content: space-between;">
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <span class="chip chip-warn" style="font-weight: 700;">AUDIT QUEUE</span>
+              <strong class="body-ui" style="font-size: 0.8125rem;">Unified Adversarial Stress-Test</strong>
+            </div>
+            <span class="caption-ui" style="color: var(--warn); font-weight: 600;">3 Total Flaws</span>
+          </div>
+          <p class="caption-ui" style="color: var(--ink-muted); margin-top: 4px; line-height: 1.4;">
+            All 3 adversarial flaws from <code>apple_combine_tampered_report.json</code> are flagged below. You can inspect each flaw individually or approve and correct all 3 at once.
+          </p>
+        </div>
+
+        <!-- Flaw Tabs -->
+        <label class="form-label">Review queue items (click to switch)</label>
+        <div style="display: flex; gap: 6px; margin-bottom: 16px;">
+          ${COMBINE_FLAWS.map((flaw, i) => `
+            <button type="button" class="btn btn-sm ${i === flawIdx ? 'btn-primary' : 'btn-secondary'}" style="flex: 1; padding: 8px 4px; font-size: 0.75rem; text-align: center; border-radius: 6px;" onclick="switchDrawerFlaw(${i})">
+              <strong>Flaw ${i + 1}</strong>: ${i === 0 ? 'M1 Liab' : (i === 1 ? 'M2 Seg' : 'M3 YoY')}
+              <div style="font-size: 0.65rem; margin-top: 2px;">
+                ${flawStatus[i] ? '<span style="color: var(--pass); font-weight: 600;">✓ Corrected</span>' : '<span style="color: var(--warn); font-weight: 600;">⚠ Flagged</span>'}
+              </div>
+            </button>
+          `).join("")}
+        </div>
+
+        <div class="well-panel" style="margin-bottom: 14px; background-color: #FEF7E6; border-color: #F8DC9B;">
+          <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px;">
+            <span class="chip chip-warn">${f.checkpoint}</span>
+            <span class="caption-ui" style="font-weight: 700; color: #7A4E00;">${f.agent}</span>
+          </div>
+          <div class="caption-ui" style="font-family: var(--font-mono); font-size: 0.72rem; color: #7A4E00; margin-bottom: 4px;">${f.agentSub}</div>
+          <p class="body-ui" style="font-size: 0.8125rem; color: #7A4E00; line-height: 1.45;">${escapeHtml(f.reason)}</p>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Metric discrepancy comparison</label>
+          <div class="app-card" style="padding: 12px; margin-bottom: 12px;">
+            <div style="display: flex; justify-content: space-between; margin-bottom: 6px;">
+              <span class="caption-ui">Standard Metric:</span>
+              <strong class="num-metric">${f.display_name}</strong>
+            </div>
+            <div style="display: flex; justify-content: space-between; margin-bottom: 6px;">
+              <span class="caption-ui">Reported (Tampered):</span>
+              <span class="num-table" style="font-weight: 700; color: var(--fail);">$${Number(f.extracted_value).toLocaleString()}M</span>
+            </div>
+            <div style="display: flex; justify-content: space-between; margin-bottom: 6px;">
+              <span class="caption-ui">Expected Ground Truth:</span>
+              <span class="num-table" style="font-weight: 700; color: var(--pass);">$${Number(f.expected_value).toLocaleString()}M</span>
+            </div>
+            <div style="display: flex; justify-content: space-between;">
+              <span class="caption-ui">Invariant Variance (Δ):</span>
+              <span class="num-table" style="font-weight: 700; color: var(--fail);">${f.delta >= 0 ? '+' : ''}${f.delta.toLocaleString()}M</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Verbatim 10-K source excerpt</label>
+          <div class="well-panel code-term" style="background: #FFFFFF; font-size: 0.8rem; line-height: 1.5; max-height: 100px; overflow-y: auto;">
+            ${snip}
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Auditor decision for Flaw ${flawIdx + 1}</label>
+          <div class="decision-options">
+            <div class="decision-opt" id="optApprove" onclick="selectDecision('approve')">
+              Approve as reported
+            </div>
+            <div class="decision-opt selected-correct" id="optCorrect" onclick="selectDecision('correct')">
+              Correct to ground truth
+            </div>
+            <div class="decision-opt" id="optReject" onclick="selectDecision('reject')">
+              Reject metric
+            </div>
+          </div>
+        </div>
+
+        <div class="form-group" id="correctionGroup" style="display: block;">
+          <label class="form-label">Corrected numerical value (USD millions)</label>
+          <input type="number" id="correctionInput" class="form-input" value="${f.expected_value}" />
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Auditor identifier</label>
+          <input type="text" id="reviewerNameInput" class="form-input" value="Senior Auditor" />
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Audit justification note</label>
+          <textarea id="reviewerNoteInput" class="form-input" rows="2">Reviewed Flaw ${flawIdx + 1} (${f.display_name}) against SEC Form 10-K ground truth. Corrected discrepancy.</textarea>
+        </div>
+      `;
+
+      const footerHtml = `
+        <div style="display: flex; flex-direction: column; gap: 8px; width: 100%;">
+          <button class="btn btn-primary" style="width: 100%; padding: 10px; font-weight: 700; display: flex; align-items: center; justify-content: center; gap: 8px;" onclick="correctAllCombineFlaws()">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+            Approve & Correct All 3 Invariant Flaws
+          </button>
+          <div style="display: flex; gap: 8px; width: 100%;">
+            <button class="btn btn-secondary" style="flex: 1;" onclick="dismissDrawer()">Cancel</button>
+            <button class="btn btn-secondary" style="flex: 2; font-weight: 600;" onclick="submitReviewDecision()">Correct Flaw ${flawIdx + 1} & Resume</button>
+          </div>
+        </div>
+      `;
+
+      const bodyEl = document.getElementById("drawerBody");
+      if (bodyEl) bodyEl.innerHTML = bodyHtml;
+      const footEl = document.getElementById("drawerFooter");
+      if (footEl) footEl.innerHTML = footerHtml;
+
+      selectDecision("correct");
+    }
+
+    function renderSingleFlawDrawer(flaggedItem) {
+      const item = flaggedItem || appState.activeFlaggedItem || appState.activeTimeline?.flagged_item;
+      if (!item) return;
+
+      const titleEl = document.getElementById("drawerTitle");
+      if (titleEl) titleEl.innerText = "Human Review Required";
+
       const valStr = Number(item.expected_value).toLocaleString();
       let snip = escapeHtml(item.snippet || "");
       if (snip.includes(valStr)) {
         snip = snip.replace(valStr, `<span class="evidence-highlight">${valStr}</span>`);
       }
-      document.getElementById("drawerSnippetBox").innerHTML = snip;
 
-      // Reset form to correct mode with expected value prefilled
+      const bodyHtml = `
+        <div class="well-panel" style="margin-bottom: 16px; background-color: #FEF7E6; border-color: #F8DC9B;">
+          <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px;">
+            <span class="chip chip-warn" id="drawerCheckpointTag">${appState.activeCheckpoint || 'CP-PAUSED'}</span>
+            <span class="caption-ui" id="drawerAgentTag" style="font-weight: 600;">${item.agent || 'Validation Agent Invariant'}</span>
+          </div>
+          <p class="body-ui" id="drawerReasonText" style="font-size: 0.8125rem; color: #7A4E00;">${escapeHtml(item.reason)}</p>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Flagged metric details</label>
+          <div class="app-card" style="padding: 12px; margin-bottom: 12px;">
+            <div style="display: flex; justify-content: space-between; margin-bottom: 6px;">
+              <span class="caption-ui">Standard Metric:</span>
+              <strong id="drawerMetricName" class="num-metric">${item.metric_name}</strong>
+            </div>
+            <div style="display: flex; justify-content: space-between; margin-bottom: 6px;">
+              <span class="caption-ui">Reported In 10-K:</span>
+              <span id="drawerReportedVal" class="num-table" style="font-weight: 700; color: var(--fail);">$${Number(item.extracted_value).toLocaleString()}M</span>
+            </div>
+            <div style="display: flex; justify-content: space-between;">
+              <span class="caption-ui">Expected Reference:</span>
+              <span id="drawerExpectedVal" class="num-table" style="color: var(--pass);">$${Number(item.expected_value).toLocaleString()}M</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Verbatim 10-K source excerpt</label>
+          <div id="drawerSnippetBox" class="well-panel code-term" style="background: #FFFFFF; font-size: 0.8rem; line-height: 1.5; max-height: 120px; overflow-y: auto;">
+            ${snip}
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Auditor decision</label>
+          <div class="decision-options">
+            <div class="decision-opt selected-approve" id="optApprove" onclick="selectDecision('approve')">
+              Approve as-is
+            </div>
+            <div class="decision-opt" id="optCorrect" onclick="selectDecision('correct')">
+              Correct value
+            </div>
+            <div class="decision-opt" id="optReject" onclick="selectDecision('reject')">
+              Reject metric
+            </div>
+          </div>
+        </div>
+
+        <div class="form-group" id="correctionGroup" style="display: none;">
+          <label class="form-label">Corrected numerical value (USD millions)</label>
+          <input type="number" id="correctionInput" class="form-input" value="${item.expected_value}" />
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Auditor identifier</label>
+          <input type="text" id="reviewerNameInput" class="form-input" value="Senior Auditor" />
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Audit justification note</label>
+          <textarea id="reviewerNoteInput" class="form-input" rows="2" placeholder="e.g. Corrected transcription discrepancy verified from 10-K."></textarea>
+        </div>
+      `;
+
+      const footerHtml = `
+        <button class="btn btn-secondary" onclick="dismissDrawer()">Cancel</button>
+        <button class="btn btn-primary" onclick="submitReviewDecision()">Record decision and resume</button>
+      `;
+
+      const bodyEl = document.getElementById("drawerBody");
+      if (bodyEl) bodyEl.innerHTML = bodyHtml;
+      const footEl = document.getElementById("drawerFooter");
+      if (footEl) footEl.innerHTML = footerHtml;
+
       selectDecision("correct");
-      document.getElementById("correctionInput").value = item.expected_value;
+    }
+
+    async function correctAllCombineFlaws() {
+      dismissDrawer();
+      const reviewer = document.getElementById("reviewerNameInput")?.value || "Senior Auditor";
+      const note = document.getElementById("reviewerNoteInput")?.value || "Unified batch correction: All 3 adversarial flaws verified against SEC 10-K ground truth.";
+
+      // 1. Correct Total Liabilities (Flaw 1)
+      const liabMetric = appState.metrics.find(x => x.name.toLowerCase().includes("liabilities") && !x.name.toLowerCase().includes("current"));
+      if (liabMetric) {
+        liabMetric.value = 292455;
+        liabMetric.status = "CORRECTED";
+        liabMetric.confidence = 1.0;
+      }
+      await recordAuditBlock(
+        "HUMAN_DECISION_CORRECT",
+        `Human: ${reviewer}`,
+        `CORRECT applied to total_liabilities. Value: $292,455M (was $285,508M, fixed -$6,947M carryover error). Note: ${note}`
+      );
+
+      // 2. Correct Rest of Asia Pacific (Flaw 2)
+      const rapMetric = appState.metrics.find(x => x.name.toLowerCase().includes("asia") || x.name.toLowerCase().includes("pacific"));
+      if (rapMetric) {
+        rapMetric.value = 39861;
+        rapMetric.status = "CORRECTED";
+        rapMetric.confidence = 1.0;
+      }
+      if (appState.checks?.segment_validation?.segments) {
+        const seg = appState.checks.segment_validation.segments.find(s => s.name.toLowerCase().includes("asia"));
+        if (seg) { seg.value = 39861; seg.tampered = false; }
+        appState.checks.segment_validation.passed = true;
+        appState.checks.segment_validation.delta = 0;
+      }
+      await recordAuditBlock(
+        "HUMAN_DECISION_CORRECT",
+        `Human: ${reviewer}`,
+        `CORRECT applied to segment:Rest of Asia Pacific. Value: $39,861M (was $28,000M, fixed -$11,861M roll-up hallucination). Note: ${note}`
+      );
+
+      // 3. Correct Revenue & Net Income (Flaw 3)
+      const revMetric = appState.metrics.find(x => x.name.toLowerCase().includes("revenue") || x.name.toLowerCase().includes("sales"));
+      if (revMetric) {
+        revMetric.value = 478834;
+        revMetric.status = "CORRECTED";
+        revMetric.confidence = 1.0;
+      }
+      const niMetric = appState.metrics.find(x => x.name.toLowerCase().includes("income"));
+      if (niMetric) {
+        niMetric.value = 115000;
+        niMetric.status = "CORRECTED";
+        niMetric.confidence = 1.0;
+      }
+      await recordAuditBlock(
+        "HUMAN_DECISION_CORRECT",
+        `Human: ${reviewer}`,
+        `CORRECT applied to revenue & net_income. Revenue: $478,834M (normalized 1000x scale), Net Income: +$115,000M (reversed sign flip). Note: ${note}`
+      );
+
+      appState.milestonesLogged.yoyHumanCorrected = true;
+      appState.isPaused = false;
+      localStorage.removeItem("vault_checkpoint_state");
+      removeUnfinishedRun(appState.runId);
+
+      const scenarioData = appState.activeTimeline;
+      appState.maxCompletedStep = 5;
+      renderStepper();
+      renderStepWorkspace(appState.currentStep);
+      await new Promise(r => setTimeout(r, 600));
+      await executeAgentStep6(scenarioData);
+      await executeAgentStep7(scenarioData);
     }
 
     function closeDrawer(e) {
@@ -2217,10 +2576,14 @@
 
     function selectDecision(dec) {
       appState.pendingDecision = dec;
-      document.getElementById("optApprove").className = `decision-opt ${dec === 'approve' ? 'selected-approve' : ''}`;
-      document.getElementById("optCorrect").className = `decision-opt ${dec === 'correct' ? 'selected-correct' : ''}`;
-      document.getElementById("optReject").className = `decision-opt ${dec === 'reject' ? 'selected-reject' : ''}`;
-      document.getElementById("correctionGroup").style.display = (dec === "correct") ? "block" : "none";
+      const optApp = document.getElementById("optApprove");
+      const optCorr = document.getElementById("optCorrect");
+      const optRej = document.getElementById("optReject");
+      if (optApp) optApp.className = `decision-opt ${dec === 'approve' ? 'selected-approve' : ''}`;
+      if (optCorr) optCorr.className = `decision-opt ${dec === 'correct' ? 'selected-correct' : ''}`;
+      if (optRej) optRej.className = `decision-opt ${dec === 'reject' ? 'selected-reject' : ''}`;
+      const corrGrp = document.getElementById("correctionGroup");
+      if (corrGrp) corrGrp.style.display = (dec === "correct") ? "block" : "none";
     }
 
     /* Submit Decision and Resume */
@@ -2346,7 +2709,24 @@
        STEP 2: EXTRACTION OUTPUT & EVIDENCE MATRIX
        ======================================================================== */
     function renderStep2Extraction() {
+      const isCombine = (appState.activeScenario === "apple_combine");
+      const combineBanner = isCombine ? `
+        <div class="well-panel" style="background: #FFFBEB; border: 1px solid var(--warn); margin-bottom: 16px; display: flex; justify-content: space-between; align-items: center;">
+          <div style="display: flex; align-items: center; gap: 12px;">
+            <span class="chip chip-warn" style="font-weight: 700;">3 FLAWS IDENTIFIED</span>
+            <div>
+              <strong style="color: var(--ink);">3 Invariant Flaws Raised for Human Review</strong>
+              <div class="caption-ui" style="margin-top: 2px;">
+                M1 Balance Sheet (-$6,947M Δ) · M2 ASC 280 Segment Roll-up (-$11,861M Δ) · M3 YoY Scale & Sign Anomaly (+122,353% Δ)
+              </div>
+            </div>
+          </div>
+          <button class="btn btn-primary btn-sm" onclick="openReviewDrawer(null, 0)">Review All 3 Flaws (Queue)</button>
+        </div>
+      ` : "";
+
       return `
+        ${combineBanner}
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
           <div>
             <span class="caption-ui" style="font-weight: 700; color: var(--primary);">STEP 2: FINANCIAL DATA EXTRACTION</span>
@@ -2597,12 +2977,13 @@
         `;
       }
 
+      const isCombine = (appState.activeScenario === "apple_combine");
       const pauseBanner = (appState.isPaused && appState.currentStep === 3) ? `
         <div class="well-panel" style="background: #FFFBEB; border: 1px solid var(--warn); margin-bottom: 16px; display: flex; justify-content: space-between; align-items: center;">
           <div style="display: flex; align-items: center; gap: 12px;">
             <span class="chip chip-warn" style="font-weight: 700;">CHECKPOINT PAUSED</span>
             <div>
-              <strong style="color: var(--ink);">Workflow Paused at LangGraph Checkpoint ${appState.activeCheckpoint || 'CP-01_PAUSED'}</strong>
+              <strong style="color: var(--ink);">Workflow Paused at Checkpoint ${appState.activeCheckpoint || 'CP-01_PAUSED'}${isCombine ? ' (Flaw 1 of 3 Raised for Review)' : ''}</strong>
               <div class="caption-ui" style="margin-top: 2px;">
                 ${escapeHtml((appState.activeFlaggedItem || appState.activeTimeline?.flagged_item)?.reason || 'Balance sheet equation variance requires human auditor approval.')}
               </div>
@@ -2610,7 +2991,7 @@
           </div>
           <div style="display: flex; gap: 8px;">
             <button class="btn btn-secondary btn-sm" onclick="navigateToStep(1)">Return to launchpad</button>
-            <button class="btn btn-primary btn-sm" onclick="openReviewDrawer(appState.activeFlaggedItem || appState.activeTimeline?.flagged_item)">Review & Decide</button>
+            <button class="btn btn-primary btn-sm" onclick="openReviewDrawer(appState.activeFlaggedItem || appState.activeTimeline?.flagged_item, 0)">${isCombine ? 'Review Flaws (3)' : 'Review & Decide'}</button>
           </div>
         </div>
       ` : "";
@@ -2754,12 +3135,13 @@
         `;
       }
 
+      const isCombine = (appState.activeScenario === "apple_combine");
       const pauseBanner = (appState.isPaused && appState.currentStep === 4) ? `
         <div class="well-panel" style="background: #FFFBEB; border: 1px solid var(--warn); margin-bottom: 16px; display: flex; justify-content: space-between; align-items: center;">
           <div style="display: flex; align-items: center; gap: 12px;">
             <span class="chip chip-warn" style="font-weight: 700;">CHECKPOINT PAUSED</span>
             <div>
-              <strong style="color: var(--ink);">Workflow Paused at LangGraph Checkpoint ${appState.activeCheckpoint || 'CP-02_PAUSED'}</strong>
+              <strong style="color: var(--ink);">Workflow Paused at Checkpoint ${appState.activeCheckpoint || 'CP-02_PAUSED'}${isCombine ? ' (Flaw 2 of 3 Raised for Review)' : ''}</strong>
               <div class="caption-ui" style="margin-top: 2px;">
                 ${escapeHtml((appState.activeFlaggedItem || appState.activeTimeline?.flagged_item)?.reason || 'ASC 280 segment reconciliation requires human review.')}
               </div>
@@ -2767,7 +3149,7 @@
           </div>
           <div style="display: flex; gap: 8px;">
             <button class="btn btn-secondary btn-sm" onclick="navigateToStep(1)">Return to launchpad</button>
-            <button class="btn btn-primary btn-sm" onclick="openReviewDrawer(appState.activeFlaggedItem || appState.activeTimeline?.flagged_item)">Review & Decide</button>
+            <button class="btn btn-primary btn-sm" onclick="openReviewDrawer(appState.activeFlaggedItem || appState.activeTimeline?.flagged_item, 1)">${isCombine ? 'Review Flaws (3)' : 'Review & Decide'}</button>
           </div>
         </div>
       ` : "";
@@ -2906,12 +3288,13 @@
         `;
       }
 
+      const isCombine = (appState.activeScenario === "apple_combine");
       const pauseBanner = (appState.isPaused && appState.currentStep === 5) ? `
         <div class="well-panel" style="background: #FFFBEB; border: 1px solid var(--warn); margin-bottom: 16px; display: flex; justify-content: space-between; align-items: center;">
           <div style="display: flex; align-items: center; gap: 12px;">
             <span class="chip chip-warn" style="font-weight: 700;">CHECKPOINT PAUSED</span>
             <div>
-              <strong style="color: var(--ink);">Workflow Paused at LangGraph Checkpoint ${appState.activeCheckpoint || 'CP-03_PAUSED'}</strong>
+              <strong style="color: var(--ink);">Workflow Paused at Checkpoint ${appState.activeCheckpoint || 'CP-03_PAUSED'}${isCombine ? ' (Flaw 3 of 3 Raised for Review)' : ''}</strong>
               <div class="caption-ui" style="margin-top: 2px;">
                 ${escapeHtml((appState.activeFlaggedItem || appState.activeTimeline?.flagged_item)?.reason || 'Multi-period variance or unit scale anomaly requires human review.')}
               </div>
@@ -2919,7 +3302,7 @@
           </div>
           <div style="display: flex; gap: 8px;">
             <button class="btn btn-secondary btn-sm" onclick="navigateToStep(1)">Return to launchpad</button>
-            <button class="btn btn-primary btn-sm" onclick="openReviewDrawer(appState.activeFlaggedItem || appState.activeTimeline?.flagged_item)">Review & Decide</button>
+            <button class="btn btn-primary btn-sm" onclick="openReviewDrawer(appState.activeFlaggedItem || appState.activeTimeline?.flagged_item, 2)">${isCombine ? 'Review Flaws (3)' : 'Review & Decide'}</button>
           </div>
         </div>
       ` : "";
@@ -3368,7 +3751,7 @@
                   <td class="num-table">$${Number(m.value).toLocaleString()}&nbsp;<span class="caption-ui">M</span></td>
                   <td class="num-table" style="color: var(--pass);">$${Number(m.value).toLocaleString()}&nbsp;<span class="caption-ui">M</span></td>
                   <td class="num-table">$0</td>
-                  <td><span class="chip chip-pass">VERIFIED EXACT MATCH</span></td>
+                  <td><span class="chip ${m.status === 'CORRECTED' ? 'chip-info' : 'chip-pass'}">${m.status === 'CORRECTED' ? 'CORRECTED (HUMAN REVIEW)' : 'VERIFIED EXACT MATCH'}</span></td>
                 </tr>
               `).join("")}
             </tbody>
