@@ -9,7 +9,19 @@ import copy
 import json
 from pathlib import Path
 
-import pytest
+try:
+    import pytest
+except ImportError:
+    class _Approx:
+        def __init__(self, val, rel=1e-5, abs=1e-9):
+            self.val = val
+            self.rel = rel
+            self.abs = abs
+        def __eq__(self, other):
+            return abs(self.val - other) <= max(self.rel * max(abs(self.val), abs(other)), self.abs)
+    class _PytestMock:
+        approx = _Approx
+    pytest = _PytestMock()
 
 from models.accounting_equation import (
     AccountingEquationEngine,

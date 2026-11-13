@@ -1,0 +1,23 @@
+confidence_threshold: 0.85
+auto_approve_enabled: true
+default_pct: 40.0
+warn_ratio: 0.75
+confidence_multipliers:
+  fail: 0.6
+  warn: 0.85
+confidence_weights:
+  grounding: 0.4
+  label: 0.25
+  unit: 0.2
+  yoy: 0.15
+metrics:
+  revenue: 50.0
+  net_income: 150.0
+  total_assets: 30.0
+  total_liabilities: 40.0
+  shareholders_equity: 40.0
+  operating_cash_flow: 60.0
+  current_assets: 35.0
+  current_liabilities: 35.0
+  cash_and_equivalents: 75.0
+  diluted_eps: 50.0

@@ -1,0 +1,105 @@
+{
+  "SynthScaleUp_1000x": {
+    "revenue": {
+      "current_value": 125000000,
+      "prior_value": 120000,
+      "unit": "USD millions",
+      "current_period": 2025,
+      "prior_period": 2024,
+      "confidence": 0.90,
+      "source_snippet": "Synthetic 1000x unit error: extracted $125,000,000M instead of $125,000M."
+    },
+    "total_assets": {
+      "current_value": 95000,
+      "prior_value": 90000,
+      "unit": "USD millions",
+      "current_period": 2025,
+      "prior_period": 2024,
+      "confidence": 0.95,
+      "source_snippet": "Normal asset growth: $95,000M vs $90,000M."
+    }
+  },
+  "SynthScaleDown_1000x": {
+    "operating_cash_flow": {
+      "current_value": 14.2,
+      "prior_value": 14200,
+      "unit": "USD millions",
+      "current_period": 2025,
+      "prior_period": 2024,
+      "confidence": 0.89,
+      "source_snippet": "Synthetic 1/1000x unit error: extracted $14.2M (billions read as millions)."
+    }
+  },
+  "SynthSignFlip_ProfitToLoss": {
+    "net_income": {
+      "current_value": -2400,
+      "prior_value": 8500,
+      "unit": "USD millions",
+      "current_period": 2025,
+      "prior_period": 2024,
+      "confidence": 0.87,
+      "source_snippet": "Synthetic profit-to-loss reversal: $(2,400)M vs $8,500M."
+    }
+  },
+  "SynthSignFlip_LossToProfit": {
+    "net_income": {
+      "current_value": 600,
+      "prior_value": -3000,
+      "unit": "USD millions",
+      "current_period": 2025,
+      "prior_period": 2024,
+      "confidence": 0.86,
+      "source_snippet": "Synthetic loss-to-profit reversal: $600M vs $(3,000)M."
+    }
+  },
+  "SynthLargeSpike_MA": {
+    "revenue": {
+      "current_value": 92500,
+      "prior_value": 50000,
+      "unit": "USD millions",
+      "current_period": 2025,
+      "prior_period": 2024,
+      "confidence": 0.92,
+      "source_snippet": "Synthetic +85% revenue spike above 50% threshold (e.g., major acquisition)."
+    },
+    "total_liabilities": {
+      "current_value": 45000,
+      "prior_value": 25000,
+      "unit": "USD millions",
+      "current_period": 2025,
+      "prior_period": 2024,
+      "confidence": 0.91,
+      "source_snippet": "Synthetic +80% debt/liability spike above 40% threshold."
+    },
+    "shareholders_equity": {
+      "current_value": 12000,
+      "prior_value": 30000,
+      "unit": "USD millions",
+      "current_period": 2025,
+      "prior_period": 2024,
+      "confidence": 0.90,
+      "source_snippet": "Synthetic -60% equity drop exceeding 40% threshold."
+    }
+  },
+  "SynthEdge_BadInputs": {
+    "revenue": {
+      "current_value": 5000,
+      "prior_value": 0,
+      "unit": "USD millions",
+      "current_period": 2025,
+      "prior_period": 2024,
+      "confidence": 0.80,
+      "source_snippet": "Synthetic prior=0 edge case (cannot validate)."
+    },
+    "total_assets": {
+      "current_value": 15000,
+      "prior_value": 14000,
+      "current_unit": "USD millions",
+      "prior_unit": "USD thousands",
+      "current_period": 2025,
+      "prior_period": 2024,
+      "confidence": 0.82,
+      "source_snippet": "Synthetic unit mismatch: USD millions vs USD thousands."
+    }
+  }
+}

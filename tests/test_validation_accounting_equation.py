@@ -8,7 +8,26 @@ import sys
 from decimal import Decimal
 from typing import Any, Dict, List, Tuple
 
-import pytest
+try:
+    import pytest
+except ImportError:
+    class _Approx:
+        def __init__(self, val, rel=1e-5, abs=1e-9):
+            self.val = val
+            self.rel = rel
+            self.abs = abs
+        def __eq__(self, other):
+            return abs(self.val - other) <= max(self.rel * max(abs(self.val), abs(other)), self.abs)
+    class _Mark:
+        @staticmethod
+        def parametrize(argnames, argvalues):
+            def decorator(fn):
+                return fn
+            return decorator
+    class _PytestMock:
+        approx = _Approx
+        mark = _Mark
+    pytest = _PytestMock()
 from fastapi.testclient import TestClient
 
 from validation import (

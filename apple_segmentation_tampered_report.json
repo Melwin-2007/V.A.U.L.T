@@ -1,0 +1,525 @@
+{
+  "metadata": {
+    "company": "Apple Inc.",
+    "ticker": "AAPL",
+    "cik": "0000320193",
+    "form": "10-K",
+    "filing_date": "2026-11-03",
+    "period_of_report": "2026-09-26",
+    "accession_no": "0000320193-26-000026",
+    "scale": 1000000,
+    "unit": "USD millions",
+    "standard": "US GAAP ASC 280 (Segment Reporting)",
+    "purpose": "Adversarial test dataset for V.A.U.L.T Segment Validation Agent"
+  },
+  "clean_ground_truth_segments": {
+    "consolidated_revenue": 478834.0,
+    "segments": [
+      {
+        "name": "Americas",
+        "category": "segment",
+        "value_millions": 198083.0
+      },
+      {
+        "name": "Europe",
+        "category": "segment",
+        "value_millions": 127604.0
+      },
+      {
+        "name": "Greater China",
+        "category": "segment",
+        "value_millions": 82378.0
+      },
+      {
+        "name": "Japan",
+        "category": "segment",
+        "value_millions": 30908.0
+      },
+      {
+        "name": "Rest of Asia Pacific",
+        "category": "segment",
+        "value_millions": 39861.0
+      },
+      {
+        "name": "Corporate non-segment",
+        "category": "corporate_other",
+        "value_millions": 0.0
+      }
+    ],
+    "reconciliation_formula": "198,083 + 127,604 + 82,378 + 30,908 + 39,861 + 0 = 478,834M",
+    "difference_millions": 0.0,
+    "status": "PASS"
+  },
+  "active_tampered_filing_input": {
+    "consolidated_revenue_millions": 478834.0,
+    "tampered_segment_item": {
+      "target_segment": "Rest of Asia Pacific",
+      "clean_value_millions": 39861.0,
+      "tampered_value_millions": 28000.0,
+      "discrepancy_gap_millions": -11861.0,
+      "tamper_type": "segment_math_understatement",
+      "rationale": "Simulates an AI extraction error where Rest of Asia Pacific was misread/hallucinated as ,000M instead of ,861M."
+    },
+    "segments_reported_millions": [
+      {
+        "name": "Americas",
+        "category": "segment",
+        "value_millions": 198083.0,
+        "tampered": false
+      },
+      {
+        "name": "Europe",
+        "category": "segment",
+        "value_millions": 127604.0,
+        "tampered": false
+      },
+      {
+        "name": "Greater China",
+        "category": "segment",
+        "value_millions": 82378.0,
+        "tampered": false
+      },
+      {
+        "name": "Japan",
+        "category": "segment",
+        "value_millions": 30908.0,
+        "tampered": false
+      },
+      {
+        "name": "Rest of Asia Pacific",
+        "category": "segment",
+        "value_millions": 28000.0,
+        "tampered": true
+      },
+      {
+        "name": "Corporate non-segment",
+        "category": "corporate_other",
+        "value_millions": 0.0,
+        "tampered": false
+      }
+    ]
+  },
+  "active_tampered_validation_report": {
+    "cik": "0000320193",
+    "company_name": "Apple Inc.",
+    "form": "10-K",
+    "accession_no": "0000320193-26-000026",
+    "filing_date": "2026-11-03",
+    "period_of_report": "2026-09-26",
+    "sec_url": "https://www.sec.gov/Archives/edgar/data/320193/000032019326000026/aapl-20260926.htm",
+    "confidence_threshold": 0.85,
+    "verdict": "FAIL",
+    "review_decision": "HUMAN_REVIEW",
+    "escalation_reasons": [
+      "Segment Reconciliation Failed: sum(segments) + corporate - eliminations = 466,973.00M != Consolidated 478,834.00M (diff=-11,861.00M).",
+      "[segment:Rest of Asia Pacific] Source Grounding Failed: Exact digits '28,000' not found verbatim in source snippet.",
+      "[segment:Rest of Asia Pacific] Low Confidence (0.60 < 0.85)."
+    ],
+    "consolidated_revenue": {
+      "metric": "consolidated_revenue",
+      "label": "Net sales",
+      "value": 478834000000.0,
+      "prior_value": 416161000000.0,
+      "display_value": "478,834",
+      "unit": "USD millions",
+      "period": "FY ended 2026-09-26",
+      "yoy_change_pct": 15.06,
+      "source_section": "Note - Revenue",
+      "source_snippet": "Total net sales | $ | 478,834 | $ | 416,161 | $ | 391,035",
+      "grounding_passed": true,
+      "hallucination_flag": false,
+      "matched_text": "478,834",
+      "confidence": {
+        "s_grounding": 1.0,
+        "s_label": 1.0,
+        "s_unit": 1.0,
+        "s_yoy": 1.0,
+        "score": 1.0
+      },
+      "decision": "HUMAN_REVIEW",
+      "escalation_reasons": [
+        "Segment Reconciliation Failed: sum(segments) + corporate - eliminations = 466,973.00M != Consolidated 478,834.00M (diff=-11,861.00M)."
+      ]
+    },
+    "segment_reconciliation": {
+      "status": "FAIL",
+      "axis_used": "StatementBusinessSegmentsAxis",
+      "breakdown_type": "Business / Operating Segments",
+      "unit": "USD millions",
+      "segments_sum": 466973000000.0,
+      "corporate_other": 0.0,
+      "intersegment_eliminations": 0,
+      "reconciled_total": 466973000000.0,
+      "consolidated_total": 478834000000.0,
+      "difference": -11861000000.0,
+      "tolerance": 2000000.0,
+      "passed": false,
+      "reason": "Segment Reconciliation Failed: sum(segments) + corporate - eliminations = 466,973.00M != Consolidated 478,834.00M (diff=-11,861.00M).",
+      "items": [
+        {
+          "name": "Americas",
+          "category": "segment",
+          "axis": "StatementBusinessSegmentsAxis",
+          "member": "aapl:AmericasSegmentMember",
+          "value": 198083000000.0,
+          "raw_xbrl_value": 198083000000.0,
+          "validation": {
+            "metric": "segment:Americas",
+            "label": "Americas",
+            "value": 198083000000.0,
+            "prior_value": 178353000000.0,
+            "display_value": "198,083",
+            "unit": "USD millions",
+            "period": "FY ended 2026-09-26",
+            "yoy_change_pct": 11.06,
+            "source_section": "Form 10-K Primary HTML",
+            "source_snippet": "Americas | $ | 198,083 | 11 | % | $ | 178,353 | 7 | % | $ | 167,045",
+            "grounding_passed": true,
+            "hallucination_flag": false,
+            "matched_text": "198,083",
+            "confidence": {
+              "s_grounding": 1.0,
+              "s_label": 1.0,
+              "s_unit": 1.0,
+              "s_yoy": 1.0,
+              "score": 1.0
+            },
+            "decision": "HUMAN_REVIEW",
+            "escalation_reasons": [
+              "Segment Reconciliation Failed: sum(segments) + corporate - eliminations = 466,973.00M != Consolidated 478,834.00M (diff=-11,861.00M)."
+            ]
+          }
+        },
+        {
+          "name": "Europe",
+          "category": "segment",
+          "axis": "StatementBusinessSegmentsAxis",
+          "member": "aapl:EuropeSegmentMember",
+          "value": 127604000000.0,
+          "raw_xbrl_value": 127604000000.0,
+          "validation": {
+            "metric": "segment:Europe",
+            "label": "Europe",
+            "value": 127604000000.0,
+            "prior_value": 111032000000.0,
+            "display_value": "127,604",
+            "unit": "USD millions",
+            "period": "FY ended 2026-09-26",
+            "yoy_change_pct": 14.93,
+            "source_section": "Form 10-K Primary HTML",
+            "source_snippet": "Europe | 127,604 | 15 | % | 111,032 | 10 | % | 101,328",
+            "grounding_passed": true,
+            "hallucination_flag": false,
+            "matched_text": "127,604",
+            "confidence": {
+              "s_grounding": 1.0,
+              "s_label": 1.0,
+              "s_unit": 1.0,
+              "s_yoy": 1.0,
+              "score": 1.0
+            },
+            "decision": "HUMAN_REVIEW",
+            "escalation_reasons": [
+              "Segment Reconciliation Failed: sum(segments) + corporate - eliminations = 466,973.00M != Consolidated 478,834.00M (diff=-11,861.00M)."
+            ]
+          }
+        },
+        {
+          "name": "Greater China",
+          "category": "segment",
+          "axis": "StatementBusinessSegmentsAxis",
+          "member": "aapl:GreaterChinaSegmentMember",
+          "value": 82378000000.0,
+          "raw_xbrl_value": 82378000000.0,
+          "validation": {
+            "metric": "segment:Greater China",
+            "label": "Greater China",
+            "value": 82378000000.0,
+            "prior_value": 64377000000.0,
+            "display_value": "82,378",
+            "unit": "USD millions",
+            "period": "FY ended 2026-09-26",
+            "yoy_change_pct": 27.96,
+            "source_section": "Form 10-K Primary HTML",
+            "source_snippet": "Greater China | 82,378 | 28 | % | 64,377 | (4) | % | 66,952",
+            "grounding_passed": true,
+            "hallucination_flag": false,
+            "matched_text": "82,378",
+            "confidence": {
+              "s_grounding": 1.0,
+              "s_label": 1.0,
+              "s_unit": 1.0,
+              "s_yoy": 0.3,
+              "score": 0.895
+            },
+            "decision": "HUMAN_REVIEW",
+            "escalation_reasons": [
+              "Segment Reconciliation Failed: sum(segments) + corporate - eliminations = 466,973.00M != Consolidated 478,834.00M (diff=-11,861.00M)."
+            ]
+          }
+        },
+        {
+          "name": "Japan",
+          "category": "segment",
+          "axis": "StatementBusinessSegmentsAxis",
+          "member": "aapl:JapanSegmentMember",
+          "value": 30908000000.0,
+          "raw_xbrl_value": 30908000000.0,
+          "validation": {
+            "metric": "segment:Japan",
+            "label": "Japan",
+            "value": 30908000000.0,
+            "prior_value": 28703000000.0,
+            "display_value": "30,908",
+            "unit": "USD millions",
+            "period": "FY ended 2026-09-26",
+            "yoy_change_pct": 7.68,
+            "source_section": "Form 10-K Primary HTML",
+            "source_snippet": "Japan | 30,908 | 8 | % | 28,703 | 15 | % | 25,052",
+            "grounding_passed": true,
+            "hallucination_flag": false,
+            "matched_text": "30,908",
+            "confidence": {
+              "s_grounding": 1.0,
+              "s_label": 1.0,
+              "s_unit": 1.0,
+              "s_yoy": 1.0,
+              "score": 1.0
+            },
+            "decision": "HUMAN_REVIEW",
+            "escalation_reasons": [
+              "Segment Reconciliation Failed: sum(segments) + corporate - eliminations = 466,973.00M != Consolidated 478,834.00M (diff=-11,861.00M)."
+            ]
+          }
+        },
+        {
+          "name": "Rest of Asia Pacific",
+          "category": "segment",
+          "axis": "StatementBusinessSegmentsAxis",
+          "member": "aapl:RestOfAsiaPacificSegmentMember",
+          "value": 28000000000.0,
+          "raw_xbrl_value": 28000000000.0,
+          "validation": {
+            "metric": "segment:Rest of Asia Pacific",
+            "label": "Rest of Asia Pacific",
+            "value": 28000000000.0,
+            "prior_value": 33696000000.0,
+            "display_value": "28,000",
+            "unit": "USD millions",
+            "period": "FY ended 2026-09-26",
+            "yoy_change_pct": -16.9,
+            "source_section": "Form 10-K Primary HTML",
+            "source_snippet": "Segment Operating Performance | The following table shows net sales by reportable segment for 2026, 2025 and 2024 (dollars in millions): | 2026 | Change | 2025  :: Greater China | 82,378 | 28 | % | 64,377 | (4) | % | 66,952",
+            "grounding_passed": false,
+            "hallucination_flag": true,
+            "matched_text": null,
+            "confidence": {
+              "s_grounding": 0.0,
+              "s_label": 1.0,
+              "s_unit": 1.0,
+              "s_yoy": 1.0,
+              "score": 0.6
+            },
+            "decision": "HUMAN_REVIEW",
+            "escalation_reasons": [
+              "Source Grounding Failed: Exact digits '28,000' not found verbatim in source snippet.",
+              "Low Confidence (0.60 < 0.85).",
+              "Segment Reconciliation Failed: sum(segments) + corporate - eliminations = 466,973.00M != Consolidated 478,834.00M (diff=-11,861.00M)."
+            ]
+          }
+        },
+        {
+          "name": "Corporate non-segment",
+          "category": "corporate_other",
+          "axis": "ConsolidationItemsAxis",
+          "member": "us-gaap:CorporateNonSegmentMember",
+          "value": 0.0,
+          "raw_xbrl_value": 0.0,
+          "validation": {
+            "metric": "segment:Corporate non-segment",
+            "label": "Corporate non-segment",
+            "value": 0.0,
+            "prior_value": 0.0,
+            "display_value": "0",
+            "unit": "USD millions",
+            "period": "FY ended 2026-09-26",
+            "yoy_change_pct": null,
+            "source_section": "Note - Financial Instruments",
+            "source_snippet": "Corporate debt securities | 47,210 | 266 | (916) | 46,560 | \u2014 | 10,623 | 35,937",
+            "grounding_passed": true,
+            "hallucination_flag": false,
+            "matched_text": "\u2014",
+            "confidence": {
+              "s_grounding": 1.0,
+              "s_label": 1.0,
+              "s_unit": 1.0,
+              "s_yoy": 1.0,
+              "score": 1.0
+            },
+            "decision": "HUMAN_REVIEW",
+            "escalation_reasons": [
+              "Segment Reconciliation Failed: sum(segments) + corporate - eliminations = 466,973.00M != Consolidated 478,834.00M (diff=-11,861.00M)."
+            ]
+          }
+        }
+      ]
+    },
+    "accounting_equation": {
+      "total_assets": 404548000000.0,
+      "total_liabilities": 292455000000.0,
+      "stockholders_equity": 112093000000.0,
+      "liabilities_plus_equity": 404548000000.0,
+      "difference": 0.0,
+      "tolerance": 2000000.0,
+      "unit": "USD millions",
+      "passed": true,
+      "reason": "Balance Sheet reconciles: Assets (404,548.00M) == Liabilities + Equity (404,548.00M).",
+      "metrics": {
+        "total_assets": {
+          "metric": "total_assets",
+          "label": "Total assets",
+          "value": 404548000000.0,
+          "prior_value": 359241000000.0,
+          "display_value": "404,548",
+          "unit": "USD millions",
+          "period": "As of 2026-09-26",
+          "yoy_change_pct": 12.61,
+          "source_section": "Form 10-K Primary HTML",
+          "source_snippet": "Total assets | $ | 404,548 | $ | 359,241",
+          "grounding_passed": true,
+          "hallucination_flag": false,
+          "matched_text": "404,548",
+          "confidence": {
+            "s_grounding": 1.0,
+            "s_label": 1.0,
+            "s_unit": 1.0,
+            "s_yoy": 1.0,
+            "score": 1.0
+          },
+          "decision": "AUTO-APPROVED",
+          "escalation_reasons": []
+        },
+        "total_liabilities": {
+          "metric": "total_liabilities",
+          "label": "Total liabilities",
+          "value": 292455000000.0,
+          "prior_value": 285508000000.0,
+          "display_value": "292,455",
+          "unit": "USD millions",
+          "period": "As of 2026-09-26",
+          "yoy_change_pct": 2.43,
+          "source_section": "Form 10-K Primary HTML",
+          "source_snippet": "Total liabilities | 292,455 | 285,508",
+          "grounding_passed": true,
+          "hallucination_flag": false,
+          "matched_text": "292,455",
+          "confidence": {
+            "s_grounding": 1.0,
+            "s_label": 1.0,
+            "s_unit": 1.0,
+            "s_yoy": 1.0,
+            "score": 1.0
+          },
+          "decision": "AUTO-APPROVED",
+          "escalation_reasons": []
+        },
+        "stockholders_equity": {
+          "metric": "stockholders_equity",
+          "label": "Total shareholders\u2019 equity",
+          "value": 112093000000.0,
+          "prior_value": 73733000000.0,
+          "display_value": "112,093",
+          "unit": "USD millions",
+          "period": "As of 2026-09-26",
+          "yoy_change_pct": 52.03,
+          "source_section": "Form 10-K Primary HTML",
+          "source_snippet": "Total shareholders\u2019 equity | 112,093 | 73,733",
+          "grounding_passed": true,
+          "hallucination_flag": false,
+          "matched_text": "112,093",
+          "confidence": {
+            "s_grounding": 1.0,
+            "s_label": 1.0,
+            "s_unit": 1.0,
+            "s_yoy": 0.3,
+            "score": 0.895
+          },
+          "decision": "AUTO-APPROVED",
+          "escalation_reasons": []
+        }
+      }
+    }
+  },
+  "tampering_test_cases_catalog": [
+    {
+      "test_case_id": "SEG-TEST-01-MATH-MISMATCH",
+      "name": "Segment Sum Mismatch (Understated Segment)",
+      "target_segment": "Rest of Asia Pacific",
+      "clean_value_millions": 39861.0,
+      "tampered_value_millions": 28000.0,
+      "reconciled_total_millions": 466973.0,
+      "consolidated_total_millions": 478834.0,
+      "discrepancy_gap_millions": -11861.0,
+      "expected_recon_status": "FAIL",
+      "expected_review_decision": "HUMAN_REVIEW",
+      "expected_trigger": "Trigger B (Hard Invariant Failure) + Trigger A (Source Grounding Failed)",
+      "reason": "Segment Reconciliation Failed: sum(segments) + corporate - eliminations = 466,973M != Consolidated 478,834M"
+    },
+    {
+      "test_case_id": "SEG-TEST-02-DIGIT-TRANSPOSITION",
+      "name": "Digit Transposition with Grounding Failure",
+      "target_segment": "Greater China",
+      "clean_value_millions": 82378.0,
+      "tampered_value_millions": 82738.0,
+      "reconciled_total_millions": 479194.0,
+      "consolidated_total_millions": 478834.0,
+      "discrepancy_gap_millions": 360.0,
+      "expected_recon_status": "FAIL",
+      "expected_review_decision": "HUMAN_REVIEW",
+      "expected_trigger": "Trigger B + Grounding Hallucination Flag",
+      "reason": "Source snippet contains 82,378; extracted 82,738 causes 360M gap and fails exact text match"
+    },
+    {
+      "test_case_id": "SEG-TEST-03-SCALE-SLIP-1000X",
+      "name": "Unit Scale Confusion (x1000 or /1000)",
+      "target_segment": "Japan",
+      "clean_value_millions": 30908.0,
+      "tampered_value_millions": 30.908,
+      "reconciled_total_millions": 447956.908,
+      "consolidated_total_millions": 478834.0,
+      "discrepancy_gap_millions": -30877.092,
+      "expected_recon_status": "FAIL",
+      "expected_review_decision": "HUMAN_REVIEW",
+      "expected_trigger": "Trigger B + YoY Anomaly (|YoY| > 25%)",
+      "reason": "Billions read as millions or thousands read as millions breaks both YoY stability and ASC 280 sum"
+    },
+    {
+      "test_case_id": "SEG-TEST-04-ELIMINATIONS-SIGN-FLIP",
+      "name": "Intersegment Elimination Sign Inversion",
+      "target_segment": "Intersegment Eliminations",
+      "clean_value_millions": 0.0,
+      "tampered_value_millions": 10000.0,
+      "reconciled_total_millions": 468834.0,
+      "consolidated_total_millions": 478834.0,
+      "discrepancy_gap_millions": -10000.0,
+      "expected_recon_status": "FAIL",
+      "expected_review_decision": "HUMAN_REVIEW",
+      "expected_trigger": "Trigger B (ASC 280 Reconciliation Failure)",
+      "reason": "Eliminations erroneously subtracted from sum instead of added, or double counted"
+    },
+    {
+      "test_case_id": "SEG-TEST-05-CORRUPTED-TOPLINE",
+      "name": "Consolidated Top-line Revenue Tampering",
+      "target_segment": "consolidated_revenue",
+      "clean_value_millions": 478834.0,
+      "tampered_value_millions": 490000.0,
+      "reconciled_total_millions": 478834.0,
+      "consolidated_total_millions": 490000.0,
+      "discrepancy_gap_millions": -11166.0,
+      "expected_recon_status": "FAIL",
+      "expected_review_decision": "HUMAN_REVIEW",
+      "expected_trigger": "Trigger B + Consolidated Revenue Grounding Failure",
+      "reason": "Segment rows sum correctly, but top-line revenue is corrupted in income statement"
+    }
+  ]
+}

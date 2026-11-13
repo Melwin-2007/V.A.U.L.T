@@ -1,0 +1,332 @@
+{
+  "metadata": {
+    "company": "Apple Inc.",
+    "ticker": "AAPL",
+    "cik": "0000320193",
+    "form": "10-K",
+    "filing_date": "2026-11-03",
+    "period_of_report": "2026-09-26",
+    "prior_period_of_report": "2025-09-27",
+    "accession_no": "0000320193-26-000026",
+    "scale": 1000000,
+    "unit": "USD millions",
+    "description": "Unified Multi-Model Adversarial Dataset for Apple Inc. Form 10-K"
+  },
+  "tampering_summary_matrix": [
+    {
+      "subsystem": "Model 1: Accounting Equation Agent",
+      "target_metric": "total_liabilities (L)",
+      "clean_value": 292455.0,
+      "tampered_value": 285508.0,
+      "gap": -6947.0,
+      "tamper_type": "wrong_column",
+      "detection_mechanism": "Dual-Anchor Triangulation (P: pass, Q: fail) isolates blame to L; matches prior-year value."
+    },
+    {
+      "subsystem": "Model 2: Segment Validation Agent",
+      "target_metric": "Rest of Asia Pacific (segment)",
+      "clean_value": 39861.0,
+      "tampered_value": 28000.0,
+      "gap": -11861.0,
+      "tamper_type": "segment_math_mismatch",
+      "detection_mechanism": "Trigger B Hard Invariant: Segment sum $466,973M != Consolidated $478,834M. Trigger A: Grounding failure."
+    },
+    {
+      "subsystem": "Model 3: YoY Validation Agent",
+      "target_metric": "net_income",
+      "clean_value": 115000.0,
+      "tampered_value": -115000.0,
+      "gap": -230000.0,
+      "tamper_type": "sign_flip",
+      "detection_mechanism": "Profit-to-loss sign reversal (-222.69% YoY); triggers immediate mandatory human escalation."
+    },
+    {
+      "subsystem": "Model 3: YoY Validation Agent",
+      "target_metric": "revenue",
+      "clean_value": 478834.0,
+      "tampered_value": 478834000.0,
+      "gap": 478355166.0,
+      "tamper_type": "likely_unit_error",
+      "detection_mechanism": "1000x ratio jump (+122,352.98% YoY); triggers likely_unit_error and drops confidence to 0.57."
+    }
+  ],
+  "model_1_accounting_equation_dataset": {
+    "subsystem": "validation/accounting_equation.py",
+    "formula_targeted": "F1: A = L + E",
+    "current_period": {
+      "period_end": "2026-09-26",
+      "scale": 1000000,
+      "is_consolidated": true,
+      "A": 404548.0,
+      "AC": 173857.0,
+      "ANC": 230691.0,
+      "LC": 169915.0,
+      "LNC": 122540.0,
+      "L": 285508.0,
+      "TE": 0.0,
+      "NCI": 0.0,
+      "E": 112093.0,
+      "LE": 404548.0,
+      "clean_L": 292455.0,
+      "tampered_fields": [
+        "L"
+      ],
+      "prior_values": {
+        "total_assets": 359241.0,
+        "total_liabilities": 285508.0,
+        "equity": 73733.0
+      },
+      "rows": {
+        "Total current assets": 173857.0,
+        "Total non-current assets": 230691.0,
+        "Total assets": 404548.0,
+        "Total current liabilities": 169915.0,
+        "Total non-current liabilities": 122540.0,
+        "Total liabilities": 292455.0,
+        "Total shareholders equity": 112093.0,
+        "Total liabilities and shareholders equity": 404548.0
+      }
+    },
+    "prior_period": {
+      "period_end": "2025-09-27",
+      "scale": 1000000,
+      "is_consolidated": true,
+      "A": 359241.0,
+      "AC": 147957.0,
+      "ANC": 211284.0,
+      "LC": 165631.0,
+      "LNC": 119877.0,
+      "L": 285508.0,
+      "TE": 0.0,
+      "NCI": 0.0,
+      "E": 73733.0,
+      "LE": 359241.0
+    },
+    "expected_engine_verdict": {
+      "check_id": "accounting_equation",
+      "status": "FAIL",
+      "formula_used": "F1",
+      "actual_rhs": 397601.0,
+      "expected_lhs": 404548.0,
+      "gap": -6947.0,
+      "triangulation": {
+        "P": "pass",
+        "Q": "fail"
+      },
+      "blamed_metric": "total_liabilities",
+      "blame_confidence": "high",
+      "triggered_hypothesis": "wrong_column: extracted total_liabilities equals prior-year value (285,508M)",
+      "suggested_value": 292455.0,
+      "review_decision": "ESCALATE (Confidence: 0.58)"
+    }
+  },
+  "model_2_segmentation_validation_dataset": {
+    "subsystem": "segmentation/validator.py",
+    "standard": "US GAAP ASC 280 (Segment Reporting)",
+    "consolidated_revenue": {
+      "metric": "consolidated_revenue",
+      "label": "Total net sales",
+      "value": 478834.0,
+      "unit": "USD millions",
+      "period": "FY2026",
+      "source_snippet": "Total net sales | $ 478,834 | $ 391,035"
+    },
+    "segment_items": [
+      {
+        "name": "Americas",
+        "category": "segment",
+        "axis": "StatementBusinessSegmentsAxis",
+        "member": "aapl:AmericasSegmentMember",
+        "value": 198083.0,
+        "tampered": false,
+        "source_snippet": "Americas | $ 198,083"
+      },
+      {
+        "name": "Europe",
+        "category": "segment",
+        "axis": "StatementBusinessSegmentsAxis",
+        "member": "aapl:EuropeSegmentMember",
+        "value": 127604.0,
+        "tampered": false,
+        "source_snippet": "Europe | $ 127,604"
+      },
+      {
+        "name": "Greater China",
+        "category": "segment",
+        "axis": "StatementBusinessSegmentsAxis",
+        "member": "aapl:GreaterChinaSegmentMember",
+        "value": 82378.0,
+        "tampered": false,
+        "source_snippet": "Greater China | $ 82,378"
+      },
+      {
+        "name": "Japan",
+        "category": "segment",
+        "axis": "StatementBusinessSegmentsAxis",
+        "member": "aapl:JapanSegmentMember",
+        "value": 30908.0,
+        "tampered": false,
+        "source_snippet": "Japan | $ 30,908"
+      },
+      {
+        "name": "Rest of Asia Pacific",
+        "category": "segment",
+        "axis": "StatementBusinessSegmentsAxis",
+        "member": "aapl:RestOfAsiaPacificSegmentMember",
+        "clean_value": 39861.0,
+        "value": 28000.0,
+        "tampered": true,
+        "tamper_type": "understatement_hallucination",
+        "source_snippet": "Rest of Asia Pacific | $ 39,861"
+      },
+      {
+        "name": "Corporate non-segment",
+        "category": "corporate_other",
+        "axis": "ConsolidationItemsAxis",
+        "member": "us-gaap:CorporateNonSegmentMember",
+        "value": 0.0,
+        "tampered": false,
+        "source_snippet": "Corporate non-segment | $ —"
+      }
+    ],
+    "expected_engine_verdict": {
+      "segment_reconciliation_status": "FAIL",
+      "reconciled_total": 466973.0,
+      "consolidated_total": 478834.0,
+      "difference": -11861.0,
+      "tolerance": 2.0,
+      "triggered_escalations": [
+        "Segment Reconciliation Failed: sum(segments) + corporate - eliminations = 466,973.00M != Consolidated 478,834.00M (diff=-11,861.00M).",
+        "[segment:Rest of Asia Pacific] Source Grounding Failed: Exact digits 28,000 not found verbatim in source snippet.",
+        "[segment:Rest of Asia Pacific] Low Confidence (0.60 < 0.85)."
+      ],
+      "overall_verdict": "FAIL",
+      "review_decision": "HUMAN_REVIEW"
+    }
+  },
+  "model_3_yoy_validation_dataset": {
+    "subsystem": "YOY_model/yoy.py",
+    "thresholds_applied": {
+      "revenue": 50.0,
+      "net_income": 150.0,
+      "total_assets": 30.0,
+      "total_liabilities": 40.0,
+      "warn_ratio": 0.75
+    },
+    "metrics": [
+      {
+        "metric": "revenue",
+        "current_value": 478834000.0,
+        "clean_current_value": 478834.0,
+        "prior_value": 391035.0,
+        "unit": "USD millions",
+        "current_period": "FY2026",
+        "prior_period": "FY2025",
+        "tampered": true,
+        "tamper_type": "likely_unit_error",
+        "expected_pct_change": 122352.98,
+        "expected_status": "fail",
+        "expected_anomaly_type": "likely_unit_error",
+        "confidence_impact": "0.95 -> 0.570"
+      },
+      {
+        "metric": "net_income",
+        "current_value": -115000.0,
+        "clean_current_value": 115000.0,
+        "prior_value": 93736.0,
+        "unit": "USD millions",
+        "current_period": "FY2026",
+        "prior_period": "FY2025",
+        "tampered": true,
+        "tamper_type": "sign_flip",
+        "expected_pct_change": -222.69,
+        "expected_status": "fail",
+        "expected_anomaly_type": "sign_flip",
+        "confidence_impact": "0.94 -> 0.564"
+      },
+      {
+        "metric": "total_assets",
+        "current_value": 404548.0,
+        "prior_value": 359241.0,
+        "unit": "USD millions",
+        "current_period": "FY2026",
+        "prior_period": "FY2025",
+        "tampered": false,
+        "expected_pct_change": 12.61,
+        "expected_status": "pass",
+        "expected_anomaly_type": "none",
+        "confidence_impact": "0.95 -> 0.950"
+      },
+      {
+        "metric": "total_liabilities",
+        "current_value": 292455.0,
+        "prior_value": 285508.0,
+        "unit": "USD millions",
+        "current_period": "FY2026",
+        "prior_period": "FY2025",
+        "tampered": false,
+        "expected_pct_change": 2.43,
+        "expected_status": "pass",
+        "expected_anomaly_type": "none",
+        "confidence_impact": "0.95 -> 0.950"
+      }
+    ]
+  },
+  "unified_pipeline_records_feed": [
+    {
+      "metric_name": "revenue",
+      "value": 478834000.0,
+      "unit": "USD millions",
+      "period_end": "2026-09-26",
+      "source_snippet": "Total net sales: 478,834,000",
+      "tampered": true,
+      "injected_flaw": "1000x scale unit mismatch (Model 3 trigger)"
+    },
+    {
+      "metric_name": "total_assets",
+      "value": 404548.0,
+      "unit": "USD millions",
+      "period_end": "2026-09-26",
+      "source_snippet": "Total assets: 404,548",
+      "tampered": false,
+      "injected_flaw": null
+    },
+    {
+      "metric_name": "total_liabilities",
+      "value": 285508.0,
+      "unit": "USD millions",
+      "period_end": "2026-09-26",
+      "source_snippet": "Total liabilities: 285,508 (FY2025 prior year)",
+      "tampered": true,
+      "injected_flaw": "Prior-year column carryover (Model 1 trigger)"
+    },
+    {
+      "metric_name": "shareholders_equity",
+      "value": 112093.0,
+      "unit": "USD millions",
+      "period_end": "2026-09-26",
+      "source_snippet": "Total shareholders equity: 112,093",
+      "tampered": false,
+      "injected_flaw": null
+    },
+    {
+      "metric_name": "net_income",
+      "value": -115000.0,
+      "unit": "USD millions",
+      "period_end": "2026-09-26",
+      "source_snippet": "Net income (loss): (115,000)",
+      "tampered": true,
+      "injected_flaw": "Sign flip profit to loss (Model 3 trigger)"
+    },
+    {
+      "metric_name": "segment_rest_of_asia_pacific",
+      "value": 28000.0,
+      "unit": "USD millions",
+      "period_end": "2026-09-26",
+      "source_snippet": "Rest of Asia Pacific: 39,861",
+      "tampered": true,
+      "injected_flaw": "Segment understatement & verbatim grounding failure (Model 2 trigger)"
+    }
+  ]
+}
+

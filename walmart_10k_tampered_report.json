@@ -1,0 +1,214 @@
+{
+  "metadata": {
+    "company": "Walmart Inc.",
+    "ticker": "WMT",
+    "cik": "0000104169",
+    "form": "10-K",
+    "filing_date": "2026-03-13",
+    "period_of_report": "2026-01-31",
+    "accession_no": "0000104169-26-000055",
+    "sec_url": "https://www.sec.gov/Archives/edgar/data/104169/000010416926000055/wmt-20260131.htm",
+    "scale": 1000000,
+    "unit": "USD millions",
+    "purpose": "Adversarial test dataset for V.A.U.L.T Accounting Equation Engine"
+  },
+  "clean_ground_truth_metrics": {
+    "FY2026_current": {
+      "period_end": "2026-01-31",
+      "total_assets": 284668,
+      "total_current_assets": 84874,
+      "total_noncurrent_assets": 199794,
+      "total_current_liabilities": 107469,
+      "total_noncurrent_liabilities": 71019,
+      "total_liabilities": 178488,
+      "temporary_equity_redeemable_nci": 293,
+      "noncontrolling_interest_nonredeemable": 6270,
+      "walmart_shareholders_equity": 99617,
+      "total_shareholders_equity": 105887,
+      "total_liabilities_and_equity": 284668
+    },
+    "FY2025_prior": {
+      "period_end": "2025-01-31",
+      "total_assets": 260823,
+      "total_current_assets": 79458,
+      "total_noncurrent_assets": 181365,
+      "total_current_liabilities": 96584,
+      "total_noncurrent_liabilities": 66547,
+      "total_liabilities": 163131,
+      "temporary_equity_redeemable_nci": 271,
+      "noncontrolling_interest_nonredeemable": 6408,
+      "walmart_shareholders_equity": 91013,
+      "total_shareholders_equity": 97421,
+      "total_liabilities_and_equity": 260823
+    }
+  },
+  "active_tampered_filing_input": {
+    "cik": "0000104169",
+    "company": "Walmart Inc.",
+    "accession": "0000104169-26-000055",
+    "fiscal_year": 2026,
+    "form": "10-K",
+    "current": {
+      "period_end": "2026-01-31",
+      "scale": 1000000,
+      "is_consolidated": true,
+      "A": 284668,
+      "AC": 84874,
+      "ANC": 199794,
+      "LC": 107469,
+      "LNC": 71019,
+      "L": 163131,
+      "TE": 293,
+      "NCI": 6270,
+      "E": 99617,
+      "LE": 284668,
+      "e_includes_nci": false,
+      "tampered_fields": [
+        {
+          "field": "L",
+          "metric_name": "total_liabilities",
+          "clean_value": 178488,
+          "tampered_value": 163131,
+          "tamper_type": "wrong_column",
+          "rationale": "Prior-year FY2025 liabilities ($163,131M) accidentally extracted into FY2026 column."
+        }
+      ],
+      "prior_values": {
+        "total_assets": 260823,
+        "total_liabilities": 163131,
+        "equity": 91013
+      },
+      "rows": {
+        "Cash and cash equivalents": 10727,
+        "Receivables, net": 11172,
+        "Inventories": 58851,
+        "Prepaid expenses and other": 4124,
+        "Total current assets": 84874,
+        "Property and equipment, net": 136083,
+        "Operating lease right-of-use assets": 14750,
+        "Finance lease right-of-use assets, net": 6123,
+        "Goodwill": 28735,
+        "Other long-term assets": 14103,
+        "Total assets": 284668,
+        "Total current liabilities": 107469,
+        "Long-term debt": 34624,
+        "Long-term operating lease obligations": 13941,
+        "Long-term finance lease obligations": 5905,
+        "Deferred income taxes and other": 16549,
+        "Redeemable noncontrolling interest": 293,
+        "Total Walmart shareholders equity": 99617,
+        "Nonredeemable noncontrolling interest": 6270,
+        "Total shareholders equity": 105887,
+        "Total liabilities, redeemable noncontrolling interest, and shareholders equity": 284668
+      }
+    },
+    "prior": {
+      "period_end": "2025-01-31",
+      "scale": 1000000,
+      "is_consolidated": true,
+      "A": 260823,
+      "AC": 79458,
+      "ANC": 181365,
+      "LC": 96584,
+      "LNC": 66547,
+      "L": 163131,
+      "TE": 271,
+      "NCI": 6408,
+      "E": 91013,
+      "LE": 260823,
+      "e_includes_nci": false
+    }
+  },
+  "tampering_test_cases_catalog": [
+    {
+      "test_case_id": "TEST-01-WRONG-COLUMN",
+      "name": "Prior-Year Column Carryover (Wrong Column)",
+      "target_metric": "total_liabilities",
+      "metric_symbol": "L",
+      "clean_value": 178488,
+      "tampered_value": 163131,
+      "discrepancy_gap": -15357,
+      "root_cause_explanation": "Extracted prior-year FY2025 liabilities ($163,131M) instead of current FY2026 ($178,488M).",
+      "expected_engine_triangulation": {
+        "P": "pass",
+        "Q": "fail"
+      },
+      "expected_blame": "total_liabilities",
+      "expected_blame_confidence": "high",
+      "expected_hypothesis": "wrong_column: extracted total_liabilities equals prior-year value (163,131M)",
+      "suggested_correction": 178488
+    },
+    {
+      "test_case_id": "TEST-02-WRONG-ROW",
+      "name": "Sub-Row Misclassification (Current Liabilities for Total)",
+      "target_metric": "total_liabilities",
+      "metric_symbol": "L",
+      "clean_value": 178488,
+      "tampered_value": 107469,
+      "discrepancy_gap": -71019,
+      "root_cause_explanation": "Extractor mistook 'Total current liabilities' ($107,469M) for 'Total liabilities' ($178,488M).",
+      "expected_engine_triangulation": {
+        "P": "pass",
+        "Q": "fail"
+      },
+      "expected_blame": "total_liabilities",
+      "expected_blame_confidence": "high",
+      "expected_hypothesis": "wrong_row: implied total_liabilities matches sum of parsed sub-rows",
+      "suggested_correction": 178488
+    },
+    {
+      "test_case_id": "TEST-03-SCALE-ERROR",
+      "name": "Unit Scale Misinterpretation (Scale x1000)",
+      "target_metric": "temporary_equity",
+      "metric_symbol": "TE",
+      "clean_value": 293,
+      "tampered_value": 293000,
+      "discrepancy_gap": -292707,
+      "root_cause_explanation": "Redeemable noncontrolling interest scaled by 1,000x ($293,000M instead of $293M).",
+      "expected_engine_triangulation": {
+        "P": "pass",
+        "Q": "fail"
+      },
+      "expected_blame": "ambiguous_or_TE",
+      "expected_blame_confidence": "high",
+      "expected_hypothesis": "scale_error: extracted value x 1000 equals implied value",
+      "suggested_correction": 293
+    },
+    {
+      "test_case_id": "TEST-04-MISSING-MEZZANINE",
+      "name": "Omission of ASC 480 Mezzanine Equity",
+      "target_metric": "temporary_equity",
+      "metric_symbol": "TE",
+      "clean_value": 293,
+      "tampered_value": 0,
+      "discrepancy_gap": 293,
+      "root_cause_explanation": "Redeemable noncontrolling interest completely omitted, causing F1 (A = L + E) to fail by exactly $293M.",
+      "expected_engine_triangulation": {
+        "P": "pass",
+        "Q": "fail"
+      },
+      "expected_blame": "equity_or_temporary_equity",
+      "expected_blame_confidence": "high",
+      "expected_hypothesis": "missing_nci_or_te: gap matches balance sheet row 'Redeemable noncontrolling interest' (293M); switch to F3",
+      "suggested_correction": 293
+    },
+    {
+      "test_case_id": "TEST-05-DIGIT-TRANSPOSITION",
+      "name": "OCR / Typo Digit Transposition",
+      "target_metric": "total_assets",
+      "metric_symbol": "A",
+      "clean_value": 284668,
+      "tampered_value": 284686,
+      "discrepancy_gap": 18,
+      "root_cause_explanation": "Last two digits swapped (68 -> 86). Since 18 is divisible by 9, flags digit transposition and isolates Assets.",
+      "expected_engine_triangulation": {
+        "P": "fail",
+        "Q": "pass"
+      },
+      "expected_blame": "total_assets",
+      "expected_blame_confidence": "high",
+      "expected_hypothesis": "digit_transposition: unscaled gap 18 is divisible by 9 (weak hint only)",
+      "suggested_correction": 284668
+    }
+  ]
+}
