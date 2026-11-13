@@ -759,8 +759,7 @@
       { monogram: "WM", company: "Walmart Inc.", cik: "0000104169", year: 2026, scenarioKey: "tampered_wmt", tag: "Wrong column ($15,357M Δ)" },
       { monogram: "AS", company: "Apple_Segmentation", cik: "0000320193", year: 2026, scenarioKey: "apple_segmentation", tag: "Segment roll-up (-$11,861M Δ)" },
       { monogram: "AY", company: "YOY_apple", cik: "0000320193", year: 2026, scenarioKey: "yoy_apple", tag: "YoY scale 1000x (+122,353% Δ)" },
-      { monogram: "MS", company: "Microsoft Corp.", cik: "0000789019", year: 2024, scenarioKey: "balance_msft", tag: "Balance sheet mismatch" },
-      { monogram: "NF", company: "Netflix, Inc.", cik: "0001065280", year: 2024, scenarioKey: "clean_aapl", tag: "Mezzanine equity" }
+      { monogram: "CB", company: "Combine", cik: "0000320193", year: 2026, scenarioKey: "apple_combine", tag: "Unified Stress-Test (M1+M2+M3)" }
     ];
 
     // Global Application State
@@ -1274,6 +1273,111 @@
           </div>
         </div>
 
+        <!-- Adversarial Test Dataset: Combine (Unified Multi-Model Adversarial Stress-Test) Section -->
+        <div class="app-card" style="margin-bottom: 24px; border-left: 4px solid var(--primary);">
+          <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 16px;">
+            <div>
+              <span class="caption-ui" style="font-weight: 700; color: var(--primary); letter-spacing: 0.05em;">UNIFIED MULTI-MODEL ADVERSARIAL BENCHMARK</span>
+              <h3 class="heading-md" style="margin-top: 4px;">Combine: Unified Autonomous Multi-Model Audit Verification</h3>
+              <p class="body-ui" style="color: var(--ink-muted); font-size: 0.8125rem; margin-top: 2px;">
+                Unified benchmark dataset from <code>apple_combine_tampered_report.json</code>. Integrates all three autonomous agent subsystems into a single end-to-end verification chain:
+                <strong>Model 1</strong> (Accounting Equation Balance Sheet carryover), <strong>Model 2</strong> (ASC 280 Operating Segment roll-up hallucination), and <strong>Model 3</strong> (Multi-Period YoY 1,000x scale misread & profit-to-loss sign flip).
+              </p>
+            </div>
+            <div style="text-align: right;">
+              <span class="chip chip-warn" style="font-weight: 700;">ALL 3 AGENTS STRESS-TEST</span>
+              <div class="caption-ui" style="margin-top: 4px; color: var(--ink-muted);">M1 (F1) · M2 (ASC 280) · M3 (YoY)</div>
+            </div>
+          </div>
+
+          <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px; margin-bottom: 16px;">
+            <div class="well-panel">
+              <span class="caption-ui" style="display: block; color: var(--ink-muted);">SEC Registrant</span>
+              <strong class="body-ui">Apple Inc. (CIK 0000320193)</strong>
+              <div class="caption-ui" style="color: var(--ink-muted); margin-top: 2px;">Form 10-K · FY 2026 Ingestion</div>
+            </div>
+            <div class="well-panel">
+              <span class="caption-ui" style="display: block; color: var(--ink-muted);">Model 1: Balance Sheet Invariant</span>
+              <strong class="body-ui num-table" style="color: var(--fail);">-$6,947M Δ Gap</strong>
+              <div class="caption-ui" style="color: var(--fail); margin-top: 2px;">Total Liabilities: $285,508M vs $292,455M</div>
+            </div>
+            <div class="well-panel">
+              <span class="caption-ui" style="display: block; color: var(--ink-muted);">Model 2: ASC 280 Segment Roll-up</span>
+              <strong class="body-ui num-table" style="color: var(--warn);">-$11,861M Δ Gap</strong>
+              <div class="caption-ui" style="color: var(--warn); margin-top: 2px;">Rest of Asia Pacific: $28,000M vs $39,861M</div>
+            </div>
+            <div class="well-panel">
+              <span class="caption-ui" style="display: block; color: var(--ink-muted);">Model 3: YoY Scale & Sign Anomaly</span>
+              <strong class="body-ui num-table" style="color: var(--fail);">+122,352.98% / Sign Flip</strong>
+              <div class="caption-ui" style="color: var(--fail); margin-top: 2px;">Rev: $478,834,000M · NI: -$115,000M</div>
+            </div>
+          </div>
+
+          <div class="table-container" style="margin-bottom: 16px;">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Target Subsystem / Agent</th>
+                  <th>Target Metric</th>
+                  <th style="text-align: right;">Clean Ground Truth</th>
+                  <th style="text-align: right;">Tampered Value</th>
+                  <th style="text-align: right;">Discrepancy (Δ)</th>
+                  <th>Injected Fault Type</th>
+                  <th>Automated Detection & Escalation Mechanism</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr style="background-color: rgba(239, 68, 68, 0.04);">
+                  <td><strong style="color: var(--primary);">Model 1: Accounting Equation Agent</strong></td>
+                  <td><code>total_liabilities (L)</code></td>
+                  <td class="num-table" style="text-align: right; color: var(--pass); font-weight: 700;">$292,455M</td>
+                  <td class="num-table" style="text-align: right; color: var(--fail); font-weight: 700;">$285,508M</td>
+                  <td class="num-table" style="text-align: right; color: var(--fail); font-weight: 700;">-$6,947M</td>
+                  <td><span class="chip chip-fail" style="font-size: 0.65rem;">Prior-Year Column Carryover</span></td>
+                  <td>Dual-Anchor Triangulation (Anchor P: pass, Anchor Q: fail) isolates blame to L; halts at <strong>CP-01_PAUSED</strong>.</td>
+                </tr>
+                <tr style="background-color: rgba(245, 158, 11, 0.04);">
+                  <td><strong style="color: var(--primary);">Model 2: Segment Validation Agent</strong></td>
+                  <td><code>Rest of Asia Pacific</code></td>
+                  <td class="num-table" style="text-align: right; color: var(--pass); font-weight: 700;">$39,861M</td>
+                  <td class="num-table" style="text-align: right; color: var(--warn); font-weight: 700;">$28,000M</td>
+                  <td class="num-table" style="text-align: right; color: var(--warn); font-weight: 700;">-$11,861M</td>
+                  <td><span class="chip chip-warn" style="font-size: 0.65rem;">Segment Understatement</span></td>
+                  <td>Trigger B Hard Invariant: Segment sum $466,973M != Consolidated $478,834M; halts at <strong>CP-02_PAUSED</strong>.</td>
+                </tr>
+                <tr style="background-color: rgba(239, 68, 68, 0.04);">
+                  <td><strong style="color: var(--primary);">Model 3: YoY Validation Agent</strong></td>
+                  <td><code>net_income</code></td>
+                  <td class="num-table" style="text-align: right; color: var(--pass); font-weight: 700;">$115,000M</td>
+                  <td class="num-table" style="text-align: right; color: var(--fail); font-weight: 700;">-$115,000M</td>
+                  <td class="num-table" style="text-align: right; color: var(--fail); font-weight: 700;">-$230,000M</td>
+                  <td><span class="chip chip-fail" style="font-size: 0.65rem;">Sign Flip (Profit to Loss)</span></td>
+                  <td>Profit-to-loss sign reversal (-222.69% YoY); triggers immediate mandatory human escalation.</td>
+                </tr>
+                <tr style="background-color: rgba(239, 68, 68, 0.04);">
+                  <td><strong style="color: var(--primary);">Model 3: YoY Validation Agent</strong></td>
+                  <td><code>revenue</code></td>
+                  <td class="num-table" style="text-align: right; color: var(--pass); font-weight: 700;">$478,834M</td>
+                  <td class="num-table" style="text-align: right; color: var(--fail); font-weight: 700;">$478,834,000M</td>
+                  <td class="num-table" style="text-align: right; color: var(--fail); font-weight: 700;">+$478,355,166M</td>
+                  <td><span class="chip chip-fail" style="font-size: 0.65rem;">1,000x Unit Scale Error</span></td>
+                  <td>1,000x ratio jump (+122,352.98% YoY); triggers unit scale alert; halts at <strong>CP-03_PAUSED</strong>.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div style="display: flex; justify-content: space-between; align-items: center; background-color: var(--primary-soft); border: 1px solid var(--border); border-radius: 6px; padding: 12px 16px;">
+            <div class="body-ui" style="font-size: 0.8125rem;">
+              <strong>Adversarial Test Catalog:</strong> <code>UNIFIED-STRESS-TEST-M1-M2-M3</code> — Demonstrates full autonomous agentic pipeline with sequential human review checkpoints.
+            </div>
+            <button class="btn btn-primary btn-sm" onclick="selectPreset(4); startAuditWorkflow();">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+              Run Combine unified audit
+            </button>
+          </div>
+        </div>
+
         <div class="app-card">
           <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px;">
             <h3 class="heading-md">Unfinished audits & persisted checkpoints</h3>
@@ -1756,15 +1860,16 @@
       await streamEventsToTerminal(step3Events);
 
       // Perform Asset Auditing invariant check
-      const assets = (scenarioData.checkpoint_id && scenarioData.checkpoint_id.startsWith("CP-03")) ? 404548 : getMetricVal("assets", 364980);
-      const liab = getMetricVal("liabilities", 298187);
-      const equity = getMetricVal("equity", 66793);
+      const assets = (appState.selectedPreset?.cik === "0000320193") ? 404548 : getMetricVal("assets", 364980);
+      const liab = getMetricVal("liabilities", (appState.selectedPreset?.cik === "0000320193" ? 285508 : 298187));
+      const equity = getMetricVal("equity", (appState.selectedPreset?.cik === "0000320193" ? 112093 : 66793));
       const mezzanine = getMetricVal("redeemablenoncontrollinginterest", getMetricVal("temporaryequity", 0));
       const delta = assets - (liab + equity + mezzanine);
 
       // Check if checkpoint pause required at Step 3
       if (delta !== 0 || (scenarioData.checkpoint_id && scenarioData.checkpoint_id.startsWith("CP-01"))) {
-        triggerCheckpointPause("CP-01_PAUSED", scenarioData.flagged_item, 3);
+        const flagged = scenarioData.flagged_items?.step3 || scenarioData.flagged_item;
+        triggerCheckpointPause("CP-01_PAUSED", flagged, 3);
         return;
       }
 
@@ -1782,19 +1887,20 @@
 
     async function executeAgentStep4(scenarioData) {
       navigateToStep(4);
-      const allEvents = scenarioData.events_pre_pause || scenarioData.events;
+      const allEvents = scenarioData.events_step4 || scenarioData.events_pre_pause || scenarioData.events;
       const step4Events = allEvents.filter(e => e.agent === "segment_validation");
 
       await streamEventsToTerminal(step4Events);
 
       // Evaluate segments
-      const rev = (scenarioData.checkpoint_id && scenarioData.checkpoint_id.startsWith("CP-03")) ? 478834 : getMetricVal("revenue", 391035);
+      const rev = (appState.selectedPreset?.cik === "0000320193") ? 478834 : getMetricVal("revenue", 391035);
       const segments = getSegmentData();
       const sumSeg = segments.reduce((sum, s) => sum + s.value, 0);
       const segDelta = rev - sumSeg;
 
       if (segDelta !== 0 || (scenarioData.checkpoint_id && scenarioData.checkpoint_id.startsWith("CP-02"))) {
-        triggerCheckpointPause("CP-02_PAUSED", scenarioData.flagged_item, 4);
+        const flagged = scenarioData.flagged_items?.step4 || scenarioData.flagged_item;
+        triggerCheckpointPause("CP-02_PAUSED", flagged, 4);
         return;
       }
 
@@ -1811,14 +1917,19 @@
 
     async function executeAgentStep5(scenarioData) {
       navigateToStep(5);
-      const allEvents = scenarioData.events_pre_pause || scenarioData.events;
+      const allEvents = scenarioData.events_step5 || scenarioData.events_pre_pause || scenarioData.events;
       const step5Events = allEvents.filter(e => e.agent === "yoy_comparing");
 
       await streamEventsToTerminal(step5Events);
 
       // Check if YoY anomaly paused at Step 5
-      if (scenarioData.checkpoint_id && scenarioData.checkpoint_id.startsWith("CP-03")) {
-        triggerCheckpointPause("CP-03_PAUSED", scenarioData.flagged_item, 5);
+      const revVal = getMetricVal("revenue", 478834000);
+      const niVal = getMetricVal("netincome", -115000);
+      const isYoYAnomaly = (revVal > 1000000) || (niVal < 0) || (scenarioData.checkpoint_id && scenarioData.checkpoint_id.startsWith("CP-03"));
+
+      if (isYoYAnomaly && (!appState.milestonesLogged.yoyHumanCorrected)) {
+        const flagged = scenarioData.flagged_items?.step5 || scenarioData.flagged_item;
+        triggerCheckpointPause("CP-03_PAUSED", flagged, 5);
         return;
       }
 
@@ -2051,6 +2162,7 @@
       appState.isPaused = true;
       appState.activeCheckpoint = cpId;
       appState.currentStep = stepId;
+      appState.activeFlaggedItem = flaggedItem;
       appState.maxCompletedStep = Math.max(2, stepId - 1); // Validation halted at this exact step
       renderStepper();
       updateCheckpointBar(cpId, true);
@@ -2067,28 +2179,29 @@
 
     /* Slide-out Review Drawer */
     function openReviewDrawer(flaggedItem) {
-      if (!flaggedItem) return;
+      const item = flaggedItem || appState.activeFlaggedItem || appState.activeTimeline?.flagged_item;
+      if (!item) return;
       document.getElementById("drawerOverlay").style.display = "block";
       document.getElementById("reviewDrawer").classList.add("open");
 
       document.getElementById("drawerCheckpointTag").innerText = appState.activeCheckpoint || "CP-03_PAUSED";
-      document.getElementById("drawerAgentTag").innerText = flaggedItem.agent || "Validation Agent Invariant";
-      document.getElementById("drawerReasonText").innerText = flaggedItem.reason;
-      document.getElementById("drawerMetricName").innerText = flaggedItem.metric_name;
-      document.getElementById("drawerReportedVal").innerText = `$${Number(flaggedItem.extracted_value).toLocaleString()}M`;
-      document.getElementById("drawerExpectedVal").innerText = `$${Number(flaggedItem.expected_value).toLocaleString()}M`;
+      document.getElementById("drawerAgentTag").innerText = item.agent || "Validation Agent Invariant";
+      document.getElementById("drawerReasonText").innerText = item.reason;
+      document.getElementById("drawerMetricName").innerText = item.metric_name;
+      document.getElementById("drawerReportedVal").innerText = `$${Number(item.extracted_value).toLocaleString()}M`;
+      document.getElementById("drawerExpectedVal").innerText = `$${Number(item.expected_value).toLocaleString()}M`;
 
       // Highlight exact figure in source snippet
-      const valStr = Number(flaggedItem.expected_value).toLocaleString();
-      let snip = escapeHtml(flaggedItem.snippet);
+      const valStr = Number(item.expected_value).toLocaleString();
+      let snip = escapeHtml(item.snippet || "");
       if (snip.includes(valStr)) {
         snip = snip.replace(valStr, `<span class="evidence-highlight">${valStr}</span>`);
       }
       document.getElementById("drawerSnippetBox").innerHTML = snip;
 
-      // Reset form
-      selectDecision("approve");
-      document.getElementById("correctionInput").value = flaggedItem.expected_value;
+      // Reset form to correct mode with expected value prefilled
+      selectDecision("correct");
+      document.getElementById("correctionInput").value = item.expected_value;
     }
 
     function closeDrawer(e) {
@@ -2116,7 +2229,7 @@
       const reviewer = document.getElementById("reviewerNameInput").value || "Senior Auditor";
       const note = document.getElementById("reviewerNoteInput").value || "Reviewed and validated.";
       const correctedVal = dec === "correct" ? parseFloat(document.getElementById("correctionInput").value) : null;
-      const flagged = appState.activeTimeline ? appState.activeTimeline.flagged_item : null;
+      const flagged = appState.activeFlaggedItem || (appState.activeTimeline ? appState.activeTimeline.flagged_item : null);
       const metricName = flagged ? flagged.metric_name : "metric";
 
       // Close drawer
@@ -2144,6 +2257,14 @@
         }
 
         // Also update segment validation checks in memory
+        if (cleanTarget.includes("asia") || cleanTarget.includes("pacific") || cleanTarget.includes("restofasia")) {
+          const segm = appState.metrics.find(x => x.name.toLowerCase().includes("asia"));
+          if (segm) {
+            segm.value = correctedVal;
+            segm.status = "CORRECTED";
+            segm.confidence = 1.0;
+          }
+        }
         if (appState.checks && appState.checks.segment_validation && appState.checks.segment_validation.segments) {
           const seg = appState.checks.segment_validation.segments.find(s => {
             const sName = s.name.toLowerCase().replace(/[^a-z0-9]/g, "");
@@ -2155,6 +2276,16 @@
           }
           appState.checks.segment_validation.passed = true;
           appState.checks.segment_validation.delta = 0;
+        }
+
+        // If revenue corrected, normalize scale and heal net income
+        if (cleanTarget.includes("revenue") || cleanTarget.includes("sales")) {
+          const ni = appState.metrics.find(x => x.name.toLowerCase().includes("income"));
+          if (ni && Number(ni.value) < 0) {
+            ni.value = Math.abs(Number(ni.value));
+            ni.status = "CORRECTED";
+            ni.confidence = 1.0;
+          }
         }
       }
 
@@ -2177,8 +2308,16 @@
       appState.isPaused = false;
       updateCheckpointBar("CP-01", false);
 
-      const postEvents = scenarioData.events_post_resume || [];
-      await streamEventsToTerminal(postEvents.filter(e => e.level === "RESUME" || e.level === "CALC" || e.level === "PASS"));
+      let postEvents = [];
+      if (pausedStep <= 3) {
+        postEvents = scenarioData.events_post_resume_step3 || scenarioData.events_post_resume || [];
+      } else if (pausedStep === 4) {
+        postEvents = scenarioData.events_post_resume_step4 || scenarioData.events_post_resume || [];
+      } else if (pausedStep === 5) {
+        postEvents = scenarioData.events_post_resume_step5 || scenarioData.events_post_resume || [];
+      }
+
+      await streamEventsToTerminal(postEvents.filter(e => e.level === "RESUME" || e.level === "CALC" || e.level === "PASS" || e.level === "OK" || e.level === "AUDIT" || e.level === "DONE"));
 
       // Advance from the paused step to subsequent agents
       if (pausedStep <= 3) {
@@ -2194,6 +2333,7 @@
         await new Promise(r => setTimeout(r, 600));
         await executeAgentStep5(scenarioData);
       } else if (pausedStep === 5) {
+        appState.milestonesLogged.yoyHumanCorrected = true;
         appState.maxCompletedStep = 5;
         renderStepper();
         renderStepWorkspace(5);
@@ -2343,17 +2483,7 @@
         return appState.checks.segment_validation.segments;
       }
       const mono = appState.selectedPreset ? appState.selectedPreset.monogram : "AA";
-      if (mono === "AY" || appState.activeScenario === "yoy_apple") {
-        return [
-          { name: "Americas", type: "Geographic Segment", value: 198083 },
-          { name: "Europe", type: "Geographic Segment", value: 127604 },
-          { name: "Greater China", type: "Geographic Segment", value: 82378 },
-          { name: "Japan", type: "Geographic Segment", value: 30908 },
-          { name: "Rest of Asia Pacific", type: "Geographic Segment", value: 39861 },
-          { name: "Corporate non-segment", type: "Corporate / Other", value: 0 }
-        ];
-      }
-      if (mono === "AS" || appState.activeScenario === "apple_segmentation") {
+      if (mono === "CB" || mono === "AS" || appState.activeScenario === "apple_combine" || appState.activeScenario === "apple_segmentation") {
         const rapVal = getMetricVal("restofasiapacific", 28000);
         return [
           { name: "Americas", type: "Geographic Segment", value: 198083 },
@@ -2361,6 +2491,16 @@
           { name: "Greater China", type: "Geographic Segment", value: 82378 },
           { name: "Japan", type: "Geographic Segment", value: 30908 },
           { name: "Rest of Asia Pacific", type: "Geographic Segment", value: rapVal, tampered: (rapVal !== 39861), clean_value: 39861 },
+          { name: "Corporate non-segment", type: "Corporate / Other", value: 0 }
+        ];
+      }
+      if (mono === "AY" || appState.activeScenario === "yoy_apple") {
+        return [
+          { name: "Americas", type: "Geographic Segment", value: 198083 },
+          { name: "Europe", type: "Geographic Segment", value: 127604 },
+          { name: "Greater China", type: "Geographic Segment", value: 82378 },
+          { name: "Japan", type: "Geographic Segment", value: 30908 },
+          { name: "Rest of Asia Pacific", type: "Geographic Segment", value: 39861 },
           { name: "Corporate non-segment", type: "Corporate / Other", value: 0 }
         ];
       }
@@ -2389,13 +2529,13 @@
 
     function getYoYComparisonData() {
       const mono = appState.selectedPreset ? appState.selectedPreset.monogram : "AA";
-      if (mono === "AY" || appState.activeScenario === "yoy_apple") {
+      if (mono === "CB" || mono === "AY" || appState.activeScenario === "apple_combine" || appState.activeScenario === "yoy_apple") {
         return [
           { name: "Revenue", tag: "us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax", prior: 391035, current: getMetricVal("revenue", 478834000), threshold: 50.0 },
           { name: "Net Income", tag: "us-gaap:NetIncomeLoss", prior: 93736, current: getMetricVal("netincome", -115000), threshold: 150.0 },
-          { name: "Total Assets", tag: "us-gaap:Assets", prior: 359241, current: getMetricVal("assets", 590000), threshold: 30.0 },
+          { name: "Total Assets", tag: "us-gaap:Assets", prior: 359241, current: getMetricVal("assets", 404548), threshold: 30.0 },
           { name: "Total Liabilities", tag: "us-gaap:Liabilities", prior: 285508, current: getMetricVal("liabilities", 292455), threshold: 40.0 },
-          { name: "Operating Cash Flow", tag: "us-gaap:NetCashProvidedByUsedInOperatingActivities", prior: 118259, current: getMetricVal("operatingcashflow", 175000), threshold: 60.0 }
+          { name: "Operating Cash Flow", tag: "us-gaap:NetCashProvidedByUsedInOperatingActivities", prior: 118259, current: getMetricVal("operatingcashflow", 118254), threshold: 60.0 }
         ];
       }
       if (mono === "AS" || appState.activeScenario === "apple_segmentation") {
@@ -2464,25 +2604,26 @@
             <div>
               <strong style="color: var(--ink);">Workflow Paused at LangGraph Checkpoint ${appState.activeCheckpoint || 'CP-01_PAUSED'}</strong>
               <div class="caption-ui" style="margin-top: 2px;">
-                ${escapeHtml(appState.activeTimeline?.flagged_item?.reason || 'Balance sheet equation variance requires human auditor approval.')}
+                ${escapeHtml((appState.activeFlaggedItem || appState.activeTimeline?.flagged_item)?.reason || 'Balance sheet equation variance requires human auditor approval.')}
               </div>
             </div>
           </div>
           <div style="display: flex; gap: 8px;">
             <button class="btn btn-secondary btn-sm" onclick="navigateToStep(1)">Return to launchpad</button>
-            <button class="btn btn-primary btn-sm" onclick="openReviewDrawer(appState.activeTimeline?.flagged_item)">Review & Decide</button>
+            <button class="btn btn-primary btn-sm" onclick="openReviewDrawer(appState.activeFlaggedItem || appState.activeTimeline?.flagged_item)">Review & Decide</button>
           </div>
         </div>
       ` : "";
 
-      const assets = getMetricVal("assets", 364980);
-      const liab = getMetricVal("liabilities", 298187);
-      const equity = getMetricVal("equity", 66793);
+      const isApple = (appState.selectedPreset?.cik === "0000320193");
+      const assets = isApple ? 404548 : getMetricVal("assets", 364980);
+      const liab = getMetricVal("liabilities", (isApple ? 285508 : 298187));
+      const equity = getMetricVal("equity", (isApple ? 112093 : 66793));
       const mezzanine = getMetricVal("redeemablenoncontrollinginterest", getMetricVal("temporaryequity", 0));
-      const currAssets = getMetricVal("currentassets", Math.round(assets * 0.419));
-      const nonCurrAssets = Math.max(0, assets - currAssets);
-      const currLiab = getMetricVal("currentliabilities", Math.round(liab * 0.487));
-      const nonCurrLiab = Math.max(0, liab - currLiab);
+      const currAssets = getMetricVal("currentassets", (isApple ? 173857 : Math.round(assets * 0.419)));
+      const nonCurrAssets = isApple ? 230691 : Math.max(0, assets - currAssets);
+      const currLiab = getMetricVal("currentliabilities", (isApple ? 169915 : Math.round(liab * 0.487)));
+      const nonCurrLiab = isApple ? 122540 : Math.max(0, liab - currLiab);
       const rhs = liab + equity + mezzanine;
       const delta = assets - rhs;
       const isBalanced = (delta === 0);
@@ -2620,18 +2761,18 @@
             <div>
               <strong style="color: var(--ink);">Workflow Paused at LangGraph Checkpoint ${appState.activeCheckpoint || 'CP-02_PAUSED'}</strong>
               <div class="caption-ui" style="margin-top: 2px;">
-                ${escapeHtml(appState.activeTimeline?.flagged_item?.reason || 'ASC 280 segment reconciliation requires human review.')}
+                ${escapeHtml((appState.activeFlaggedItem || appState.activeTimeline?.flagged_item)?.reason || 'ASC 280 segment reconciliation requires human review.')}
               </div>
             </div>
           </div>
           <div style="display: flex; gap: 8px;">
             <button class="btn btn-secondary btn-sm" onclick="navigateToStep(1)">Return to launchpad</button>
-            <button class="btn btn-primary btn-sm" onclick="openReviewDrawer(appState.activeTimeline?.flagged_item)">Review & Decide</button>
+            <button class="btn btn-primary btn-sm" onclick="openReviewDrawer(appState.activeFlaggedItem || appState.activeTimeline?.flagged_item)">Review & Decide</button>
           </div>
         </div>
       ` : "";
 
-      const revenue = getMetricVal("revenue", 391035);
+      const revenue = (appState.selectedPreset?.cik === "0000320193") ? 478834 : getMetricVal("revenue", 391035);
       const segments = getSegmentData();
       const sumSegments = segments.reduce((sum, s) => sum + s.value, 0);
       const delta = revenue - sumSegments;
@@ -2772,13 +2913,13 @@
             <div>
               <strong style="color: var(--ink);">Workflow Paused at LangGraph Checkpoint ${appState.activeCheckpoint || 'CP-03_PAUSED'}</strong>
               <div class="caption-ui" style="margin-top: 2px;">
-                ${escapeHtml(appState.activeTimeline?.flagged_item?.reason || 'Multi-period variance or unit scale anomaly requires human review.')}
+                ${escapeHtml((appState.activeFlaggedItem || appState.activeTimeline?.flagged_item)?.reason || 'Multi-period variance or unit scale anomaly requires human review.')}
               </div>
             </div>
           </div>
           <div style="display: flex; gap: 8px;">
             <button class="btn btn-secondary btn-sm" onclick="navigateToStep(1)">Return to launchpad</button>
-            <button class="btn btn-primary btn-sm" onclick="openReviewDrawer(appState.activeTimeline?.flagged_item)">Review & Decide</button>
+            <button class="btn btn-primary btn-sm" onclick="openReviewDrawer(appState.activeFlaggedItem || appState.activeTimeline?.flagged_item)">Review & Decide</button>
           </div>
         </div>
       ` : "";
@@ -3566,6 +3707,145 @@
           ...extra
         };
       };
+
+      if (key === "apple_combine") {
+        return {
+          company: "Apple Inc. (Combine)",
+          cik: "0000320193",
+          fiscal_year: 2026,
+          scenario: "Unified Multi-Model Adversarial Stress-Test (M1 Accounting Equation + M2 Segment Roll-up + M3 YoY Volatility)",
+          pause_at_seq: 21,
+          checkpoint_id: "CP-01_PAUSED",
+          flagged_item: {
+            metric_name: "total_liabilities",
+            display_name: "Total Liabilities (L)",
+            extracted_value: 285508,
+            unit: "USD millions",
+            expected_value: 292455,
+            agent: "Asset Auditing Agent",
+            reason: "Dual-Anchor Triangulation (F1: A = L + E failure): Extracted total_liabilities ($285,508M) equals prior-year FY2025 value. Expected $292,455M (gap = -$6,947M).",
+            snippet: "Total liabilities: $285,508 (Prior Period FY2025 column carryover error)",
+            source_url: "https://www.sec.gov/Archives/edgar/data/320193/000032019326000026/aapl-20260926.htm"
+          },
+          flagged_items: {
+            step3: {
+              metric_name: "total_liabilities",
+              display_name: "Total Liabilities (L)",
+              extracted_value: 285508,
+              unit: "USD millions",
+              expected_value: 292455,
+              agent: "Asset Auditing Agent",
+              reason: "Dual-Anchor Triangulation (F1: A = L + E failure): Extracted total_liabilities ($285,508M) equals prior-year FY2025 value. Expected $292,455M (diff = -$6,947M).",
+              snippet: "Total liabilities: $285,508 (Prior Period FY2025 column carryover error)",
+              source_url: "https://www.sec.gov/Archives/edgar/data/320193/000032019326000026/aapl-20260926.htm"
+            },
+            step4: {
+              metric_name: "segment:Rest of Asia Pacific",
+              display_name: "Rest of Asia Pacific Segment Net Sales",
+              extracted_value: 28000,
+              unit: "USD millions",
+              expected_value: 39861,
+              agent: "Segment Validation Agent",
+              reason: "Segment Reconciliation Failed: sum(segments) + corporate - eliminations = 466,973.00M != Consolidated 478,834.00M (diff = -11,861.00M). Rest of Asia Pacific extracted as $28,000M but source snippet confirms $39,861M (Grounding confidence 0.60 < 0.85).",
+              snippet: "Segment Operating Performance | Rest of Asia Pacific | $39,861 | $33,696",
+              source_url: "https://www.sec.gov/Archives/edgar/data/320193/000032019326000026/aapl-20260926.htm"
+            },
+            step5: {
+              metric_name: "revenue",
+              display_name: "Total Net Sales (Revenue)",
+              extracted_value: 478834000,
+              unit: "USD millions",
+              expected_value: 478834,
+              agent: "YoY Comparing Agent",
+              reason: "Revenue changed by +122,352.98% (~1225x, 391,035M -> 478,834,000M), far exceeding the 50.0% threshold. Unit scale misread (1000x mismatch). Also detected: net_income sign flip (-$115,000M loss vs prior $93,736M profit).",
+              snippet: "Total net sales | $ 478,834,000 | $ 391,035 (Note 1 - Summary of Significant Accounting Policies)",
+              source_url: "https://www.sec.gov/Archives/edgar/data/320193/000032019326000026/aapl-20260926.htm"
+            }
+          },
+          events_pre_pause: [
+            makeEvt(1, 0, "INFO", "Initializing V.A.U.L.T pipeline for CIK 0000320193 (Apple Inc. - Combine Demo)", { agent: "edgar_retrieval" }),
+            makeEvt(2, 1, "STEP", "Resolving submissions index at data.sec.gov/submissions/CIK0000320193.json", { agent: "edgar_retrieval" }),
+            makeEvt(3, 2, "OK", "Filing verified against SEC index. Accession: 0000320193-26-000026. Hash: 7e4a1b... OK", { agent: "edgar_retrieval" }),
+            makeEvt(4, 3, "WARN", "Extracted: revenue = $478,834,000M (SCALE 1000x ANOMALY detected: source indicates $478,834M, conf: 0.57)", { agent: "extraction", data: { metric: "revenue" } }),
+            makeEvt(5, 4, "WARN", "Extracted: net_income = -$115,000M (SIGN-FLIP ANOMALY detected: profit to loss reversal, conf: 0.56)", { agent: "extraction", data: { metric: "net_income" } }),
+            makeEvt(6, 5, "INPUT", "Extracted: total_assets = $404,548M (tag: us-gaap:Assets, conf: 1.00)", { agent: "extraction", data: { metric: "total_assets" } }),
+            makeEvt(7, 6, "WARN", "Extracted: total_liabilities = $285,508M (WRONG COLUMN ANOMALY: matches prior-year FY25, conf: 0.58)", { agent: "extraction", data: { metric: "total_liabilities" } }),
+            makeEvt(8, 7, "INPUT", "Extracted: shareholders_equity = $112,093M (tag: us-gaap:StockholdersEquity, conf: 0.98)", { agent: "extraction", data: { metric: "shareholders_equity" } }),
+            makeEvt(9, 8, "INPUT", "Extracted: segment:Americas = $198,083M (tag: us-gaap:StatementBusinessSegmentsAxis, conf: 1.00)", { agent: "extraction" }),
+            makeEvt(10, 9, "INPUT", "Extracted: segment:Europe = $127,604M (tag: us-gaap:StatementBusinessSegmentsAxis, conf: 1.00)", { agent: "extraction" }),
+            makeEvt(11, 10, "INPUT", "Extracted: segment:Greater China = $82,378M (tag: us-gaap:StatementBusinessSegmentsAxis, conf: 0.95)", { agent: "extraction" }),
+            makeEvt(12, 11, "INPUT", "Extracted: segment:Japan = $30,908M (tag: us-gaap:StatementBusinessSegmentsAxis, conf: 1.00)", { agent: "extraction" }),
+            makeEvt(13, 12, "WARN", "Extracted: segment:Rest of Asia Pacific = $28,000M (GROUNDING FAILURE: text '28,000' missing from snippet, conf: 0.60)", { agent: "extraction" }),
+            makeEvt(14, 13, "INPUT", "Extracted: segment:Corporate non-segment = $0M (tag: us-gaap:CorporateNonSegmentMember, conf: 1.00)", { agent: "extraction" }),
+            makeEvt(15, 14, "INPUT", "Extracted: operating_cash_flow = $118,254M (tag: us-gaap:NetCashProvidedByUsedInOperatingActivities, conf: 0.85)", { agent: "extraction", data: { metric: "operating_cash_flow" } }),
+            makeEvt(16, 15, "STEP", "Evaluating balance sheet equation: Total Assets = Total Liabilities + Equity", { agent: "asset_auditing" }),
+            makeEvt(17, 16, "CALC", "F4: 285,508 (Liabilities) + 112,093 (Equity) = 397,601 != total assets 404,548 | Δ -6,947", { agent: "asset_auditing" }),
+            makeEvt(18, 17, "FAIL", "Dual-Anchor Triangulation: Anchor P (Assets) = 404,548, Anchor Q (L+E) = 397,601. Blame isolated to Total Liabilities (prior-year carryover).", { agent: "asset_auditing" }),
+            makeEvt(19, 18, "CHECKPOINT", "Balance sheet invariant breached. Checkpoint saved: CP-01_PAUSED. Escalating to human auditor.", { agent: "asset_auditing", checkpoint: "CP-01_PAUSED" }),
+            makeEvt(20, 19, "HUMAN", "HALTING WORKFLOW. Escalating metric total_liabilities to Human Review drawer.", { agent: "asset_auditing" }),
+            makeEvt(21, 20, "PAUSE", "Workflow paused at LangGraph checkpoint CP-01_PAUSED. Awaiting human decision.", { agent: "asset_auditing", checkpoint: "CP-01_PAUSED" })
+          ],
+          events_post_resume_step3: [
+            makeEvt(22, 21, "RESUME", "Human decision recorded: CORRECTED total_liabilities = 292,455 USD millions by Senior Auditor.", { agent: "asset_auditing" }),
+            makeEvt(23, 22, "CALC", "Re-evaluating balance sheet equation: 292,455 (L) + 112,093 (E) = 404,548 == total assets 404,548 | Δ 0", { agent: "asset_auditing" }),
+            makeEvt(24, 23, "PASS", "Balance sheet equality holds exactly (Δ $0M). Checkpoint CP-01 passed.", { agent: "asset_auditing", checkpoint: "CP-01" })
+          ],
+          events_step4: [
+            makeEvt(25, 24, "STEP", "Evaluating ASC 280 segment roll-up against reported revenue $478,834M", { agent: "segment_validation" }),
+            makeEvt(26, 25, "CALC", "Segments: 198,083 + 127,604 + 82,378 + 30,908 + 28,000 + 0 = 466,973 != 478,834 | Δ -11,861", { agent: "segment_validation" }),
+            makeEvt(27, 26, "FAIL", "ASC 280 Segment roll-up failed: sum(segments) = $466,973M != Consolidated $478,834M (diff = -$11,861M)", { agent: "segment_validation" }),
+            makeEvt(28, 27, "CHECKPOINT", "Trigger B + Trigger A activated: Segment roll-up mismatch & grounding hallucination on Rest of Asia Pacific ($28,000M vs expected $39,861M). Checkpoint saved: CP-02_PAUSED", { agent: "segment_validation", checkpoint: "CP-02_PAUSED" }),
+            makeEvt(29, 28, "HUMAN", "HALTING WORKFLOW. Escalating metric segment:Rest of Asia Pacific to Human Review drawer.", { agent: "segment_validation" }),
+            makeEvt(30, 29, "PAUSE", "Workflow paused at LangGraph checkpoint CP-02_PAUSED. Awaiting human decision.", { agent: "segment_validation", checkpoint: "CP-02_PAUSED" })
+          ],
+          events_post_resume_step4: [
+            makeEvt(31, 30, "RESUME", "Human decision recorded: CORRECTED segment:Rest of Asia Pacific = 39,861 USD millions by Senior Auditor.", { agent: "segment_validation" }),
+            makeEvt(32, 31, "CALC", "Re-evaluating ASC 280 roll-up: Americas 198,083 + Europe 127,604 + Greater China 82,378 + Japan 30,908 + Rest of Asia Pacific 39,861 = 478,834 == Consolidated 478,834 | Δ 0", { agent: "segment_validation" }),
+            makeEvt(33, 32, "PASS", "ASC 280 operating segments roll up exactly (Δ $0M). Checkpoint CP-02 passed.", { agent: "segment_validation", checkpoint: "CP-02" })
+          ],
+          events_step5: [
+            makeEvt(34, 33, "STEP", "Evaluating multi-period variances and cash earnings quality", { agent: "yoy_comparing" }),
+            makeEvt(35, 34, "FAIL", "Revenue YoY: 391,035M -> 478,834,000M (+122,352.98% > 50.0% threshold) CRITICAL SCALE ANOMALY", { agent: "yoy_comparing" }),
+            makeEvt(36, 35, "FAIL", "Net income YoY: 93,736M -> -115,000M (-222.69% YoY) CRITICAL SIGN REVERSAL (Profit to Loss)", { agent: "yoy_comparing" }),
+            makeEvt(37, 36, "CHECKPOINT", "Trigger B & C activated: Unit scale anomaly (1000x) & sign flip flagged. Checkpoint saved: CP-03_PAUSED.", { agent: "yoy_comparing", checkpoint: "CP-03_PAUSED" }),
+            makeEvt(38, 37, "HUMAN", "HALTING WORKFLOW. Escalating metric revenue to Human Review drawer.", { agent: "yoy_comparing" }),
+            makeEvt(39, 38, "PAUSE", "Workflow paused at LangGraph checkpoint CP-03_PAUSED. Awaiting human decision.", { agent: "yoy_comparing", checkpoint: "CP-03_PAUSED" })
+          ],
+          events_post_resume_step5: [
+            makeEvt(40, 39, "RESUME", "Human decision recorded: CORRECTED revenue = 478,834 USD millions by Senior Auditor.", { agent: "yoy_comparing" }),
+            makeEvt(41, 40, "CALC", "Re-evaluating YoY growth with corrected revenue: 391,035M -> 478,834M (+22.45%) confirmed PASS within 50.0% threshold. Net income normalized to +$115,000M.", { agent: "yoy_comparing" }),
+            makeEvt(42, 41, "PASS", "Checkpoint CP-03 cleared following human correction. Workflow unlocked.", { agent: "yoy_comparing", checkpoint: "CP-03" }),
+            makeEvt(43, 42, "OK", "10/10 metrics exact match to SEC Company Facts API post-correction (100.00% accuracy)", { agent: "final_verification", checkpoint: "CP-04" }),
+            makeEvt(44, 43, "AUDIT", "Audit run run_2026_0000320193_combine committed with 3 human correction entries. SHA-256 seal verified.", { agent: "audit_history" }),
+            makeEvt(45, 44, "DONE", "V.A.U.L.T audit completed. Escalation precision: 100.00%, Missed errors: 0.", { agent: "audit_history" })
+          ],
+          metrics: [
+            { name: "Revenue", raw_label: "Total net sales", value: 478834000, unit: "USD millions", period: "FY 2026", xbrl_tag: "us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax", confidence: 0.57, status: "FLAGGED", source_snippet: "Total net sales | $ 478,834,000 | $ 391,035" },
+            { name: "Net Income", raw_label: "Net income (loss)", value: -115000, unit: "USD millions", period: "FY 2026", xbrl_tag: "us-gaap:NetIncomeLoss", confidence: 0.56, status: "FLAGGED", source_snippet: "Net income (loss) | $ (115,000) | $ 93,736" },
+            { name: "Total Assets", raw_label: "Total assets", value: 404548, unit: "USD millions", period: "FY 2026", xbrl_tag: "us-gaap:Assets", confidence: 1.00, status: "AUTO_APPROVED", source_snippet: "Total assets | $ 404,548 | $ 359,241" },
+            { name: "Total Liabilities", raw_label: "Total liabilities", value: 285508, unit: "USD millions", period: "FY 2026", xbrl_tag: "us-gaap:Liabilities", confidence: 0.58, status: "FLAGGED", source_snippet: "Total liabilities | $ 285,508 (FY2025 prior year)" },
+            { name: "Shareholders Equity", raw_label: "Total shareholders’ equity", value: 112093, unit: "USD millions", period: "FY 2026", xbrl_tag: "us-gaap:StockholdersEquity", confidence: 0.98, status: "AUTO_APPROVED", source_snippet: "Total shareholders’ equity | 112,093 | 73,733" },
+            { name: "Current Assets", raw_label: "Total current assets", value: 173857, unit: "USD millions", period: "FY 2026", xbrl_tag: "us-gaap:AssetsCurrent", confidence: 1.00, status: "AUTO_APPROVED", source_snippet: "Total current assets | $ 173,857" },
+            { name: "Current Liabilities", raw_label: "Total current liabilities", value: 169915, unit: "USD millions", period: "FY 2026", xbrl_tag: "us-gaap:LiabilitiesCurrent", confidence: 1.00, status: "AUTO_APPROVED", source_snippet: "Total current liabilities | $ 169,915" },
+            { name: "Non-Current Assets", raw_label: "Total non-current assets", value: 230691, unit: "USD millions", period: "FY 2026", xbrl_tag: "us-gaap:NoncurrentAssets", confidence: 1.00, status: "AUTO_APPROVED", source_snippet: "Total non-current assets | $ 230,691" },
+            { name: "Non-Current Liabilities", raw_label: "Total non-current liabilities", value: 122540, unit: "USD millions", period: "FY 2026", xbrl_tag: "us-gaap:LiabilitiesNoncurrent", confidence: 1.00, status: "AUTO_APPROVED", source_snippet: "Total non-current liabilities | $ 122,540" },
+            { name: "Rest of Asia Pacific", raw_label: "Rest of Asia Pacific", value: 28000, unit: "USD millions", period: "FY 2026", xbrl_tag: "aapl:RestOfAsiaPacificSegmentMember", confidence: 0.60, status: "FLAGGED", source_snippet: "Rest of Asia Pacific | $ 39,861" },
+            { name: "Operating Cash Flow", raw_label: "Cash generated by operating activities", value: 118254, unit: "USD millions", period: "FY 2026", xbrl_tag: "us-gaap:NetCashProvidedByUsedInOperatingActivities", confidence: 0.85, status: "AUTO_APPROVED", source_snippet: "Cash generated by operating activities | $ 118,254 | $ 110,543" }
+          ],
+          checks: {
+            asset_auditing: { passed: false, delta: -6947, lhs: 404548, rhs: 397601 },
+            segment_validation: { passed: false, delta: -11861 },
+            yoy_comparing: { passed: false, max_yoy: 122352.98, earnings_quality: "Alert" }
+          },
+          verification: {
+            accuracy_pct: 100.0,
+            auto_approved: 7,
+            escalated: 3,
+            escalation_precision: 100.0,
+            missed_errors: 0
+          }
+        };
+      }
 
       if (key === "yoy_apple") {
         return {
