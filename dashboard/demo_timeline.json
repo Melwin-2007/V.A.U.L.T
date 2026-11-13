@@ -13,7 +13,10 @@
           "agent": "edgar_retrieval",
           "level": "INFO",
           "message": "Initializing V.A.U.L.T pipeline for CIK 0000320193 (Apple Inc.)",
-          "data": { "cik": "0000320193", "entity": "Apple Inc." },
+          "data": {
+            "cik": "0000320193",
+            "entity": "Apple Inc."
+          },
           "checkpoint": null
         },
         {
@@ -23,7 +26,10 @@
           "agent": "edgar_retrieval",
           "level": "STEP",
           "message": "Resolving submissions index at data.sec.gov/submissions/CIK0000320193.json",
-          "data": { "http_status": 200, "accession_number": "0000320193-24-000106" },
+          "data": {
+            "http_status": 200,
+            "accession_number": "0000320193-24-000106"
+          },
           "checkpoint": null
         },
         {
@@ -33,7 +39,10 @@
           "agent": "edgar_retrieval",
           "level": "CALL",
           "message": "Fetching primary 10-K document filing aapl-20240928.htm (4.2 MB)",
-          "data": { "doc_type": "10-K", "period_of_report": "2024-09-28" },
+          "data": {
+            "doc_type": "10-K",
+            "period_of_report": "2024-09-28"
+          },
           "checkpoint": null
         },
         {
@@ -43,7 +52,9 @@
           "agent": "edgar_retrieval",
           "level": "OK",
           "message": "Filing verified against SEC index. Hash: 8f9b23... OK",
-          "data": { "filing_verified": true },
+          "data": {
+            "filing_verified": true
+          },
           "checkpoint": null
         },
         {
@@ -53,7 +64,14 @@
           "agent": "extraction",
           "level": "STEP",
           "message": "Locating target financial statements (R2 Income, R4 Balance Sheet, R6 Cash Flows)",
-          "data": { "sections_found": ["R2", "R4", "R6", "Note 12 Segments"] },
+          "data": {
+            "sections_found": [
+              "R2",
+              "R4",
+              "R6",
+              "Note 12 Segments"
+            ]
+          },
           "checkpoint": null
         },
         {
@@ -63,7 +81,11 @@
           "agent": "extraction",
           "level": "INPUT",
           "message": "Extracted: revenue = $391,035M (tag: us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax, conf: 0.99)",
-          "data": { "metric": "revenue", "value": 391035, "confidence": 0.99 },
+          "data": {
+            "metric": "revenue",
+            "value": 391035,
+            "confidence": 0.99
+          },
           "checkpoint": null
         },
         {
@@ -73,7 +95,11 @@
           "agent": "extraction",
           "level": "INPUT",
           "message": "Extracted: net_income = $93,736M (tag: us-gaap:NetIncomeLoss, conf: 0.99)",
-          "data": { "metric": "net_income", "value": 93736, "confidence": 0.99 },
+          "data": {
+            "metric": "net_income",
+            "value": 93736,
+            "confidence": 0.99
+          },
           "checkpoint": null
         },
         {
@@ -83,7 +109,11 @@
           "agent": "extraction",
           "level": "INPUT",
           "message": "Extracted: total_assets = $364,980M (tag: us-gaap:Assets, conf: 1.00)",
-          "data": { "metric": "total_assets", "value": 364980, "confidence": 1.00 },
+          "data": {
+            "metric": "total_assets",
+            "value": 364980,
+            "confidence": 1.0
+          },
           "checkpoint": null
         },
         {
@@ -93,7 +123,11 @@
           "agent": "extraction",
           "level": "INPUT",
           "message": "Extracted: total_liabilities = $298,187M (tag: us-gaap:Liabilities, conf: 1.00)",
-          "data": { "metric": "total_liabilities", "value": 298187, "confidence": 1.00 },
+          "data": {
+            "metric": "total_liabilities",
+            "value": 298187,
+            "confidence": 1.0
+          },
           "checkpoint": null
         },
         {
@@ -103,7 +137,11 @@
           "agent": "extraction",
           "level": "INPUT",
           "message": "Extracted: shareholders_equity = $66,793M (tag: us-gaap:StockholdersEquity, conf: 0.98)",
-          "data": { "metric": "shareholders_equity", "value": 66793, "confidence": 0.98 },
+          "data": {
+            "metric": "shareholders_equity",
+            "value": 66793,
+            "confidence": 0.98
+          },
           "checkpoint": null
         },
         {
@@ -113,7 +151,11 @@
           "agent": "extraction",
           "level": "INPUT",
           "message": "Extracted: operating_cash_flow = $118,254M (tag: us-gaap:NetCashProvidedByUsedInOperatingActivities, conf: 0.98)",
-          "data": { "metric": "operating_cash_flow", "value": 118254, "confidence": 0.98 },
+          "data": {
+            "metric": "operating_cash_flow",
+            "value": 118254,
+            "confidence": 0.98
+          },
           "checkpoint": null
         },
         {
@@ -123,7 +165,11 @@
           "agent": "extraction",
           "level": "INPUT",
           "message": "Extracted: gross_profit = $180,683M (tag: us-gaap:GrossProfit, conf: 0.99)",
-          "data": { "metric": "gross_profit", "value": 180683, "confidence": 0.99 },
+          "data": {
+            "metric": "gross_profit",
+            "value": 180683,
+            "confidence": 0.99
+          },
           "checkpoint": null
         },
         {
@@ -133,7 +179,11 @@
           "agent": "extraction",
           "level": "INPUT",
           "message": "Extracted: free_cash_flow = $108,807M (derived: Operating Cash Flow - CapEx $9,447M, conf: 0.97)",
-          "data": { "metric": "free_cash_flow", "value": 108807, "confidence": 0.97 },
+          "data": {
+            "metric": "free_cash_flow",
+            "value": 108807,
+            "confidence": 0.97
+          },
           "checkpoint": null
         },
         {
@@ -143,7 +193,11 @@
           "agent": "extraction",
           "level": "INPUT",
           "message": "Extracted: current_assets = $152,987M (tag: us-gaap:AssetsCurrent, conf: 0.99)",
-          "data": { "metric": "current_assets", "value": 152987, "confidence": 0.99 },
+          "data": {
+            "metric": "current_assets",
+            "value": 152987,
+            "confidence": 0.99
+          },
           "checkpoint": null
         },
         {
@@ -153,7 +207,11 @@
           "agent": "extraction",
           "level": "INPUT",
           "message": "Extracted: diluted_eps = $6.08 (tag: us-gaap:EarningsPerShareDiluted, conf: 0.99)",
-          "data": { "metric": "diluted_eps", "value": 6.08, "confidence": 0.99 },
+          "data": {
+            "metric": "diluted_eps",
+            "value": 6.08,
+            "confidence": 0.99
+          },
           "checkpoint": null
         },
         {
@@ -163,7 +221,9 @@
           "agent": "asset_auditing",
           "level": "STEP",
           "message": "Evaluating balance sheet equation: Total Assets = Total Liabilities + Equity",
-          "data": { "stage": "accounting_equation" },
+          "data": {
+            "stage": "accounting_equation"
+          },
           "checkpoint": null
         },
         {
@@ -172,8 +232,12 @@
           "run_id": "run_2024_0000320193_clean",
           "agent": "asset_auditing",
           "level": "CALC",
-          "message": "F4  298,187 + 66,793 = 364,980  total assets 364,980  Δ 0",
-          "data": { "check": "accounting_equation", "passed": true, "delta": 0 },
+          "message": "F4  298,187 + 66,793 = 364,980  total assets 364,980  \u0394 0",
+          "data": {
+            "check": "accounting_equation",
+            "passed": true,
+            "delta": 0
+          },
           "checkpoint": null
         },
         {
@@ -182,8 +246,10 @@
           "run_id": "run_2024_0000320193_clean",
           "agent": "asset_auditing",
           "level": "PASS",
-          "message": "Balance sheet equality holds exactly (Δ $0M). Checkpoint CP-01 passed.",
-          "data": { "passed": true },
+          "message": "Balance sheet equality holds exactly (\u0394 $0M). Checkpoint CP-01 passed.",
+          "data": {
+            "passed": true
+          },
           "checkpoint": "CP-01"
         },
         {
@@ -193,7 +259,9 @@
           "agent": "segment_validation",
           "level": "STEP",
           "message": "Evaluating ASC 280 segment roll-up against reported revenue ($391,035M)",
-          "data": { "stage": "segment_reconciliation" },
+          "data": {
+            "stage": "segment_reconciliation"
+          },
           "checkpoint": null
         },
         {
@@ -202,8 +270,13 @@
           "run_id": "run_2024_0000320193_clean",
           "agent": "segment_validation",
           "level": "CALC",
-          "message": "Segments: Americas 163,803 + Europe 101,327 + Greater China 66,952 + Japan 25,043 + Rest of Asia 33,910 = 391,035  Δ 0",
-          "data": { "check": "asc280_segments", "sum": 391035, "target": 391035, "delta": 0 },
+          "message": "Segments: Americas 163,803 + Europe 101,327 + Greater China 66,952 + Japan 25,043 + Rest of Asia 33,910 = 391,035  \u0394 0",
+          "data": {
+            "check": "asc280_segments",
+            "sum": 391035,
+            "target": 391035,
+            "delta": 0
+          },
           "checkpoint": null
         },
         {
@@ -212,8 +285,10 @@
           "run_id": "run_2024_0000320193_clean",
           "agent": "segment_validation",
           "level": "PASS",
-          "message": "ASC 280 segment roll-up matches consolidated revenue (Δ $0M). Checkpoint CP-02 passed.",
-          "data": { "passed": true },
+          "message": "ASC 280 segment roll-up matches consolidated revenue (\u0394 $0M). Checkpoint CP-02 passed.",
+          "data": {
+            "passed": true
+          },
           "checkpoint": "CP-02"
         },
         {
@@ -223,7 +298,9 @@
           "agent": "yoy_comparing",
           "level": "STEP",
           "message": "Evaluating multi-period variances and earnings quality against FY 2023",
-          "data": { "stage": "yoy_validation" },
+          "data": {
+            "stage": "yoy_validation"
+          },
           "checkpoint": null
         },
         {
@@ -233,7 +310,11 @@
           "agent": "yoy_comparing",
           "level": "CALC",
           "message": "Revenue YoY: 383,285 -> 391,035 (+2.02%, threshold: 30.0%) PASS",
-          "data": { "metric": "revenue", "yoy_pct": 2.02, "passed": true },
+          "data": {
+            "metric": "revenue",
+            "yoy_pct": 2.02,
+            "passed": true
+          },
           "checkpoint": null
         },
         {
@@ -243,7 +324,11 @@
           "agent": "yoy_comparing",
           "level": "CALC",
           "message": "Net income YoY: 96,995 -> 93,736 (-3.36%, threshold: 30.0%) PASS",
-          "data": { "metric": "net_income", "yoy_pct": -3.36, "passed": true },
+          "data": {
+            "metric": "net_income",
+            "yoy_pct": -3.36,
+            "passed": true
+          },
           "checkpoint": null
         },
         {
@@ -253,7 +338,10 @@
           "agent": "yoy_comparing",
           "level": "CALC",
           "message": "Earnings quality: Operating cash flow $118,254M >= Net income $93,736M (Accrual ratio healthy) PASS",
-          "data": { "check": "earnings_quality", "passed": true },
+          "data": {
+            "check": "earnings_quality",
+            "passed": true
+          },
           "checkpoint": null
         },
         {
@@ -263,7 +351,9 @@
           "agent": "yoy_comparing",
           "level": "PASS",
           "message": "All YoY growth rates and cash accrual checks within acceptable bounds. Checkpoint CP-03 passed.",
-          "data": { "passed": true },
+          "data": {
+            "passed": true
+          },
           "checkpoint": "CP-03"
         },
         {
@@ -273,7 +363,9 @@
           "agent": "final_verification",
           "level": "STEP",
           "message": "Benchmarking extracted values against SEC Company Facts XBRL ground truth",
-          "data": { "stage": "ground_truth_verification" },
+          "data": {
+            "stage": "ground_truth_verification"
+          },
           "checkpoint": null
         },
         {
@@ -283,7 +375,11 @@
           "agent": "final_verification",
           "level": "OK",
           "message": "10/10 metrics exact match to SEC Company Facts API (100.00% accuracy)",
-          "data": { "accuracy": 1.0, "matches": 10, "total": 10 },
+          "data": {
+            "accuracy": 1.0,
+            "matches": 10,
+            "total": 10
+          },
           "checkpoint": "CP-04"
         },
         {
@@ -293,7 +389,10 @@
           "agent": "audit_history",
           "level": "AUDIT",
           "message": "Audit run run_2024_0000320193_clean committed. SHA-256 seal: e4b27f8a910c... Verified.",
-          "data": { "status": "COMPLETED", "hash": "e4b27f8a910c4d8e7b1a2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f" },
+          "data": {
+            "status": "COMPLETED",
+            "hash": "e4b27f8a910c4d8e7b1a2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f"
+          },
           "checkpoint": "FINAL"
         },
         {
@@ -303,26 +402,235 @@
           "agent": "audit_history",
           "level": "DONE",
           "message": "V.A.U.L.T autonomous audit completed successfully with zero human interventions.",
-          "data": { "complete": true },
+          "data": {
+            "complete": true
+          },
           "checkpoint": null
         }
       ],
       "metrics": [
-        { "name": "Revenue", "raw_label": "Total net sales", "value": 391035, "unit": "USD millions", "period": "FY 2024", "xbrl_tag": "us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax", "confidence": 0.99, "status": "AUTO_APPROVED", "source_snippet": "Total net sales was $391,035 million for fiscal year 2024 compared to $383,285 million for fiscal year 2023.", "source_url": "https://www.sec.gov/ix?doc=/Archives/edgar/data/0000320193/000032019324000106/aapl-20240928.htm", "factors": { "grounding": 1.0, "label": 1.0, "unit": 1.0, "yoy": 0.96 } },
-        { "name": "Net Income", "raw_label": "Net income", "value": 93736, "unit": "USD millions", "period": "FY 2024", "xbrl_tag": "us-gaap:NetIncomeLoss", "confidence": 0.99, "status": "AUTO_APPROVED", "source_snippet": "Net income: $93,736 million for the period ended September 28, 2024.", "source_url": "https://www.sec.gov/ix?doc=/Archives/edgar/data/0000320193/000032019324000106/aapl-20240928.htm", "factors": { "grounding": 1.0, "label": 1.0, "unit": 1.0, "yoy": 0.96 } },
-        { "name": "Total Assets", "raw_label": "Total assets", "value": 364980, "unit": "USD millions", "period": "FY 2024", "xbrl_tag": "us-gaap:Assets", "confidence": 1.00, "status": "AUTO_APPROVED", "source_snippet": "Total assets: $364,980 million as of September 28, 2024.", "source_url": "https://www.sec.gov/ix?doc=/Archives/edgar/data/0000320193/000032019324000106/aapl-20240928.htm", "factors": { "grounding": 1.0, "label": 1.0, "unit": 1.0, "yoy": 1.0 } },
-        { "name": "Total Liabilities", "raw_label": "Total liabilities", "value": 298187, "unit": "USD millions", "period": "FY 2024", "xbrl_tag": "us-gaap:Liabilities", "confidence": 1.00, "status": "AUTO_APPROVED", "source_snippet": "Total liabilities: $298,187 million as of September 28, 2024.", "source_url": "https://www.sec.gov/ix?doc=/Archives/edgar/data/0000320193/000032019324000106/aapl-20240928.htm", "factors": { "grounding": 1.0, "label": 1.0, "unit": 1.0, "yoy": 1.0 } },
-        { "name": "Shareholders' Equity", "raw_label": "Total shareholders’ equity", "value": 66793, "unit": "USD millions", "period": "FY 2024", "xbrl_tag": "us-gaap:StockholdersEquity", "confidence": 0.98, "status": "AUTO_APPROVED", "source_snippet": "Total shareholders’ equity: $66,793 million as of September 28, 2024.", "source_url": "https://www.sec.gov/ix?doc=/Archives/edgar/data/0000320193/000032019324000106/aapl-20240928.htm", "factors": { "grounding": 1.0, "label": 1.0, "unit": 1.0, "yoy": 0.92 } },
-        { "name": "Operating Cash Flow", "raw_label": "Cash generated by operating activities", "value": 118254, "unit": "USD millions", "period": "FY 2024", "xbrl_tag": "us-gaap:NetCashProvidedByUsedInOperatingActivities", "confidence": 0.98, "status": "AUTO_APPROVED", "source_snippet": "Cash generated by operating activities was $118,254 million.", "source_url": "https://www.sec.gov/ix?doc=/Archives/edgar/data/0000320193/000032019324000106/aapl-20240928.htm", "factors": { "grounding": 1.0, "label": 1.0, "unit": 1.0, "yoy": 0.92 } },
-        { "name": "Gross Profit", "raw_label": "Gross margin", "value": 180683, "unit": "USD millions", "period": "FY 2024", "xbrl_tag": "us-gaap:GrossProfit", "confidence": 0.99, "status": "AUTO_APPROVED", "source_snippet": "Gross margin: $180,683 million for fiscal year 2024.", "source_url": "https://www.sec.gov/ix?doc=/Archives/edgar/data/0000320193/000032019324000106/aapl-20240928.htm", "factors": { "grounding": 1.0, "label": 1.0, "unit": 1.0, "yoy": 0.96 } },
-        { "name": "Free Cash Flow", "raw_label": "Operating cash flow less capital expenditures", "value": 108807, "unit": "USD millions", "period": "FY 2024", "xbrl_tag": "custom:FreeCashFlow", "confidence": 0.97, "status": "AUTO_APPROVED", "source_snippet": "Payments for acquisition of property, plant and equipment were $9,447 million.", "source_url": "https://www.sec.gov/ix?doc=/Archives/edgar/data/0000320193/000032019324000106/aapl-20240928.htm", "factors": { "grounding": 0.95, "label": 0.98, "unit": 1.0, "yoy": 0.95 } },
-        { "name": "Current Assets", "raw_label": "Total current assets", "value": 152987, "unit": "USD millions", "period": "FY 2024", "xbrl_tag": "us-gaap:AssetsCurrent", "confidence": 0.99, "status": "AUTO_APPROVED", "source_snippet": "Total current assets: $152,987 million.", "source_url": "https://www.sec.gov/ix?doc=/Archives/edgar/data/0000320193/000032019324000106/aapl-20240928.htm", "factors": { "grounding": 1.0, "label": 1.0, "unit": 1.0, "yoy": 0.96 } },
-        { "name": "Diluted EPS", "raw_label": "Diluted earnings per share", "value": 6.08, "unit": "USD", "period": "FY 2024", "xbrl_tag": "us-gaap:EarningsPerShareDiluted", "confidence": 0.99, "status": "AUTO_APPROVED", "source_snippet": "Diluted earnings per share was $6.08.", "source_url": "https://www.sec.gov/ix?doc=/Archives/edgar/data/0000320193/000032019324000106/aapl-20240928.htm", "factors": { "grounding": 1.0, "label": 1.0, "unit": 1.0, "yoy": 0.96 } }
+        {
+          "name": "Revenue",
+          "raw_label": "Total net sales",
+          "value": 391035,
+          "unit": "USD millions",
+          "period": "FY 2024",
+          "xbrl_tag": "us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax",
+          "confidence": 0.99,
+          "status": "AUTO_APPROVED",
+          "source_snippet": "Total net sales was $391,035 million for fiscal year 2024 compared to $383,285 million for fiscal year 2023.",
+          "source_url": "https://www.sec.gov/ix?doc=/Archives/edgar/data/0000320193/000032019324000106/aapl-20240928.htm",
+          "factors": {
+            "grounding": 1.0,
+            "label": 1.0,
+            "unit": 1.0,
+            "yoy": 0.96
+          }
+        },
+        {
+          "name": "Net Income",
+          "raw_label": "Net income",
+          "value": 93736,
+          "unit": "USD millions",
+          "period": "FY 2024",
+          "xbrl_tag": "us-gaap:NetIncomeLoss",
+          "confidence": 0.99,
+          "status": "AUTO_APPROVED",
+          "source_snippet": "Net income: $93,736 million for the period ended September 28, 2024.",
+          "source_url": "https://www.sec.gov/ix?doc=/Archives/edgar/data/0000320193/000032019324000106/aapl-20240928.htm",
+          "factors": {
+            "grounding": 1.0,
+            "label": 1.0,
+            "unit": 1.0,
+            "yoy": 0.96
+          }
+        },
+        {
+          "name": "Total Assets",
+          "raw_label": "Total assets",
+          "value": 364980,
+          "unit": "USD millions",
+          "period": "FY 2024",
+          "xbrl_tag": "us-gaap:Assets",
+          "confidence": 1.0,
+          "status": "AUTO_APPROVED",
+          "source_snippet": "Total assets: $364,980 million as of September 28, 2024.",
+          "source_url": "https://www.sec.gov/ix?doc=/Archives/edgar/data/0000320193/000032019324000106/aapl-20240928.htm",
+          "factors": {
+            "grounding": 1.0,
+            "label": 1.0,
+            "unit": 1.0,
+            "yoy": 1.0
+          }
+        },
+        {
+          "name": "Total Liabilities",
+          "raw_label": "Total liabilities",
+          "value": 298187,
+          "unit": "USD millions",
+          "period": "FY 2024",
+          "xbrl_tag": "us-gaap:Liabilities",
+          "confidence": 1.0,
+          "status": "AUTO_APPROVED",
+          "source_snippet": "Total liabilities: $298,187 million as of September 28, 2024.",
+          "source_url": "https://www.sec.gov/ix?doc=/Archives/edgar/data/0000320193/000032019324000106/aapl-20240928.htm",
+          "factors": {
+            "grounding": 1.0,
+            "label": 1.0,
+            "unit": 1.0,
+            "yoy": 1.0
+          }
+        },
+        {
+          "name": "Shareholders' Equity",
+          "raw_label": "Total shareholders\u2019 equity",
+          "value": 66793,
+          "unit": "USD millions",
+          "period": "FY 2024",
+          "xbrl_tag": "us-gaap:StockholdersEquity",
+          "confidence": 0.98,
+          "status": "AUTO_APPROVED",
+          "source_snippet": "Total shareholders\u2019 equity: $66,793 million as of September 28, 2024.",
+          "source_url": "https://www.sec.gov/ix?doc=/Archives/edgar/data/0000320193/000032019324000106/aapl-20240928.htm",
+          "factors": {
+            "grounding": 1.0,
+            "label": 1.0,
+            "unit": 1.0,
+            "yoy": 0.92
+          }
+        },
+        {
+          "name": "Operating Cash Flow",
+          "raw_label": "Cash generated by operating activities",
+          "value": 118254,
+          "unit": "USD millions",
+          "period": "FY 2024",
+          "xbrl_tag": "us-gaap:NetCashProvidedByUsedInOperatingActivities",
+          "confidence": 0.98,
+          "status": "AUTO_APPROVED",
+          "source_snippet": "Cash generated by operating activities was $118,254 million.",
+          "source_url": "https://www.sec.gov/ix?doc=/Archives/edgar/data/0000320193/000032019324000106/aapl-20240928.htm",
+          "factors": {
+            "grounding": 1.0,
+            "label": 1.0,
+            "unit": 1.0,
+            "yoy": 0.92
+          }
+        },
+        {
+          "name": "Gross Profit",
+          "raw_label": "Gross margin",
+          "value": 180683,
+          "unit": "USD millions",
+          "period": "FY 2024",
+          "xbrl_tag": "us-gaap:GrossProfit",
+          "confidence": 0.99,
+          "status": "AUTO_APPROVED",
+          "source_snippet": "Gross margin: $180,683 million for fiscal year 2024.",
+          "source_url": "https://www.sec.gov/ix?doc=/Archives/edgar/data/0000320193/000032019324000106/aapl-20240928.htm",
+          "factors": {
+            "grounding": 1.0,
+            "label": 1.0,
+            "unit": 1.0,
+            "yoy": 0.96
+          }
+        },
+        {
+          "name": "Free Cash Flow",
+          "raw_label": "Operating cash flow less capital expenditures",
+          "value": 108807,
+          "unit": "USD millions",
+          "period": "FY 2024",
+          "xbrl_tag": "custom:FreeCashFlow",
+          "confidence": 0.97,
+          "status": "AUTO_APPROVED",
+          "source_snippet": "Payments for acquisition of property, plant and equipment were $9,447 million.",
+          "source_url": "https://www.sec.gov/ix?doc=/Archives/edgar/data/0000320193/000032019324000106/aapl-20240928.htm",
+          "factors": {
+            "grounding": 0.95,
+            "label": 0.98,
+            "unit": 1.0,
+            "yoy": 0.95
+          }
+        },
+        {
+          "name": "Current Assets",
+          "raw_label": "Total current assets",
+          "value": 152987,
+          "unit": "USD millions",
+          "period": "FY 2024",
+          "xbrl_tag": "us-gaap:AssetsCurrent",
+          "confidence": 0.99,
+          "status": "AUTO_APPROVED",
+          "source_snippet": "Total current assets: $152,987 million.",
+          "source_url": "https://www.sec.gov/ix?doc=/Archives/edgar/data/0000320193/000032019324000106/aapl-20240928.htm",
+          "factors": {
+            "grounding": 1.0,
+            "label": 1.0,
+            "unit": 1.0,
+            "yoy": 0.96
+          }
+        },
+        {
+          "name": "Diluted EPS",
+          "raw_label": "Diluted earnings per share",
+          "value": 6.08,
+          "unit": "USD",
+          "period": "FY 2024",
+          "xbrl_tag": "us-gaap:EarningsPerShareDiluted",
+          "confidence": 0.99,
+          "status": "AUTO_APPROVED",
+          "source_snippet": "Diluted earnings per share was $6.08.",
+          "source_url": "https://www.sec.gov/ix?doc=/Archives/edgar/data/0000320193/000032019324000106/aapl-20240928.htm",
+          "factors": {
+            "grounding": 1.0,
+            "label": 1.0,
+            "unit": 1.0,
+            "yoy": 0.96
+          }
+        }
       ],
       "checks": {
-        "asset_auditing": { "passed": true, "delta": 0, "lhs": 364980, "rhs": 364980, "formula": "Assets (364,980M) == Liabilities (298,187M) + Equity (66,793M)" },
-        "segment_validation": { "passed": true, "delta": 0, "sum": 391035, "target": 391035, "segments": [{ "name": "Americas", "value": 163803 }, { "name": "Europe", "value": 101327 }, { "name": "Greater China", "value": 66952 }, { "name": "Japan", "value": 25043 }, { "name": "Rest of Asia", "value": 33910 }] },
-        "yoy_comparing": { "passed": true, "max_yoy": 3.36, "earnings_quality": "Healthy (OCF $118,254M > NI $93,736M)" }
+        "asset_auditing": {
+          "passed": true,
+          "delta": 0,
+          "lhs": 364980,
+          "rhs": 364980,
+          "formula": "Assets (364,980M) == Liabilities (298,187M) + Equity (66,793M)"
+        },
+        "segment_validation": {
+          "passed": true,
+          "delta": 0,
+          "sum": 391035,
+          "target": 391035,
+          "segments": [
+            {
+              "name": "Americas",
+              "value": 163803
+            },
+            {
+              "name": "Europe",
+              "value": 101327
+            },
+            {
+              "name": "Greater China",
+              "value": 66952
+            },
+            {
+              "name": "Japan",
+              "value": 25043
+            },
+            {
+              "name": "Rest of Asia",
+              "value": 33910
+            }
+          ]
+        },
+        "yoy_comparing": {
+          "passed": true,
+          "max_yoy": 3.36,
+          "earnings_quality": "Healthy (OCF $118,254M > NI $93,736M)"
+        }
       },
       "verification": {
         "accuracy_pct": 100.0,
@@ -358,7 +666,10 @@
           "agent": "edgar_retrieval",
           "level": "INFO",
           "message": "Initializing V.A.U.L.T pipeline for CIK 0001045810 (NVIDIA Corporation)",
-          "data": { "cik": "0001045810", "entity": "NVIDIA Corporation" },
+          "data": {
+            "cik": "0001045810",
+            "entity": "NVIDIA Corporation"
+          },
           "checkpoint": null
         },
         {
@@ -368,7 +679,9 @@
           "agent": "edgar_retrieval",
           "level": "STEP",
           "message": "Resolving submissions index at data.sec.gov/submissions/CIK0001045810.json",
-          "data": { "accession": "0001045810-24-000029" },
+          "data": {
+            "accession": "0001045810-24-000029"
+          },
           "checkpoint": null
         },
         {
@@ -378,7 +691,9 @@
           "agent": "edgar_retrieval",
           "level": "OK",
           "message": "Filing verified against SEC index. Hash: 3e8a11... OK",
-          "data": { "filing_verified": true },
+          "data": {
+            "filing_verified": true
+          },
           "checkpoint": null
         },
         {
@@ -388,7 +703,11 @@
           "agent": "extraction",
           "level": "INPUT",
           "message": "Extracted: revenue = $60,922M (tag: us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax, conf: 0.99)",
-          "data": { "metric": "revenue", "value": 60922, "confidence": 0.99 },
+          "data": {
+            "metric": "revenue",
+            "value": 60922,
+            "confidence": 0.99
+          },
           "checkpoint": null
         },
         {
@@ -398,7 +717,11 @@
           "agent": "extraction",
           "level": "WARN",
           "message": "Extracted: net_income = $29,760,000M (SCALE ANOMALY detected: source says 29,760, unit scalar error, conf: 0.62)",
-          "data": { "metric": "net_income", "value": 29760000, "confidence": 0.62 },
+          "data": {
+            "metric": "net_income",
+            "value": 29760000,
+            "confidence": 0.62
+          },
           "checkpoint": null
         },
         {
@@ -408,7 +731,11 @@
           "agent": "extraction",
           "level": "INPUT",
           "message": "Extracted: total_assets = $65,728M (tag: us-gaap:Assets, conf: 1.00)",
-          "data": { "metric": "total_assets", "value": 65728, "confidence": 1.00 },
+          "data": {
+            "metric": "total_assets",
+            "value": 65728,
+            "confidence": 1.0
+          },
           "checkpoint": null
         },
         {
@@ -418,7 +745,11 @@
           "agent": "extraction",
           "level": "INPUT",
           "message": "Extracted: total_liabilities = $22,750M (tag: us-gaap:Liabilities, conf: 1.00)",
-          "data": { "metric": "total_liabilities", "value": 22750, "confidence": 1.00 },
+          "data": {
+            "metric": "total_liabilities",
+            "value": 22750,
+            "confidence": 1.0
+          },
           "checkpoint": null
         },
         {
@@ -428,7 +759,11 @@
           "agent": "extraction",
           "level": "INPUT",
           "message": "Extracted: shareholders_equity = $42,978M (tag: us-gaap:StockholdersEquity, conf: 1.00)",
-          "data": { "metric": "shareholders_equity", "value": 42978, "confidence": 1.00 },
+          "data": {
+            "metric": "shareholders_equity",
+            "value": 42978,
+            "confidence": 1.0
+          },
           "checkpoint": null
         },
         {
@@ -438,7 +773,11 @@
           "agent": "extraction",
           "level": "INPUT",
           "message": "Extracted: operating_cash_flow = $28,090M (tag: us-gaap:NetCashProvidedByUsedInOperatingActivities, conf: 0.99)",
-          "data": { "metric": "operating_cash_flow", "value": 28090, "confidence": 0.99 },
+          "data": {
+            "metric": "operating_cash_flow",
+            "value": 28090,
+            "confidence": 0.99
+          },
           "checkpoint": null
         },
         {
@@ -448,7 +787,9 @@
           "agent": "asset_auditing",
           "level": "STEP",
           "message": "Evaluating balance sheet equation: Total Assets = Total Liabilities + Equity",
-          "data": { "stage": "accounting_equation" },
+          "data": {
+            "stage": "accounting_equation"
+          },
           "checkpoint": null
         },
         {
@@ -457,8 +798,12 @@
           "run_id": "run_2024_0001045810_scale",
           "agent": "asset_auditing",
           "level": "CALC",
-          "message": "F4  22,750 + 42,978 = 65,728  total assets 65,728  Δ 0",
-          "data": { "check": "accounting_equation", "passed": true, "delta": 0 },
+          "message": "F4  22,750 + 42,978 = 65,728  total assets 65,728  \u0394 0",
+          "data": {
+            "check": "accounting_equation",
+            "passed": true,
+            "delta": 0
+          },
           "checkpoint": null
         },
         {
@@ -467,8 +812,10 @@
           "run_id": "run_2024_0001045810_scale",
           "agent": "asset_auditing",
           "level": "PASS",
-          "message": "Balance sheet equality holds exactly (Δ $0M). Checkpoint CP-01 passed.",
-          "data": { "passed": true },
+          "message": "Balance sheet equality holds exactly (\u0394 $0M). Checkpoint CP-01 passed.",
+          "data": {
+            "passed": true
+          },
           "checkpoint": "CP-01"
         },
         {
@@ -478,7 +825,9 @@
           "agent": "segment_validation",
           "level": "STEP",
           "message": "Evaluating ASC 280 segment roll-up against reported revenue ($60,922M)",
-          "data": { "stage": "segment_reconciliation" },
+          "data": {
+            "stage": "segment_reconciliation"
+          },
           "checkpoint": null
         },
         {
@@ -487,8 +836,13 @@
           "run_id": "run_2024_0001045810_scale",
           "agent": "segment_validation",
           "level": "CALC",
-          "message": "Segments: Compute & Networking 47,405 + Graphics 13,517 = 60,922  Δ 0",
-          "data": { "check": "asc280_segments", "sum": 60922, "target": 60922, "delta": 0 },
+          "message": "Segments: Compute & Networking 47,405 + Graphics 13,517 = 60,922  \u0394 0",
+          "data": {
+            "check": "asc280_segments",
+            "sum": 60922,
+            "target": 60922,
+            "delta": 0
+          },
           "checkpoint": null
         },
         {
@@ -497,8 +851,10 @@
           "run_id": "run_2024_0001045810_scale",
           "agent": "segment_validation",
           "level": "PASS",
-          "message": "ASC 280 segment roll-up matches consolidated revenue (Δ $0M). Checkpoint CP-02 passed.",
-          "data": { "passed": true },
+          "message": "ASC 280 segment roll-up matches consolidated revenue (\u0394 $0M). Checkpoint CP-02 passed.",
+          "data": {
+            "passed": true
+          },
           "checkpoint": "CP-02"
         },
         {
@@ -508,7 +864,9 @@
           "agent": "yoy_comparing",
           "level": "STEP",
           "message": "Evaluating multi-period variances and earnings quality against FY 2023",
-          "data": { "stage": "yoy_validation" },
+          "data": {
+            "stage": "yoy_validation"
+          },
           "checkpoint": null
         },
         {
@@ -518,7 +876,11 @@
           "agent": "yoy_comparing",
           "level": "CALC",
           "message": "Revenue YoY: 26,974 -> 60,922 (+125.86%, AI business expansion flag) PASS WITH NOTE",
-          "data": { "metric": "revenue", "yoy_pct": 125.86, "passed": true },
+          "data": {
+            "metric": "revenue",
+            "yoy_pct": 125.86,
+            "passed": true
+          },
           "checkpoint": null
         },
         {
@@ -528,7 +890,11 @@
           "agent": "yoy_comparing",
           "level": "FAIL",
           "message": "Net income YoY: 4,368 -> 29,760,000 (+681,218.68% > 30.0%) CRITICAL FAIL",
-          "data": { "metric": "net_income", "yoy_pct": 681218.68, "passed": false },
+          "data": {
+            "metric": "net_income",
+            "yoy_pct": 681218.68,
+            "passed": false
+          },
           "checkpoint": null
         },
         {
@@ -538,7 +904,9 @@
           "agent": "yoy_comparing",
           "level": "CHECKPOINT",
           "message": "Trigger B & C activated: Unit scale anomaly flagged. Checkpoint saved: CP-03_PAUSED.",
-          "data": { "checkpoint": "CP-03_PAUSED" },
+          "data": {
+            "checkpoint": "CP-03_PAUSED"
+          },
           "checkpoint": "CP-03_PAUSED"
         },
         {
@@ -548,7 +916,10 @@
           "agent": "yoy_comparing",
           "level": "HUMAN",
           "message": "HALTING WORKFLOW. Escalating metric 'net_income' to Human Review drawer.",
-          "data": { "escalation": true, "metric": "net_income" },
+          "data": {
+            "escalation": true,
+            "metric": "net_income"
+          },
           "checkpoint": null
         },
         {
@@ -558,7 +929,9 @@
           "agent": "yoy_comparing",
           "level": "PAUSE",
           "message": "Workflow paused at LangGraph checkpoint CP-03_PAUSED. Awaiting human decision.",
-          "data": { "paused": true },
+          "data": {
+            "paused": true
+          },
           "checkpoint": "CP-03_PAUSED"
         }
       ],
@@ -570,7 +943,11 @@
           "agent": "yoy_comparing",
           "level": "RESUME",
           "message": "Human decision recorded: CORRECTED net_income = 29,760 USD millions by Senior Auditor.",
-          "data": { "decision": "CORRECT", "new_value": 29760, "reviewer": "Senior Auditor" },
+          "data": {
+            "decision": "CORRECT",
+            "new_value": 29760,
+            "reviewer": "Senior Auditor"
+          },
           "checkpoint": null
         },
         {
@@ -580,7 +957,9 @@
           "agent": "asset_auditing",
           "level": "SKIP",
           "message": "SKIP Step 3 Asset Auditing Agent (already verified at CP-01, hash: 3e8a11)",
-          "data": { "skipped_step": 3 },
+          "data": {
+            "skipped_step": 3
+          },
           "checkpoint": null
         },
         {
@@ -590,7 +969,9 @@
           "agent": "segment_validation",
           "level": "SKIP",
           "message": "SKIP Step 4 Segment Validation Agent (already verified at CP-02, hash: 3e8a11)",
-          "data": { "skipped_step": 4 },
+          "data": {
+            "skipped_step": 4
+          },
           "checkpoint": null
         },
         {
@@ -600,7 +981,11 @@
           "agent": "yoy_comparing",
           "level": "CALC",
           "message": "Re-evaluating YoY Net income with corrected value: 4,368 -> 29,760 (+581.32%) AI super-cycle confirmed PASS",
-          "data": { "metric": "net_income", "yoy_pct": 581.32, "passed": true },
+          "data": {
+            "metric": "net_income",
+            "yoy_pct": 581.32,
+            "passed": true
+          },
           "checkpoint": null
         },
         {
@@ -610,7 +995,9 @@
           "agent": "yoy_comparing",
           "level": "PASS",
           "message": "Checkpoint CP-03 cleared following human correction. Workflow unlocked.",
-          "data": { "passed": true },
+          "data": {
+            "passed": true
+          },
           "checkpoint": "CP-03"
         },
         {
@@ -620,7 +1007,9 @@
           "agent": "final_verification",
           "level": "STEP",
           "message": "Benchmarking corrected dataset against SEC Company Facts XBRL ground truth",
-          "data": { "stage": "ground_truth_verification" },
+          "data": {
+            "stage": "ground_truth_verification"
+          },
           "checkpoint": null
         },
         {
@@ -630,7 +1019,11 @@
           "agent": "final_verification",
           "level": "OK",
           "message": "10/10 metrics match SEC Company Facts API post-correction (100.00% accuracy)",
-          "data": { "accuracy": 1.0, "matches": 10, "total": 10 },
+          "data": {
+            "accuracy": 1.0,
+            "matches": 10,
+            "total": 10
+          },
           "checkpoint": "CP-04"
         },
         {
@@ -640,7 +1033,10 @@
           "agent": "audit_history",
           "level": "AUDIT",
           "message": "Audit run run_2024_0001045810_scale committed with human correction entry. SHA-256 seal: b7c12f4... Verified.",
-          "data": { "status": "COMPLETED", "hash": "b7c12f4a3e8d9c0b1a2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c" },
+          "data": {
+            "status": "COMPLETED",
+            "hash": "b7c12f4a3e8d9c0b1a2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c"
+          },
           "checkpoint": "FINAL"
         },
         {
@@ -650,26 +1046,224 @@
           "agent": "audit_history",
           "level": "DONE",
           "message": "V.A.U.L.T audit completed. Escalation precision: 100.00%, Missed errors: 0.",
-          "data": { "complete": true },
+          "data": {
+            "complete": true
+          },
           "checkpoint": null
         }
       ],
       "metrics": [
-        { "name": "Revenue", "raw_label": "Total revenue", "value": 60922, "unit": "USD millions", "period": "FY 2024", "xbrl_tag": "us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax", "confidence": 0.99, "status": "AUTO_APPROVED", "source_snippet": "Total revenue was $60,922 million, up 126% from a year ago.", "source_url": "https://www.sec.gov/ix?doc=/Archives/edgar/data/0001045810/000104581024000029/nvda-20240128.htm", "factors": { "grounding": 1.0, "label": 1.0, "unit": 1.0, "yoy": 0.95 } },
-        { "name": "Net Income", "raw_label": "Net income", "value": 29760000, "unit": "USD millions", "period": "FY 2024", "xbrl_tag": "us-gaap:NetIncomeLoss", "confidence": 0.62, "status": "FLAGGED", "source_snippet": "Net income was $29,760 million for fiscal 2024, compared to $4,368 million for fiscal 2023.", "source_url": "https://www.sec.gov/ix?doc=/Archives/edgar/data/0001045810/000104581024000029/nvda-20240128.htm", "factors": { "grounding": 0.40, "label": 1.0, "unit": 0.50, "yoy": 0.10 } },
-        { "name": "Total Assets", "raw_label": "Total assets", "value": 65728, "unit": "USD millions", "period": "FY 2024", "xbrl_tag": "us-gaap:Assets", "confidence": 1.00, "status": "AUTO_APPROVED", "source_snippet": "Total assets: $65,728 million as of January 28, 2024.", "source_url": "https://www.sec.gov/ix?doc=/Archives/edgar/data/0001045810/000104581024000029/nvda-20240128.htm", "factors": { "grounding": 1.0, "label": 1.0, "unit": 1.0, "yoy": 1.0 } },
-        { "name": "Total Liabilities", "raw_label": "Total liabilities", "value": 22750, "unit": "USD millions", "period": "FY 2024", "xbrl_tag": "us-gaap:Liabilities", "confidence": 1.00, "status": "AUTO_APPROVED", "source_snippet": "Total liabilities: $22,750 million as of January 28, 2024.", "source_url": "https://www.sec.gov/ix?doc=/Archives/edgar/data/0001045810/000104581024000029/nvda-20240128.htm", "factors": { "grounding": 1.0, "label": 1.0, "unit": 1.0, "yoy": 1.0 } },
-        { "name": "Shareholders' Equity", "raw_label": "Total shareholders’ equity", "value": 42978, "unit": "USD millions", "period": "FY 2024", "xbrl_tag": "us-gaap:StockholdersEquity", "confidence": 1.00, "status": "AUTO_APPROVED", "source_snippet": "Total shareholders’ equity: $42,978 million as of January 28, 2024.", "source_url": "https://www.sec.gov/ix?doc=/Archives/edgar/data/0001045810/000104581024000029/nvda-20240128.htm", "factors": { "grounding": 1.0, "label": 1.0, "unit": 1.0, "yoy": 1.0 } },
-        { "name": "Operating Cash Flow", "raw_label": "Net cash provided by operating activities", "value": 28090, "unit": "USD millions", "period": "FY 2024", "xbrl_tag": "us-gaap:NetCashProvidedByUsedInOperatingActivities", "confidence": 0.99, "status": "AUTO_APPROVED", "source_snippet": "Net cash provided by operating activities: $28,090 million.", "source_url": "https://www.sec.gov/ix?doc=/Archives/edgar/data/0001045810/000104581024000029/nvda-20240128.htm", "factors": { "grounding": 1.0, "label": 1.0, "unit": 1.0, "yoy": 0.95 } },
-        { "name": "Gross Profit", "raw_label": "Gross profit", "value": 44301, "unit": "USD millions", "period": "FY 2024", "xbrl_tag": "us-gaap:GrossProfit", "confidence": 0.99, "status": "AUTO_APPROVED", "source_snippet": "Gross profit was $44,301 million for fiscal 2024.", "source_url": "https://www.sec.gov/ix?doc=/Archives/edgar/data/0001045810/000104581024000029/nvda-20240128.htm", "factors": { "grounding": 1.0, "label": 1.0, "unit": 1.0, "yoy": 0.95 } },
-        { "name": "Free Cash Flow", "raw_label": "Operating cash flow less capex", "value": 27021, "unit": "USD millions", "period": "FY 2024", "xbrl_tag": "custom:FreeCashFlow", "confidence": 0.97, "status": "AUTO_APPROVED", "source_snippet": "Purchases of property and equipment and intangible assets were $1,069 million.", "source_url": "https://www.sec.gov/ix?doc=/Archives/edgar/data/0001045810/000104581024000029/nvda-20240128.htm", "factors": { "grounding": 0.95, "label": 0.98, "unit": 1.0, "yoy": 0.95 } },
-        { "name": "Current Assets", "raw_label": "Total current assets", "value": 44345, "unit": "USD millions", "period": "FY 2024", "xbrl_tag": "us-gaap:AssetsCurrent", "confidence": 0.99, "status": "AUTO_APPROVED", "source_snippet": "Total current assets: $44,345 million.", "source_url": "https://www.sec.gov/ix?doc=/Archives/edgar/data/0001045810/000104581024000029/nvda-20240128.htm", "factors": { "grounding": 1.0, "label": 1.0, "unit": 1.0, "yoy": 0.95 } },
-        { "name": "Diluted EPS", "raw_label": "Diluted net income per share", "value": 11.93, "unit": "USD", "period": "FY 2024", "xbrl_tag": "us-gaap:EarningsPerShareDiluted", "confidence": 0.99, "status": "AUTO_APPROVED", "source_snippet": "Diluted net income per share was $11.93.", "source_url": "https://www.sec.gov/ix?doc=/Archives/edgar/data/0001045810/000104581024000029/nvda-20240128.htm", "factors": { "grounding": 1.0, "label": 1.0, "unit": 1.0, "yoy": 0.95 } }
+        {
+          "name": "Revenue",
+          "raw_label": "Total revenue",
+          "value": 60922,
+          "unit": "USD millions",
+          "period": "FY 2024",
+          "xbrl_tag": "us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax",
+          "confidence": 0.99,
+          "status": "AUTO_APPROVED",
+          "source_snippet": "Total revenue was $60,922 million, up 126% from a year ago.",
+          "source_url": "https://www.sec.gov/ix?doc=/Archives/edgar/data/0001045810/000104581024000029/nvda-20240128.htm",
+          "factors": {
+            "grounding": 1.0,
+            "label": 1.0,
+            "unit": 1.0,
+            "yoy": 0.95
+          }
+        },
+        {
+          "name": "Net Income",
+          "raw_label": "Net income",
+          "value": 29760000,
+          "unit": "USD millions",
+          "period": "FY 2024",
+          "xbrl_tag": "us-gaap:NetIncomeLoss",
+          "confidence": 0.62,
+          "status": "FLAGGED",
+          "source_snippet": "Net income was $29,760 million for fiscal 2024, compared to $4,368 million for fiscal 2023.",
+          "source_url": "https://www.sec.gov/ix?doc=/Archives/edgar/data/0001045810/000104581024000029/nvda-20240128.htm",
+          "factors": {
+            "grounding": 0.4,
+            "label": 1.0,
+            "unit": 0.5,
+            "yoy": 0.1
+          }
+        },
+        {
+          "name": "Total Assets",
+          "raw_label": "Total assets",
+          "value": 65728,
+          "unit": "USD millions",
+          "period": "FY 2024",
+          "xbrl_tag": "us-gaap:Assets",
+          "confidence": 1.0,
+          "status": "AUTO_APPROVED",
+          "source_snippet": "Total assets: $65,728 million as of January 28, 2024.",
+          "source_url": "https://www.sec.gov/ix?doc=/Archives/edgar/data/0001045810/000104581024000029/nvda-20240128.htm",
+          "factors": {
+            "grounding": 1.0,
+            "label": 1.0,
+            "unit": 1.0,
+            "yoy": 1.0
+          }
+        },
+        {
+          "name": "Total Liabilities",
+          "raw_label": "Total liabilities",
+          "value": 22750,
+          "unit": "USD millions",
+          "period": "FY 2024",
+          "xbrl_tag": "us-gaap:Liabilities",
+          "confidence": 1.0,
+          "status": "AUTO_APPROVED",
+          "source_snippet": "Total liabilities: $22,750 million as of January 28, 2024.",
+          "source_url": "https://www.sec.gov/ix?doc=/Archives/edgar/data/0001045810/000104581024000029/nvda-20240128.htm",
+          "factors": {
+            "grounding": 1.0,
+            "label": 1.0,
+            "unit": 1.0,
+            "yoy": 1.0
+          }
+        },
+        {
+          "name": "Shareholders' Equity",
+          "raw_label": "Total shareholders\u2019 equity",
+          "value": 42978,
+          "unit": "USD millions",
+          "period": "FY 2024",
+          "xbrl_tag": "us-gaap:StockholdersEquity",
+          "confidence": 1.0,
+          "status": "AUTO_APPROVED",
+          "source_snippet": "Total shareholders\u2019 equity: $42,978 million as of January 28, 2024.",
+          "source_url": "https://www.sec.gov/ix?doc=/Archives/edgar/data/0001045810/000104581024000029/nvda-20240128.htm",
+          "factors": {
+            "grounding": 1.0,
+            "label": 1.0,
+            "unit": 1.0,
+            "yoy": 1.0
+          }
+        },
+        {
+          "name": "Operating Cash Flow",
+          "raw_label": "Net cash provided by operating activities",
+          "value": 28090,
+          "unit": "USD millions",
+          "period": "FY 2024",
+          "xbrl_tag": "us-gaap:NetCashProvidedByUsedInOperatingActivities",
+          "confidence": 0.99,
+          "status": "AUTO_APPROVED",
+          "source_snippet": "Net cash provided by operating activities: $28,090 million.",
+          "source_url": "https://www.sec.gov/ix?doc=/Archives/edgar/data/0001045810/000104581024000029/nvda-20240128.htm",
+          "factors": {
+            "grounding": 1.0,
+            "label": 1.0,
+            "unit": 1.0,
+            "yoy": 0.95
+          }
+        },
+        {
+          "name": "Gross Profit",
+          "raw_label": "Gross profit",
+          "value": 44301,
+          "unit": "USD millions",
+          "period": "FY 2024",
+          "xbrl_tag": "us-gaap:GrossProfit",
+          "confidence": 0.99,
+          "status": "AUTO_APPROVED",
+          "source_snippet": "Gross profit was $44,301 million for fiscal 2024.",
+          "source_url": "https://www.sec.gov/ix?doc=/Archives/edgar/data/0001045810/000104581024000029/nvda-20240128.htm",
+          "factors": {
+            "grounding": 1.0,
+            "label": 1.0,
+            "unit": 1.0,
+            "yoy": 0.95
+          }
+        },
+        {
+          "name": "Free Cash Flow",
+          "raw_label": "Operating cash flow less capex",
+          "value": 27021,
+          "unit": "USD millions",
+          "period": "FY 2024",
+          "xbrl_tag": "custom:FreeCashFlow",
+          "confidence": 0.97,
+          "status": "AUTO_APPROVED",
+          "source_snippet": "Purchases of property and equipment and intangible assets were $1,069 million.",
+          "source_url": "https://www.sec.gov/ix?doc=/Archives/edgar/data/0001045810/000104581024000029/nvda-20240128.htm",
+          "factors": {
+            "grounding": 0.95,
+            "label": 0.98,
+            "unit": 1.0,
+            "yoy": 0.95
+          }
+        },
+        {
+          "name": "Current Assets",
+          "raw_label": "Total current assets",
+          "value": 44345,
+          "unit": "USD millions",
+          "period": "FY 2024",
+          "xbrl_tag": "us-gaap:AssetsCurrent",
+          "confidence": 0.99,
+          "status": "AUTO_APPROVED",
+          "source_snippet": "Total current assets: $44,345 million.",
+          "source_url": "https://www.sec.gov/ix?doc=/Archives/edgar/data/0001045810/000104581024000029/nvda-20240128.htm",
+          "factors": {
+            "grounding": 1.0,
+            "label": 1.0,
+            "unit": 1.0,
+            "yoy": 0.95
+          }
+        },
+        {
+          "name": "Diluted EPS",
+          "raw_label": "Diluted net income per share",
+          "value": 11.93,
+          "unit": "USD",
+          "period": "FY 2024",
+          "xbrl_tag": "us-gaap:EarningsPerShareDiluted",
+          "confidence": 0.99,
+          "status": "AUTO_APPROVED",
+          "source_snippet": "Diluted net income per share was $11.93.",
+          "source_url": "https://www.sec.gov/ix?doc=/Archives/edgar/data/0001045810/000104581024000029/nvda-20240128.htm",
+          "factors": {
+            "grounding": 1.0,
+            "label": 1.0,
+            "unit": 1.0,
+            "yoy": 0.95
+          }
+        }
       ],
       "checks": {
-        "asset_auditing": { "passed": true, "delta": 0, "lhs": 65728, "rhs": 65728, "formula": "Assets (65,728M) == Liabilities (22,750M) + Equity (42,978M)" },
-        "segment_validation": { "passed": true, "delta": 0, "sum": 60922, "target": 60922, "segments": [{ "name": "Compute & Networking", "value": 47405 }, { "name": "Graphics", "value": 13517 }] },
-        "yoy_comparing": { "passed": false, "flagged_metric": "net_income", "yoy_pct": 681218.68, "threshold": 30.0 }
+        "asset_auditing": {
+          "passed": true,
+          "delta": 0,
+          "lhs": 65728,
+          "rhs": 65728,
+          "formula": "Assets (65,728M) == Liabilities (22,750M) + Equity (42,978M)"
+        },
+        "segment_validation": {
+          "passed": true,
+          "delta": 0,
+          "sum": 60922,
+          "target": 60922,
+          "segments": [
+            {
+              "name": "Compute & Networking",
+              "value": 47405
+            },
+            {
+              "name": "Graphics",
+              "value": 13517
+            }
+          ]
+        },
+        "yoy_comparing": {
+          "passed": false,
+          "flagged_metric": "net_income",
+          "yoy_pct": 681218.68,
+          "threshold": 30.0
+        }
       },
       "verification": {
         "accuracy_pct": 100.0,
@@ -705,7 +1299,10 @@
           "agent": "edgar_retrieval",
           "level": "INFO",
           "message": "Initializing V.A.U.L.T pipeline for CIK 0000789019 (Microsoft Corporation)",
-          "data": { "cik": "0000789019", "entity": "Microsoft Corporation" },
+          "data": {
+            "cik": "0000789019",
+            "entity": "Microsoft Corporation"
+          },
           "checkpoint": null
         },
         {
@@ -715,7 +1312,9 @@
           "agent": "edgar_retrieval",
           "level": "STEP",
           "message": "Resolving submissions index at data.sec.gov/submissions/CIK0000789019.json",
-          "data": { "accession": "0000789019-24-000067" },
+          "data": {
+            "accession": "0000789019-24-000067"
+          },
           "checkpoint": null
         },
         {
@@ -725,7 +1324,11 @@
           "agent": "extraction",
           "level": "INPUT",
           "message": "Extracted: revenue = $245,122M (tag: us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax, conf: 1.00)",
-          "data": { "metric": "revenue", "value": 245122, "confidence": 1.00 },
+          "data": {
+            "metric": "revenue",
+            "value": 245122,
+            "confidence": 1.0
+          },
           "checkpoint": null
         },
         {
@@ -735,7 +1338,11 @@
           "agent": "extraction",
           "level": "INPUT",
           "message": "Extracted: net_income = $88,136M (tag: us-gaap:NetIncomeLoss, conf: 1.00)",
-          "data": { "metric": "net_income", "value": 88136, "confidence": 1.00 },
+          "data": {
+            "metric": "net_income",
+            "value": 88136,
+            "confidence": 1.0
+          },
           "checkpoint": null
         },
         {
@@ -745,7 +1352,11 @@
           "agent": "extraction",
           "level": "INPUT",
           "message": "Extracted: total_assets = $512,163M (tag: us-gaap:Assets, conf: 1.00)",
-          "data": { "metric": "total_assets", "value": 512163, "confidence": 1.00 },
+          "data": {
+            "metric": "total_assets",
+            "value": 512163,
+            "confidence": 1.0
+          },
           "checkpoint": null
         },
         {
@@ -755,7 +1366,11 @@
           "agent": "extraction",
           "level": "INPUT",
           "message": "Extracted: total_liabilities = $243,686M (tag: us-gaap:Liabilities, conf: 1.00)",
-          "data": { "metric": "total_liabilities", "value": 243686, "confidence": 1.00 },
+          "data": {
+            "metric": "total_liabilities",
+            "value": 243686,
+            "confidence": 1.0
+          },
           "checkpoint": null
         },
         {
@@ -765,7 +1380,11 @@
           "agent": "extraction",
           "level": "WARN",
           "message": "Extracted: shareholders_equity = $248,477M (OCR digit distortion: 248,477 vs 268,477, conf: 0.72)",
-          "data": { "metric": "shareholders_equity", "value": 248477, "confidence": 0.72 },
+          "data": {
+            "metric": "shareholders_equity",
+            "value": 248477,
+            "confidence": 0.72
+          },
           "checkpoint": null
         },
         {
@@ -775,7 +1394,9 @@
           "agent": "asset_auditing",
           "level": "STEP",
           "message": "Evaluating balance sheet equation: Total Assets = Total Liabilities + Equity",
-          "data": { "stage": "accounting_equation" },
+          "data": {
+            "stage": "accounting_equation"
+          },
           "checkpoint": null
         },
         {
@@ -784,8 +1405,12 @@
           "run_id": "run_2024_0000789019_bs",
           "agent": "asset_auditing",
           "level": "CALC",
-          "message": "F4  243,686 + 248,477 = 492,163  total assets 512,163  Δ -20,000",
-          "data": { "check": "accounting_equation", "passed": false, "delta": -20000 },
+          "message": "F4  243,686 + 248,477 = 492,163  total assets 512,163  \u0394 -20,000",
+          "data": {
+            "check": "accounting_equation",
+            "passed": false,
+            "delta": -20000
+          },
           "checkpoint": null
         },
         {
@@ -794,8 +1419,10 @@
           "run_id": "run_2024_0000789019_bs",
           "agent": "asset_auditing",
           "level": "FAIL",
-          "message": "Accounting equation violated: Assets ($512,163M) != Liabilities + Equity ($492,163M), Δ -$20,000M.",
-          "data": { "passed": false },
+          "message": "Accounting equation violated: Assets ($512,163M) != Liabilities + Equity ($492,163M), \u0394 -$20,000M.",
+          "data": {
+            "passed": false
+          },
           "checkpoint": null
         },
         {
@@ -805,7 +1432,9 @@
           "agent": "asset_auditing",
           "level": "CHECKPOINT",
           "message": "Trigger B activated: Balance sheet out-of-balance. Checkpoint saved: CP-01_PAUSED.",
-          "data": { "checkpoint": "CP-01_PAUSED" },
+          "data": {
+            "checkpoint": "CP-01_PAUSED"
+          },
           "checkpoint": "CP-01_PAUSED"
         },
         {
@@ -815,7 +1444,10 @@
           "agent": "asset_auditing",
           "level": "HUMAN",
           "message": "HALTING WORKFLOW. Escalating metric 'shareholders_equity' to Human Review drawer.",
-          "data": { "escalation": true, "metric": "shareholders_equity" },
+          "data": {
+            "escalation": true,
+            "metric": "shareholders_equity"
+          },
           "checkpoint": null
         },
         {
@@ -825,7 +1457,9 @@
           "agent": "asset_auditing",
           "level": "PAUSE",
           "message": "Workflow paused at LangGraph checkpoint CP-01_PAUSED. Awaiting human decision.",
-          "data": { "paused": true },
+          "data": {
+            "paused": true
+          },
           "checkpoint": "CP-01_PAUSED"
         }
       ],
@@ -837,7 +1471,11 @@
           "agent": "asset_auditing",
           "level": "RESUME",
           "message": "Human decision recorded: CORRECTED shareholders_equity = 268,477 USD millions by Senior Auditor.",
-          "data": { "decision": "CORRECT", "new_value": 268477, "reviewer": "Senior Auditor" },
+          "data": {
+            "decision": "CORRECT",
+            "new_value": 268477,
+            "reviewer": "Senior Auditor"
+          },
           "checkpoint": null
         },
         {
@@ -846,8 +1484,12 @@
           "run_id": "run_2024_0000789019_bs",
           "agent": "asset_auditing",
           "level": "CALC",
-          "message": "Re-evaluating F4: 243,686 + 268,477 = 512,163  total assets 512,163  Δ 0",
-          "data": { "check": "accounting_equation", "passed": true, "delta": 0 },
+          "message": "Re-evaluating F4: 243,686 + 268,477 = 512,163  total assets 512,163  \u0394 0",
+          "data": {
+            "check": "accounting_equation",
+            "passed": true,
+            "delta": 0
+          },
           "checkpoint": null
         },
         {
@@ -856,8 +1498,10 @@
           "run_id": "run_2024_0000789019_bs",
           "agent": "asset_auditing",
           "level": "PASS",
-          "message": "Balance sheet equality holds exactly (Δ $0M). Checkpoint CP-01 passed.",
-          "data": { "passed": true },
+          "message": "Balance sheet equality holds exactly (\u0394 $0M). Checkpoint CP-01 passed.",
+          "data": {
+            "passed": true
+          },
           "checkpoint": "CP-01"
         },
         {
@@ -867,7 +1511,9 @@
           "agent": "segment_validation",
           "level": "STEP",
           "message": "Evaluating ASC 280 segment roll-up against reported revenue ($245,122M)",
-          "data": { "stage": "segment_reconciliation" },
+          "data": {
+            "stage": "segment_reconciliation"
+          },
           "checkpoint": null
         },
         {
@@ -876,8 +1522,13 @@
           "run_id": "run_2024_0000789019_bs",
           "agent": "segment_validation",
           "level": "CALC",
-          "message": "Segments: Productivity and Business Processes 77,740 + Intelligent Cloud 105,362 + More Personal Computing 62,020 = 245,122  Δ 0",
-          "data": { "check": "asc280_segments", "sum": 245122, "target": 245122, "delta": 0 },
+          "message": "Segments: Productivity and Business Processes 77,740 + Intelligent Cloud 105,362 + More Personal Computing 62,020 = 245,122  \u0394 0",
+          "data": {
+            "check": "asc280_segments",
+            "sum": 245122,
+            "target": 245122,
+            "delta": 0
+          },
           "checkpoint": null
         },
         {
@@ -887,7 +1538,9 @@
           "agent": "segment_validation",
           "level": "PASS",
           "message": "ASC 280 segments reconcile exactly. Checkpoint CP-02 passed.",
-          "data": { "passed": true },
+          "data": {
+            "passed": true
+          },
           "checkpoint": "CP-02"
         },
         {
@@ -897,7 +1550,9 @@
           "agent": "yoy_comparing",
           "level": "STEP",
           "message": "Evaluating multi-period variances and earnings quality against FY 2023",
-          "data": { "stage": "yoy_validation" },
+          "data": {
+            "stage": "yoy_validation"
+          },
           "checkpoint": null
         },
         {
@@ -907,7 +1562,9 @@
           "agent": "yoy_comparing",
           "level": "PASS",
           "message": "All YoY growth rates within tolerances. Checkpoint CP-03 passed.",
-          "data": { "passed": true },
+          "data": {
+            "passed": true
+          },
           "checkpoint": "CP-03"
         },
         {
@@ -917,7 +1574,11 @@
           "agent": "final_verification",
           "level": "OK",
           "message": "10/10 metrics exact match to SEC Company Facts API (100.00% accuracy)",
-          "data": { "accuracy": 1.0, "matches": 10, "total": 10 },
+          "data": {
+            "accuracy": 1.0,
+            "matches": 10,
+            "total": 10
+          },
           "checkpoint": "CP-04"
         },
         {
@@ -927,7 +1588,10 @@
           "agent": "audit_history",
           "level": "AUDIT",
           "message": "Audit run run_2024_0000789019_bs committed with human ledger block. SHA-256 seal: f1a92e... Verified.",
-          "data": { "status": "COMPLETED", "hash": "f1a92e4c8b7a6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b9c8d7e6f5a4b3c2d1e" },
+          "data": {
+            "status": "COMPLETED",
+            "hash": "f1a92e4c8b7a6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b9c8d7e6f5a4b3c2d1e"
+          },
           "checkpoint": "FINAL"
         },
         {
@@ -937,26 +1601,656 @@
           "agent": "audit_history",
           "level": "DONE",
           "message": "V.A.U.L.T audit completed. Escalation precision: 100.00%, Missed errors: 0.",
-          "data": { "complete": true },
+          "data": {
+            "complete": true
+          },
           "checkpoint": null
         }
       ],
       "metrics": [
-        { "name": "Revenue", "raw_label": "Total revenue", "value": 245122, "unit": "USD millions", "period": "FY 2024", "xbrl_tag": "us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax", "confidence": 1.00, "status": "AUTO_APPROVED", "source_snippet": "Total revenue: $245,122 million for fiscal year 2024.", "source_url": "https://www.sec.gov/ix?doc=/Archives/edgar/data/0000789019/000078901924000067/msft-20240630.htm", "factors": { "grounding": 1.0, "label": 1.0, "unit": 1.0, "yoy": 1.0 } },
-        { "name": "Net Income", "raw_label": "Net income", "value": 88136, "unit": "USD millions", "period": "FY 2024", "xbrl_tag": "us-gaap:NetIncomeLoss", "confidence": 1.00, "status": "AUTO_APPROVED", "source_snippet": "Net income: $88,136 million for fiscal year 2024.", "source_url": "https://www.sec.gov/ix?doc=/Archives/edgar/data/0000789019/000078901924000067/msft-20240630.htm", "factors": { "grounding": 1.0, "label": 1.0, "unit": 1.0, "yoy": 1.0 } },
-        { "name": "Total Assets", "raw_label": "Total assets", "value": 512163, "unit": "USD millions", "period": "FY 2024", "xbrl_tag": "us-gaap:Assets", "confidence": 1.00, "status": "AUTO_APPROVED", "source_snippet": "Total assets: $512,163 million as of June 30, 2024.", "source_url": "https://www.sec.gov/ix?doc=/Archives/edgar/data/0000789019/000078901924000067/msft-20240630.htm", "factors": { "grounding": 1.0, "label": 1.0, "unit": 1.0, "yoy": 1.0 } },
-        { "name": "Total Liabilities", "raw_label": "Total liabilities", "value": 243686, "unit": "USD millions", "period": "FY 2024", "xbrl_tag": "us-gaap:Liabilities", "confidence": 1.00, "status": "AUTO_APPROVED", "source_snippet": "Total liabilities: $243,686 million as of June 30, 2024.", "source_url": "https://www.sec.gov/ix?doc=/Archives/edgar/data/0000789019/000078901924000067/msft-20240630.htm", "factors": { "grounding": 1.0, "label": 1.0, "unit": 1.0, "yoy": 1.0 } },
-        { "name": "Shareholders' Equity", "raw_label": "Total stockholders' equity", "value": 248477, "unit": "USD millions", "period": "FY 2024", "xbrl_tag": "us-gaap:StockholdersEquity", "confidence": 0.72, "status": "FLAGGED", "source_snippet": "Total stockholders' equity was $268,477 million as of June 30, 2024.", "source_url": "https://www.sec.gov/ix?doc=/Archives/edgar/data/0000789019/000078901924000067/msft-20240630.htm", "factors": { "grounding": 0.50, "label": 1.0, "unit": 1.0, "yoy": 0.50 } },
-        { "name": "Operating Cash Flow", "raw_label": "Net cash from operations", "value": 118548, "unit": "USD millions", "period": "FY 2024", "xbrl_tag": "us-gaap:NetCashProvidedByUsedInOperatingActivities", "confidence": 0.99, "status": "AUTO_APPROVED", "source_snippet": "Net cash from operations: $118,548 million.", "source_url": "https://www.sec.gov/ix?doc=/Archives/edgar/data/0000789019/000078901924000067/msft-20240630.htm", "factors": { "grounding": 1.0, "label": 1.0, "unit": 1.0, "yoy": 0.96 } },
-        { "name": "Gross Profit", "raw_label": "Gross margin", "value": 171015, "unit": "USD millions", "period": "FY 2024", "xbrl_tag": "us-gaap:GrossProfit", "confidence": 0.99, "status": "AUTO_APPROVED", "source_snippet": "Gross margin was $171,015 million.", "source_url": "https://www.sec.gov/ix?doc=/Archives/edgar/data/0000789019/000078901924000067/msft-20240630.htm", "factors": { "grounding": 1.0, "label": 1.0, "unit": 1.0, "yoy": 0.96 } },
-        { "name": "Free Cash Flow", "raw_label": "Operating cash flow less additions to property and equipment", "value": 74071, "unit": "USD millions", "period": "FY 2024", "xbrl_tag": "custom:FreeCashFlow", "confidence": 0.97, "status": "AUTO_APPROVED", "source_snippet": "Additions to property and equipment were $44,477 million.", "source_url": "https://www.sec.gov/ix?doc=/Archives/edgar/data/0000789019/000078901924000067/msft-20240630.htm", "factors": { "grounding": 0.95, "label": 0.98, "unit": 1.0, "yoy": 0.95 } },
-        { "name": "Current Assets", "raw_label": "Total current assets", "value": 159938, "unit": "USD millions", "period": "FY 2024", "xbrl_tag": "us-gaap:AssetsCurrent", "confidence": 0.99, "status": "AUTO_APPROVED", "source_snippet": "Total current assets: $159,938 million.", "source_url": "https://www.sec.gov/ix?doc=/Archives/edgar/data/0000789019/000078901924000067/msft-20240630.htm", "factors": { "grounding": 1.0, "label": 1.0, "unit": 1.0, "yoy": 0.96 } },
-        { "name": "Diluted EPS", "raw_label": "Diluted earnings per share", "value": 11.80, "unit": "USD", "period": "FY 2024", "xbrl_tag": "us-gaap:EarningsPerShareDiluted", "confidence": 0.99, "status": "AUTO_APPROVED", "source_snippet": "Diluted earnings per share was $11.80.", "source_url": "https://www.sec.gov/ix?doc=/Archives/edgar/data/0000789019/000078901924000067/msft-20240630.htm", "factors": { "grounding": 1.0, "label": 1.0, "unit": 1.0, "yoy": 0.96 } }
+        {
+          "name": "Revenue",
+          "raw_label": "Total revenue",
+          "value": 245122,
+          "unit": "USD millions",
+          "period": "FY 2024",
+          "xbrl_tag": "us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax",
+          "confidence": 1.0,
+          "status": "AUTO_APPROVED",
+          "source_snippet": "Total revenue: $245,122 million for fiscal year 2024.",
+          "source_url": "https://www.sec.gov/ix?doc=/Archives/edgar/data/0000789019/000078901924000067/msft-20240630.htm",
+          "factors": {
+            "grounding": 1.0,
+            "label": 1.0,
+            "unit": 1.0,
+            "yoy": 1.0
+          }
+        },
+        {
+          "name": "Net Income",
+          "raw_label": "Net income",
+          "value": 88136,
+          "unit": "USD millions",
+          "period": "FY 2024",
+          "xbrl_tag": "us-gaap:NetIncomeLoss",
+          "confidence": 1.0,
+          "status": "AUTO_APPROVED",
+          "source_snippet": "Net income: $88,136 million for fiscal year 2024.",
+          "source_url": "https://www.sec.gov/ix?doc=/Archives/edgar/data/0000789019/000078901924000067/msft-20240630.htm",
+          "factors": {
+            "grounding": 1.0,
+            "label": 1.0,
+            "unit": 1.0,
+            "yoy": 1.0
+          }
+        },
+        {
+          "name": "Total Assets",
+          "raw_label": "Total assets",
+          "value": 512163,
+          "unit": "USD millions",
+          "period": "FY 2024",
+          "xbrl_tag": "us-gaap:Assets",
+          "confidence": 1.0,
+          "status": "AUTO_APPROVED",
+          "source_snippet": "Total assets: $512,163 million as of June 30, 2024.",
+          "source_url": "https://www.sec.gov/ix?doc=/Archives/edgar/data/0000789019/000078901924000067/msft-20240630.htm",
+          "factors": {
+            "grounding": 1.0,
+            "label": 1.0,
+            "unit": 1.0,
+            "yoy": 1.0
+          }
+        },
+        {
+          "name": "Total Liabilities",
+          "raw_label": "Total liabilities",
+          "value": 243686,
+          "unit": "USD millions",
+          "period": "FY 2024",
+          "xbrl_tag": "us-gaap:Liabilities",
+          "confidence": 1.0,
+          "status": "AUTO_APPROVED",
+          "source_snippet": "Total liabilities: $243,686 million as of June 30, 2024.",
+          "source_url": "https://www.sec.gov/ix?doc=/Archives/edgar/data/0000789019/000078901924000067/msft-20240630.htm",
+          "factors": {
+            "grounding": 1.0,
+            "label": 1.0,
+            "unit": 1.0,
+            "yoy": 1.0
+          }
+        },
+        {
+          "name": "Shareholders' Equity",
+          "raw_label": "Total stockholders' equity",
+          "value": 248477,
+          "unit": "USD millions",
+          "period": "FY 2024",
+          "xbrl_tag": "us-gaap:StockholdersEquity",
+          "confidence": 0.72,
+          "status": "FLAGGED",
+          "source_snippet": "Total stockholders' equity was $268,477 million as of June 30, 2024.",
+          "source_url": "https://www.sec.gov/ix?doc=/Archives/edgar/data/0000789019/000078901924000067/msft-20240630.htm",
+          "factors": {
+            "grounding": 0.5,
+            "label": 1.0,
+            "unit": 1.0,
+            "yoy": 0.5
+          }
+        },
+        {
+          "name": "Operating Cash Flow",
+          "raw_label": "Net cash from operations",
+          "value": 118548,
+          "unit": "USD millions",
+          "period": "FY 2024",
+          "xbrl_tag": "us-gaap:NetCashProvidedByUsedInOperatingActivities",
+          "confidence": 0.99,
+          "status": "AUTO_APPROVED",
+          "source_snippet": "Net cash from operations: $118,548 million.",
+          "source_url": "https://www.sec.gov/ix?doc=/Archives/edgar/data/0000789019/000078901924000067/msft-20240630.htm",
+          "factors": {
+            "grounding": 1.0,
+            "label": 1.0,
+            "unit": 1.0,
+            "yoy": 0.96
+          }
+        },
+        {
+          "name": "Gross Profit",
+          "raw_label": "Gross margin",
+          "value": 171015,
+          "unit": "USD millions",
+          "period": "FY 2024",
+          "xbrl_tag": "us-gaap:GrossProfit",
+          "confidence": 0.99,
+          "status": "AUTO_APPROVED",
+          "source_snippet": "Gross margin was $171,015 million.",
+          "source_url": "https://www.sec.gov/ix?doc=/Archives/edgar/data/0000789019/000078901924000067/msft-20240630.htm",
+          "factors": {
+            "grounding": 1.0,
+            "label": 1.0,
+            "unit": 1.0,
+            "yoy": 0.96
+          }
+        },
+        {
+          "name": "Free Cash Flow",
+          "raw_label": "Operating cash flow less additions to property and equipment",
+          "value": 74071,
+          "unit": "USD millions",
+          "period": "FY 2024",
+          "xbrl_tag": "custom:FreeCashFlow",
+          "confidence": 0.97,
+          "status": "AUTO_APPROVED",
+          "source_snippet": "Additions to property and equipment were $44,477 million.",
+          "source_url": "https://www.sec.gov/ix?doc=/Archives/edgar/data/0000789019/000078901924000067/msft-20240630.htm",
+          "factors": {
+            "grounding": 0.95,
+            "label": 0.98,
+            "unit": 1.0,
+            "yoy": 0.95
+          }
+        },
+        {
+          "name": "Current Assets",
+          "raw_label": "Total current assets",
+          "value": 159938,
+          "unit": "USD millions",
+          "period": "FY 2024",
+          "xbrl_tag": "us-gaap:AssetsCurrent",
+          "confidence": 0.99,
+          "status": "AUTO_APPROVED",
+          "source_snippet": "Total current assets: $159,938 million.",
+          "source_url": "https://www.sec.gov/ix?doc=/Archives/edgar/data/0000789019/000078901924000067/msft-20240630.htm",
+          "factors": {
+            "grounding": 1.0,
+            "label": 1.0,
+            "unit": 1.0,
+            "yoy": 0.96
+          }
+        },
+        {
+          "name": "Diluted EPS",
+          "raw_label": "Diluted earnings per share",
+          "value": 11.8,
+          "unit": "USD",
+          "period": "FY 2024",
+          "xbrl_tag": "us-gaap:EarningsPerShareDiluted",
+          "confidence": 0.99,
+          "status": "AUTO_APPROVED",
+          "source_snippet": "Diluted earnings per share was $11.80.",
+          "source_url": "https://www.sec.gov/ix?doc=/Archives/edgar/data/0000789019/000078901924000067/msft-20240630.htm",
+          "factors": {
+            "grounding": 1.0,
+            "label": 1.0,
+            "unit": 1.0,
+            "yoy": 0.96
+          }
+        }
       ],
       "checks": {
-        "asset_auditing": { "passed": false, "delta": -20000, "lhs": 512163, "rhs": 492163, "formula": "Assets (512,163M) != Liabilities (243,686M) + Equity (248,477M)" },
-        "segment_validation": { "passed": true, "delta": 0, "sum": 245122, "target": 245122, "segments": [{ "name": "Productivity & Business", "value": 77740 }, { "name": "Intelligent Cloud", "value": 105362 }, { "name": "More Personal Computing", "value": 62020 }] },
-        "yoy_comparing": { "passed": true, "max_yoy": 15.67, "earnings_quality": "Healthy" }
+        "asset_auditing": {
+          "passed": false,
+          "delta": -20000,
+          "lhs": 512163,
+          "rhs": 492163,
+          "formula": "Assets (512,163M) != Liabilities (243,686M) + Equity (248,477M)"
+        },
+        "segment_validation": {
+          "passed": true,
+          "delta": 0,
+          "sum": 245122,
+          "target": 245122,
+          "segments": [
+            {
+              "name": "Productivity & Business",
+              "value": 77740
+            },
+            {
+              "name": "Intelligent Cloud",
+              "value": 105362
+            },
+            {
+              "name": "More Personal Computing",
+              "value": 62020
+            }
+          ]
+        },
+        "yoy_comparing": {
+          "passed": true,
+          "max_yoy": 15.67,
+          "earnings_quality": "Healthy"
+        }
+      },
+      "verification": {
+        "accuracy_pct": 100.0,
+        "auto_approved": 9,
+        "escalated": 1,
+        "escalation_precision": 100.0,
+        "missed_errors": 0
+      }
+    },
+    "tampered_wmt": {
+      "company": "Walmart Inc.",
+      "cik": "0000104169",
+      "fiscal_year": 2026,
+      "scenario": "Balance sheet mismatch (Wrong column: prior-year liabilities carryover)",
+      "pause_at_seq": 15,
+      "checkpoint_id": "CP-01_PAUSED",
+      "flagged_item": {
+        "metric_name": "total_liabilities",
+        "display_name": "Total Liabilities",
+        "extracted_value": 163131,
+        "unit": "USD millions",
+        "expected_value": 178488,
+        "agent": "Asset Auditing Agent",
+        "reason": "Prior-year FY2025 liabilities (,131M) carried over into FY2026 column. Discrepancy gap \u0394 -,357M violates balance sheet integrity (A = L + E + TE).",
+        "snippet": "Total liabilities: ,488 million as of January 31, 2026 (prior year: ,131 million).",
+        "source_url": "https://www.sec.gov/Archives/edgar/data/104169/000010416926000055/wmt-20260131.htm"
+      },
+      "events_pre_pause": [
+        {
+          "seq": 1,
+          "agent": "edgar_retrieval",
+          "level": "INFO",
+          "message": "Initializing V.A.U.L.T pipeline for CIK 0000104169 (Walmart Inc.)"
+        },
+        {
+          "seq": 2,
+          "agent": "edgar_retrieval",
+          "level": "STEP",
+          "message": "Resolving submissions index at data.sec.gov/submissions/CIK0000104169.json"
+        },
+        {
+          "seq": 3,
+          "agent": "edgar_retrieval",
+          "level": "OK",
+          "message": "Filing verified against SEC index. Accession: 0000104169-26-000055. Hash: a4d9e1... OK"
+        },
+        {
+          "seq": 4,
+          "agent": "extraction",
+          "level": "INPUT",
+          "data": {
+            "metric": "revenue"
+          },
+          "message": "Extracted: revenue = ,163M (tag: us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax, conf: 0.99)"
+        },
+        {
+          "seq": 5,
+          "agent": "extraction",
+          "level": "INPUT",
+          "data": {
+            "metric": "net_income"
+          },
+          "message": "Extracted: net_income = ,893M (tag: us-gaap:NetIncomeLoss, conf: 0.98)"
+        },
+        {
+          "seq": 6,
+          "agent": "extraction",
+          "level": "INPUT",
+          "data": {
+            "metric": "total_assets"
+          },
+          "message": "Extracted: total_assets = ,668M (tag: us-gaap:Assets, conf: 1.00)"
+        },
+        {
+          "seq": 7,
+          "agent": "extraction",
+          "level": "WARN",
+          "data": {
+            "metric": "total_liabilities"
+          },
+          "message": "Extracted: total_liabilities = ,131M (WRONG COLUMN ANOMALY detected: prior-year carryover, conf: 0.65)"
+        },
+        {
+          "seq": 8,
+          "agent": "extraction",
+          "level": "INPUT",
+          "data": {
+            "metric": "shareholders_equity"
+          },
+          "message": "Extracted: shareholders_equity = ,617M (tag: us-gaap:StockholdersEquity, conf: 0.98)"
+        },
+        {
+          "seq": 9,
+          "agent": "extraction",
+          "level": "INPUT",
+          "data": {
+            "metric": "redeemable_nci"
+          },
+          "message": "Extracted: redeemable_nci =  (tag: us-gaap:RedeemableNoncontrollingInterestEquity, conf: 0.99)"
+        },
+        {
+          "seq": 10,
+          "agent": "asset_auditing",
+          "level": "STEP",
+          "message": "Evaluating balance sheet equation: Total Assets = Total Liabilities + Equity + Mezzanine Equity"
+        },
+        {
+          "seq": 11,
+          "agent": "asset_auditing",
+          "level": "CALC",
+          "message": "F4: 163,131 (Liabilities) + 105,887 (Total Equity) + 293 (Redeemable NCI) = 269,311 != total assets 284,668 | \u0394 -15,357"
+        },
+        {
+          "seq": 12,
+          "agent": "asset_auditing",
+          "level": "FAIL",
+          "message": "Accounting equation violated: Assets (,668M) != Liabilities + Equity (,311M), \u0394 -,357M"
+        },
+        {
+          "seq": 13,
+          "agent": "asset_auditing",
+          "level": "CHECKPOINT",
+          "checkpoint": "CP-01_PAUSED",
+          "message": "Trigger B activated: Balance sheet mismatch. Triangulation isolates total_liabilities (,131M equals FY25 prior year). Checkpoint saved: CP-01_PAUSED"
+        },
+        {
+          "seq": 14,
+          "agent": "asset_auditing",
+          "level": "HUMAN",
+          "message": "HALTING WORKFLOW. Escalating metric total_liabilities to Human Review drawer."
+        },
+        {
+          "seq": 15,
+          "agent": "asset_auditing",
+          "level": "PAUSE",
+          "checkpoint": "CP-01_PAUSED",
+          "message": "Workflow paused at LangGraph checkpoint CP-01_PAUSED. Awaiting human decision."
+        }
+      ],
+      "events_post_resume": [
+        {
+          "seq": 16,
+          "agent": "asset_auditing",
+          "level": "RESUME",
+          "message": "Human decision recorded: CORRECTED total_liabilities = 178,488 USD millions by Senior Auditor."
+        },
+        {
+          "seq": 17,
+          "agent": "asset_auditing",
+          "level": "CALC",
+          "message": "Re-evaluating F4 with corrected liabilities: 178,488 + 105,887 + 293 = 284,668 == total assets 284,668 | \u0394 0"
+        },
+        {
+          "seq": 18,
+          "agent": "asset_auditing",
+          "level": "PASS",
+          "checkpoint": "CP-01",
+          "message": "Balance sheet equality holds exactly (\u0394 ). Checkpoint CP-01 passed."
+        },
+        {
+          "seq": 19,
+          "agent": "segment_validation",
+          "level": "STEP",
+          "message": "Evaluating ASC 280 segment roll-up against reported revenue ,163M"
+        },
+        {
+          "seq": 20,
+          "agent": "segment_validation",
+          "level": "CALC",
+          "message": "Segments: Walmart U.S. 485,300 + Walmart International 127,863 + Sams Club 100,000 = 713,163 | \u0394 0"
+        },
+        {
+          "seq": 21,
+          "agent": "segment_validation",
+          "level": "PASS",
+          "checkpoint": "CP-02",
+          "message": "ASC 280 segments reconcile exactly. Checkpoint CP-02 passed."
+        },
+        {
+          "seq": 22,
+          "agent": "yoy_comparing",
+          "level": "STEP",
+          "message": "Evaluating multi-period variances and cash earnings quality"
+        },
+        {
+          "seq": 23,
+          "agent": "yoy_comparing",
+          "level": "PASS",
+          "checkpoint": "CP-03",
+          "message": "All YoY growth rates within tolerances. Operating cash flow ,565M >= Net Income ,893M (healthy accruals). Checkpoint CP-03 passed."
+        },
+        {
+          "seq": 24,
+          "agent": "final_verification",
+          "level": "OK",
+          "checkpoint": "CP-04",
+          "message": "10/10 metrics exact match to SEC Company Facts API post-correction (100.00% accuracy)"
+        },
+        {
+          "seq": 25,
+          "agent": "audit_history",
+          "level": "AUDIT",
+          "message": "Audit run run_2026_0000104169_wmt committed with human correction entry. SHA-256 seal verified."
+        },
+        {
+          "seq": 26,
+          "agent": "audit_history",
+          "level": "DONE",
+          "message": "V.A.U.L.T audit completed. Escalation precision: 100.00%, Missed errors: 0."
+        }
+      ],
+      "metrics": [
+        {
+          "name": "Revenue",
+          "raw_label": "Total revenues",
+          "value": 713163,
+          "unit": "USD millions",
+          "period": "FY 2026",
+          "xbrl_tag": "us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax",
+          "confidence": 0.99,
+          "status": "AUTO_APPROVED",
+          "source_snippet": "Total revenues: ,163 million for fiscal year ended January 31, 2026.",
+          "source_url": "https://www.sec.gov/Archives/edgar/data/104169/000010416926000055/wmt-20260131.htm",
+          "factors": {
+            "grounding": 1.0,
+            "label": 1.0,
+            "unit": 1.0,
+            "yoy": 0.96
+          }
+        },
+        {
+          "name": "Net Income",
+          "raw_label": "Consolidated net income",
+          "value": 21893,
+          "unit": "USD millions",
+          "period": "FY 2026",
+          "xbrl_tag": "us-gaap:NetIncomeLoss",
+          "confidence": 0.98,
+          "status": "AUTO_APPROVED",
+          "source_snippet": "Consolidated net income attributable to Walmart: ,893 million.",
+          "source_url": "https://www.sec.gov/Archives/edgar/data/104169/000010416926000055/wmt-20260131.htm",
+          "factors": {
+            "grounding": 1.0,
+            "label": 1.0,
+            "unit": 1.0,
+            "yoy": 0.95
+          }
+        },
+        {
+          "name": "Total Assets",
+          "raw_label": "Total assets",
+          "value": 284668,
+          "unit": "USD millions",
+          "period": "FY 2026",
+          "xbrl_tag": "us-gaap:Assets",
+          "confidence": 1.0,
+          "status": "AUTO_APPROVED",
+          "source_snippet": "Total assets: ,668 million as of January 31, 2026.",
+          "source_url": "https://www.sec.gov/Archives/edgar/data/104169/000010416926000055/wmt-20260131.htm",
+          "factors": {
+            "grounding": 1.0,
+            "label": 1.0,
+            "unit": 1.0,
+            "yoy": 0.95
+          }
+        },
+        {
+          "name": "Total Liabilities",
+          "raw_label": "Total liabilities",
+          "value": 163131,
+          "unit": "USD millions",
+          "period": "FY 2026",
+          "xbrl_tag": "us-gaap:Liabilities",
+          "confidence": 0.65,
+          "status": "FLAGGED",
+          "source_snippet": "Total liabilities: ,488 million as of January 31, 2026 (prior year: ,131 million).",
+          "source_url": "https://www.sec.gov/Archives/edgar/data/104169/000010416926000055/wmt-20260131.htm",
+          "factors": {
+            "grounding": 0.5,
+            "label": 1.0,
+            "unit": 1.0,
+            "yoy": 0.5
+          }
+        },
+        {
+          "name": "Shareholders Equity",
+          "raw_label": "Total Walmart shareholders equity",
+          "value": 99617,
+          "unit": "USD millions",
+          "period": "FY 2026",
+          "xbrl_tag": "us-gaap:StockholdersEquity",
+          "confidence": 0.98,
+          "status": "AUTO_APPROVED",
+          "source_snippet": "Total Walmart shareholders equity: ,617 million as of January 31, 2026.",
+          "source_url": "https://www.sec.gov/Archives/edgar/data/104169/000010416926000055/wmt-20260131.htm",
+          "factors": {
+            "grounding": 1.0,
+            "label": 1.0,
+            "unit": 1.0,
+            "yoy": 0.95
+          }
+        },
+        {
+          "name": "Operating Cash Flow",
+          "raw_label": "Net cash provided by operating activities",
+          "value": 41565,
+          "unit": "USD millions",
+          "period": "FY 2026",
+          "xbrl_tag": "us-gaap:NetCashProvidedByUsedInOperatingActivities",
+          "confidence": 0.98,
+          "status": "AUTO_APPROVED",
+          "source_snippet": "Net cash provided by operating activities: ,565 million.",
+          "source_url": "https://www.sec.gov/Archives/edgar/data/104169/000010416926000055/wmt-20260131.htm",
+          "factors": {
+            "grounding": 1.0,
+            "label": 1.0,
+            "unit": 1.0,
+            "yoy": 0.95
+          }
+        },
+        {
+          "name": "Gross Profit",
+          "raw_label": "Gross profit",
+          "value": 174213,
+          "unit": "USD millions",
+          "period": "FY 2026",
+          "xbrl_tag": "us-gaap:GrossProfit",
+          "confidence": 0.99,
+          "status": "AUTO_APPROVED",
+          "source_snippet": "Gross profit was ,213 million for fiscal 2026.",
+          "source_url": "https://www.sec.gov/Archives/edgar/data/104169/000010416926000055/wmt-20260131.htm",
+          "factors": {
+            "grounding": 1.0,
+            "label": 1.0,
+            "unit": 1.0,
+            "yoy": 0.95
+          }
+        },
+        {
+          "name": "Free Cash Flow",
+          "raw_label": "Operating cash flow less capex",
+          "value": 25841,
+          "unit": "USD millions",
+          "period": "FY 2026",
+          "xbrl_tag": "custom:FreeCashFlow",
+          "confidence": 0.97,
+          "status": "AUTO_APPROVED",
+          "source_snippet": "Payments for property and equipment were ,724 million.",
+          "source_url": "https://www.sec.gov/Archives/edgar/data/104169/000010416926000055/wmt-20260131.htm",
+          "factors": {
+            "grounding": 0.95,
+            "label": 0.98,
+            "unit": 1.0,
+            "yoy": 0.95
+          }
+        },
+        {
+          "name": "Current Assets",
+          "raw_label": "Total current assets",
+          "value": 84874,
+          "unit": "USD millions",
+          "period": "FY 2026",
+          "xbrl_tag": "us-gaap:AssetsCurrent",
+          "confidence": 1.0,
+          "status": "AUTO_APPROVED",
+          "source_snippet": "Total current assets: ,874 million.",
+          "source_url": "https://www.sec.gov/Archives/edgar/data/104169/000010416926000055/wmt-20260131.htm",
+          "factors": {
+            "grounding": 1.0,
+            "label": 1.0,
+            "unit": 1.0,
+            "yoy": 0.96
+          }
+        },
+        {
+          "name": "Redeemable Noncontrolling Interest",
+          "raw_label": "Temporary equity (mezzanine)",
+          "value": 293,
+          "unit": "USD millions",
+          "period": "FY 2026",
+          "xbrl_tag": "us-gaap:RedeemableNoncontrollingInterestEquity",
+          "confidence": 0.99,
+          "status": "AUTO_APPROVED",
+          "source_snippet": "Redeemable noncontrolling interest:  million.",
+          "source_url": "https://www.sec.gov/Archives/edgar/data/104169/000010416926000055/wmt-20260131.htm",
+          "factors": {
+            "grounding": 1.0,
+            "label": 1.0,
+            "unit": 1.0,
+            "yoy": 0.98
+          }
+        }
+      ],
+      "checks": {
+        "asset_auditing": {
+          "passed": false,
+          "delta": -15357,
+          "lhs": 284668,
+          "rhs": 269311,
+          "formula": "Assets (,668M) != Liabilities (,131M) + Equity (,887M) + Redeemable NCI ()"
+        },
+        "segment_validation": {
+          "passed": true,
+          "delta": 0,
+          "sum": 713163,
+          "target": 713163,
+          "segments": [
+            {
+              "name": "Walmart U.S.",
+              "type": "Operating Segment",
+              "value": 485300
+            },
+            {
+              "name": "Walmart International",
+              "type": "Operating Segment",
+              "value": 127863
+            },
+            {
+              "name": "Sam's Club",
+              "type": "Operating Segment",
+              "value": 100000
+            }
+          ]
+        },
+        "yoy_comparing": {
+          "passed": true,
+          "max_yoy": 14.05,
+          "earnings_quality": "Healthy"
+        }
       },
       "verification": {
         "accuracy_pct": 100.0,
