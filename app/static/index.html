@@ -255,7 +255,7 @@
 
     /* Collapsed Launchpad Summary Banner */
     #collapsedLaunchpad {
-      display: none;
+      display: flex;
       background-color: var(--surface);
       border: 1px solid var(--border);
       border-radius: 6px;
@@ -612,10 +612,10 @@
     <!-- Collapsed Launchpad Summary (visible during and after execution) -->
     <div id="collapsedLaunchpad">
       <div style="display: flex; align-items: center; gap: 12px;">
-        <span id="clpMonogram" class="mono-badge">AA</span>
+        <span id="clpMonogram" class="mono-badge">WM</span>
         <div>
-          <strong id="clpCompany" class="body-ui" style="font-weight: 700;">Apple Inc.</strong>
-          <span class="caption-ui"> · CIK <span id="clpCik">0000320193</span> · FY <span id="clpYear">2024</span> · <span id="clpScenario">Clean baseline</span></span>
+          <strong id="clpCompany" class="body-ui" style="font-weight: 700;">Walmart Inc.</strong>
+          <span class="caption-ui"> · CIK <span id="clpCik">0000104169</span> · FY <span id="clpYear">2026</span> · <span id="clpScenario">Wrong column ($15,357M Δ)</span></span>
         </div>
       </div>
       <div style="display: flex; align-items: center; gap: 8px;">
@@ -757,9 +757,9 @@
     const PRESETS = [
       { monogram: "AA", company: "Apple Inc.", cik: "0000320193", year: 2024, scenarioKey: "clean_aapl", tag: "Clean baseline" },
       { monogram: "WM", company: "Walmart Inc.", cik: "0000104169", year: 2026, scenarioKey: "tampered_wmt", tag: "Wrong column ($15,357M Δ)" },
+      { monogram: "AS", company: "Apple_Segmentation", cik: "0000320193", year: 2026, scenarioKey: "apple_segmentation", tag: "Segment roll-up (-$11,861M Δ)" },
+      { monogram: "AY", company: "YOY_apple", cik: "0000320193", year: 2026, scenarioKey: "yoy_apple", tag: "YoY scale 1000x (+122,353% Δ)" },
       { monogram: "MS", company: "Microsoft Corp.", cik: "0000789019", year: 2024, scenarioKey: "balance_msft", tag: "Balance sheet mismatch" },
-      { monogram: "NV", company: "NVIDIA Corp.", cik: "0001045810", year: 2024, scenarioKey: "scale_nvda", tag: "Scale anomaly (1,000x)" },
-      { monogram: "KO", company: "The Coca-Cola Co.", cik: "0000021344", year: 2024, scenarioKey: "clean_aapl", tag: "Segment roll-up" },
       { monogram: "NF", company: "Netflix, Inc.", cik: "0001065280", year: 2024, scenarioKey: "clean_aapl", tag: "Mezzanine equity" }
     ];
 
@@ -770,8 +770,8 @@
       maxCompletedStep: 0,
       threadId: "thread_standby",
       runId: null,
-      selectedPreset: PRESETS[0],
-      activeScenario: "clean_aapl",
+      selectedPreset: PRESETS[1], // Default to Walmart Inc. (WM)
+      activeScenario: "tampered_wmt",
       anomalySelection: "none",
       isRunning: false,
       isPaused: false,
@@ -792,6 +792,7 @@
     let DEMO_STORE = null;
 
     async function initApp() {
+      updateCollapsedLaunchpad();
       renderStepper();
       loadUnfinishedAudits();
       
@@ -1001,29 +1002,16 @@
             <p class="body-ui" style="color: var(--ink-muted); margin-top: 4px;">Enter a 10-digit Central Index Key (CIK) or choose an SEC filing preset to begin autonomous ledger verification.</p>
           </div>
 
-          <div style="display: grid; grid-template-columns: 2fr 1fr; gap: 16px; margin-bottom: 20px;">
-            <div class="form-group" style="margin-bottom: 0;">
-              <label class="form-label">Central Index Key (CIK)</label>
-              <input type="text" id="cikInput" class="form-input" value="${appState.selectedPreset.cik}" placeholder="0000320193" maxlength="10" oninput="handleCikInput(this)" />
-              <span class="caption-ui" id="cikFeedback" style="margin-top: 4px; display: block; color: var(--pass);">Valid 10-digit CIK formatted.</span>
-            </div>
-
-            <div class="form-group" style="margin-bottom: 0;">
-              <label class="form-label">Simulate Anomaly</label>
-              <select id="anomalySelect" class="form-input" onchange="handleAnomalyChange(this.value)">
-                <option value="none">None (clean baseline)</option>
-                <option value="wrong_column">Wrong column (prior-year carryover)</option>
-                <option value="scale_1000x">Scale anomaly (1,000x)</option>
-                <option value="sign_flip">Balance sheet variance</option>
-                <option value="segment_mismatch">Segment mismatch</option>
-              </select>
-            </div>
+          <div class="form-group" style="margin-bottom: 20px;">
+            <label class="form-label">Central Index Key (CIK)</label>
+            <input type="text" id="cikInput" class="form-input" value="${appState.selectedPreset.cik}" placeholder="0000104169" maxlength="10" oninput="handleCikInput(this)" />
+            <span class="caption-ui" id="cikFeedback" style="margin-top: 4px; display: block; color: var(--pass);">Valid 10-digit CIK formatted.</span>
           </div>
 
           <label class="form-label">Quick-select company presets</label>
           <div class="presets-grid">
             ${PRESETS.map((p, idx) => `
-              <div class="preset-card ${appState.selectedPreset.cik === p.cik ? 'active' : ''}" onclick="selectPreset(${idx})">
+              <div class="preset-card ${(appState.selectedPreset && appState.selectedPreset.monogram === p.monogram) ? 'active' : ''}" onclick="selectPreset(${idx})">
                 <span class="mono-badge">${p.monogram}</span>
                 <div>
                   <strong class="body-ui" style="font-weight: 600; display: block;">${p.company}</strong>
@@ -1038,6 +1026,250 @@
             <button class="btn btn-primary" style="padding: 10px 24px;" onclick="startAuditWorkflow()">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
               Start audit
+            </button>
+          </div>
+        </div>
+
+        <!-- Adversarial Test Dataset: Apple_Segmentation (ASC 280) Section -->
+        <div class="app-card" style="margin-bottom: 24px; border-left: 4px solid var(--warn);">
+          <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 16px;">
+            <div>
+              <span class="caption-ui" style="font-weight: 700; color: var(--primary); letter-spacing: 0.05em;">ADVERSARIAL BENCHMARK DATASET</span>
+              <h3 class="heading-md" style="margin-top: 4px;">Apple_Segmentation: ASC 280 Operating Segment Verification</h3>
+              <p class="body-ui" style="color: var(--ink-muted); font-size: 0.8125rem; margin-top: 2px;">
+                Adversarial validation dataset from <code>apple_segmentation_tampered_report.json</code>. Simulates AI extraction hallucination on <strong>Rest of Asia Pacific</strong> ($28,000M vs expected $39,861M), creating a -$11,861M math gap against consolidated net sales ($478,834M).
+              </p>
+            </div>
+            <div style="text-align: right;">
+              <span class="chip chip-warn" style="font-weight: 700;">ASC 280 ROLL-UP MISMATCH</span>
+              <div class="caption-ui" style="margin-top: 4px; color: var(--ink-muted);">US GAAP ASC 280 · Form 10-K</div>
+            </div>
+          </div>
+
+          <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px; margin-bottom: 16px;">
+            <div class="well-panel">
+              <span class="caption-ui" style="display: block; color: var(--ink-muted);">SEC Registrant</span>
+              <strong class="body-ui">Apple Inc. (CIK 0000320193)</strong>
+              <div class="caption-ui" style="color: var(--ink-muted); margin-top: 2px;">Period ended Sep 26, 2026 (FY 2026)</div>
+            </div>
+            <div class="well-panel">
+              <span class="caption-ui" style="display: block; color: var(--ink-muted);">Consolidated Net Sales</span>
+              <strong class="body-ui num-table">$478,834M</strong>
+              <div class="caption-ui" style="color: var(--ink-muted); margin-top: 2px;">Note - Revenue (Clean Ground Truth)</div>
+            </div>
+            <div class="well-panel">
+              <span class="caption-ui" style="display: block; color: var(--ink-muted);">Reported Segment Sum</span>
+              <strong class="body-ui num-table" style="color: var(--fail);">$466,973M</strong>
+              <div class="caption-ui" style="color: var(--fail); margin-top: 2px;">Discrepancy gap: -$11,861M</div>
+            </div>
+            <div class="well-panel">
+              <span class="caption-ui" style="display: block; color: var(--ink-muted);">Target Auditor Agent</span>
+              <strong class="body-ui">Segment Validation Agent</strong>
+              <div class="caption-ui" style="color: var(--warn); margin-top: 2px;">Halts at Checkpoint CP-02_PAUSED</div>
+            </div>
+          </div>
+
+          <div class="table-container" style="margin-bottom: 16px;">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Operating Segment</th>
+                  <th>Category</th>
+                  <th style="text-align: right;">Reported (Tampered)</th>
+                  <th style="text-align: right;">Ground Truth</th>
+                  <th style="text-align: right;">Variance (Δ)</th>
+                  <th>Grounding Check</th>
+                  <th>Audit Decision</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><strong>Americas</strong></td>
+                  <td><span class="chip chip-neutral" style="font-size: 0.65rem;">Operating Segment</span></td>
+                  <td class="num-table" style="text-align: right;">$198,083M</td>
+                  <td class="num-table" style="text-align: right;">$198,083M</td>
+                  <td class="num-table" style="text-align: right; color: var(--pass);">$0M</td>
+                  <td><span class="chip chip-pass" style="font-size: 0.65rem;">PASS (1.00)</span></td>
+                  <td><span class="chip chip-pass" style="font-size: 0.65rem;">AUTO-APPROVED</span></td>
+                </tr>
+                <tr>
+                  <td><strong>Europe</strong></td>
+                  <td><span class="chip chip-neutral" style="font-size: 0.65rem;">Operating Segment</span></td>
+                  <td class="num-table" style="text-align: right;">$127,604M</td>
+                  <td class="num-table" style="text-align: right;">$127,604M</td>
+                  <td class="num-table" style="text-align: right; color: var(--pass);">$0M</td>
+                  <td><span class="chip chip-pass" style="font-size: 0.65rem;">PASS (1.00)</span></td>
+                  <td><span class="chip chip-pass" style="font-size: 0.65rem;">AUTO-APPROVED</span></td>
+                </tr>
+                <tr>
+                  <td><strong>Greater China</strong></td>
+                  <td><span class="chip chip-neutral" style="font-size: 0.65rem;">Operating Segment</span></td>
+                  <td class="num-table" style="text-align: right;">$82,378M</td>
+                  <td class="num-table" style="text-align: right;">$82,378M</td>
+                  <td class="num-table" style="text-align: right; color: var(--pass);">$0M</td>
+                  <td><span class="chip chip-pass" style="font-size: 0.65rem;">PASS (0.95)</span></td>
+                  <td><span class="chip chip-pass" style="font-size: 0.65rem;">AUTO-APPROVED</span></td>
+                </tr>
+                <tr>
+                  <td><strong>Japan</strong></td>
+                  <td><span class="chip chip-neutral" style="font-size: 0.65rem;">Operating Segment</span></td>
+                  <td class="num-table" style="text-align: right;">$30,908M</td>
+                  <td class="num-table" style="text-align: right;">$30,908M</td>
+                  <td class="num-table" style="text-align: right; color: var(--pass);">$0M</td>
+                  <td><span class="chip chip-pass" style="font-size: 0.65rem;">PASS (1.00)</span></td>
+                  <td><span class="chip chip-pass" style="font-size: 0.65rem;">AUTO-APPROVED</span></td>
+                </tr>
+                <tr style="background-color: rgba(239, 68, 68, 0.06);">
+                  <td><strong style="color: var(--fail);">Rest of Asia Pacific</strong></td>
+                  <td><span class="chip chip-fail" style="font-size: 0.65rem;">Tampered Segment</span></td>
+                  <td class="num-table" style="text-align: right; color: var(--fail); font-weight: 700;">$28,000M</td>
+                  <td class="num-table" style="text-align: right; color: var(--pass); font-weight: 700;">$39,861M</td>
+                  <td class="num-table" style="text-align: right; color: var(--fail); font-weight: 700;">-$11,861M</td>
+                  <td><span class="chip chip-fail" style="font-size: 0.65rem;">FAILED (0.60)</span></td>
+                  <td><span class="chip chip-warn" style="font-size: 0.65rem;">HUMAN REVIEW</span></td>
+                </tr>
+                <tr>
+                  <td><strong>Corporate non-segment</strong></td>
+                  <td><span class="chip chip-neutral" style="font-size: 0.65rem;">Corporate / Other</span></td>
+                  <td class="num-table" style="text-align: right;">$0M</td>
+                  <td class="num-table" style="text-align: right;">$0M</td>
+                  <td class="num-table" style="text-align: right; color: var(--pass);">$0M</td>
+                  <td><span class="chip chip-pass" style="font-size: 0.65rem;">PASS (1.00)</span></td>
+                  <td><span class="chip chip-pass" style="font-size: 0.65rem;">AUTO-APPROVED</span></td>
+                </tr>
+              </tbody>
+              <tfoot>
+                <tr style="font-weight: 700; background: var(--surface);">
+                  <td colspan="2">Reconciled Operating Segments Total</td>
+                  <td class="num-table" style="text-align: right; color: var(--fail);">$466,973M</td>
+                  <td class="num-table" style="text-align: right; color: var(--pass);">$478,834M</td>
+                  <td class="num-table" style="text-align: right; color: var(--fail);">-$11,861M</td>
+                  <td colspan="2"><span class="chip chip-fail" style="font-size: 0.65rem;">Trigger B Hard Invariant Violation</span></td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+
+          <div style="display: flex; justify-content: space-between; align-items: center; background-color: var(--primary-soft); border: 1px solid var(--border); border-radius: 6px; padding: 12px 16px;">
+            <div class="body-ui" style="font-size: 0.8125rem;">
+              <strong>Adversarial Test Catalog:</strong> <code>SEG-TEST-01-MATH-MISMATCH</code> — Triggers human review escalation at Step 4 Segment Validation Agent.
+            </div>
+            <button class="btn btn-primary btn-sm" onclick="selectPreset(2); startAuditWorkflow();">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+              Run Apple_Segmentation audit
+            </button>
+          </div>
+        </div>
+
+        <!-- Adversarial Test Dataset: YOY_apple (Multi-Period YoY Volatility) Section -->
+        <div class="app-card" style="margin-bottom: 24px; border-left: 4px solid var(--fail);">
+          <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 16px;">
+            <div>
+              <span class="caption-ui" style="font-weight: 700; color: var(--primary); letter-spacing: 0.05em;">ADVERSARIAL BENCHMARK DATASET</span>
+              <h3 class="heading-md" style="margin-top: 4px;">YOY_apple: Multi-Period Volatility & Scale Anomaly</h3>
+              <p class="body-ui" style="color: var(--ink-muted); font-size: 0.8125rem; margin-top: 2px;">
+                Adversarial multi-period dataset from <code>apple_yoy_tampered_report.json</code>. Simulates 1,000x scale factor misread on <strong>revenue</strong> ($478,834,000M vs prior $391,035M, +122,352.98% YoY), profit-to-loss sign inversion on <strong>net income</strong> (-$115,000M, -222.69% YoY), and spurious asset spike (+64.24%).
+              </p>
+            </div>
+            <div style="text-align: right;">
+              <span class="chip chip-fail" style="font-weight: 700;">YOY SCALE & SIGN ANOMALIES</span>
+              <div class="caption-ui" style="margin-top: 4px; color: var(--ink-muted);">FY 2026 vs FY 2025 · Form 10-K</div>
+            </div>
+          </div>
+
+          <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px; margin-bottom: 16px;">
+            <div class="well-panel">
+              <span class="caption-ui" style="display: block; color: var(--ink-muted);">SEC Registrant</span>
+              <strong class="body-ui">Apple Inc. (CIK 0000320193)</strong>
+              <div class="caption-ui" style="color: var(--ink-muted); margin-top: 2px;">FY 2026 vs Prior FY 2025 Baseline</div>
+            </div>
+            <div class="well-panel">
+              <span class="caption-ui" style="display: block; color: var(--ink-muted);">Tampered Revenue (1000x)</span>
+              <strong class="body-ui num-table" style="color: var(--fail);">$478,834,000M</strong>
+              <div class="caption-ui" style="color: var(--fail); margin-top: 2px;">+122,352.98% YoY (Threshold: 50.0%)</div>
+            </div>
+            <div class="well-panel">
+              <span class="caption-ui" style="display: block; color: var(--ink-muted);">Net Income Sign Inversion</span>
+              <strong class="body-ui num-table" style="color: var(--fail);">-$115,000M</strong>
+              <div class="caption-ui" style="color: var(--fail); margin-top: 2px;">-222.69% YoY (Profit to Loss flip)</div>
+            </div>
+            <div class="well-panel">
+              <span class="caption-ui" style="display: block; color: var(--ink-muted);">Target Auditor Agent</span>
+              <strong class="body-ui">YoY Comparing Agent</strong>
+              <div class="caption-ui" style="color: var(--fail); margin-top: 2px;">Halts at Checkpoint CP-03_PAUSED</div>
+            </div>
+          </div>
+
+          <div class="table-container" style="margin-bottom: 16px;">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Financial Metric</th>
+                  <th>XBRL Tag</th>
+                  <th style="text-align: right;">Current FY26 (Tampered)</th>
+                  <th style="text-align: right;">Prior FY25</th>
+                  <th style="text-align: right;">YoY Growth (%)</th>
+                  <th style="text-align: right;">Review Threshold</th>
+                  <th>Audit Evaluation</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr style="background-color: rgba(239, 68, 68, 0.06);">
+                  <td><strong style="color: var(--fail);">Revenue (Net sales)</strong></td>
+                  <td><span class="caption-ui" style="font-family: var(--font-mono); font-size: 0.68rem;">us-gaap:RevenueFromContractWithCustomer...</span></td>
+                  <td class="num-table" style="text-align: right; color: var(--fail); font-weight: 700;">$478,834,000M</td>
+                  <td class="num-table" style="text-align: right;">$391,035M</td>
+                  <td class="num-table" style="text-align: right; color: var(--fail); font-weight: 700;">+122,352.98%</td>
+                  <td class="num-table" style="text-align: right;">±50.0%</td>
+                  <td><span class="chip chip-fail" style="font-size: 0.65rem;">FAIL (1,000x Misread)</span></td>
+                </tr>
+                <tr style="background-color: rgba(239, 68, 68, 0.06);">
+                  <td><strong style="color: var(--fail);">Net Income (Loss)</strong></td>
+                  <td><span class="caption-ui" style="font-family: var(--font-mono); font-size: 0.68rem;">us-gaap:NetIncomeLoss</span></td>
+                  <td class="num-table" style="text-align: right; color: var(--fail); font-weight: 700;">-$115,000M</td>
+                  <td class="num-table" style="text-align: right;">$93,736M</td>
+                  <td class="num-table" style="text-align: right; color: var(--fail); font-weight: 700;">-222.69%</td>
+                  <td class="num-table" style="text-align: right;">±150.0%</td>
+                  <td><span class="chip chip-fail" style="font-size: 0.65rem;">FAIL (Sign Inversion)</span></td>
+                </tr>
+                <tr style="background-color: rgba(239, 68, 68, 0.06);">
+                  <td><strong style="color: var(--fail);">Total Assets</strong></td>
+                  <td><span class="caption-ui" style="font-family: var(--font-mono); font-size: 0.68rem;">us-gaap:Assets</span></td>
+                  <td class="num-table" style="text-align: right; color: var(--fail); font-weight: 700;">$590,000M</td>
+                  <td class="num-table" style="text-align: right;">$359,241M</td>
+                  <td class="num-table" style="text-align: right; color: var(--fail); font-weight: 700;">+64.24%</td>
+                  <td class="num-table" style="text-align: right;">±30.0%</td>
+                  <td><span class="chip chip-fail" style="font-size: 0.65rem;">FAIL (Spike Outlier)</span></td>
+                </tr>
+                <tr>
+                  <td><strong>Total Liabilities</strong></td>
+                  <td><span class="caption-ui" style="font-family: var(--font-mono); font-size: 0.68rem;">us-gaap:Liabilities</span></td>
+                  <td class="num-table" style="text-align: right;">$292,455M</td>
+                  <td class="num-table" style="text-align: right;">$285,508M</td>
+                  <td class="num-table" style="text-align: right; color: var(--pass);">+2.43%</td>
+                  <td class="num-table" style="text-align: right;">±40.0%</td>
+                  <td><span class="chip chip-pass" style="font-size: 0.65rem;">PASS</span></td>
+                </tr>
+                <tr>
+                  <td><strong>Operating Cash Flow</strong></td>
+                  <td><span class="caption-ui" style="font-family: var(--font-mono); font-size: 0.68rem;">us-gaap:NetCashProvidedByUsedInOperating...</span></td>
+                  <td class="num-table" style="text-align: right; color: var(--warn);">$175,000M</td>
+                  <td class="num-table" style="text-align: right;">$118,259M</td>
+                  <td class="num-table" style="text-align: right; color: var(--warn);">+47.98%</td>
+                  <td class="num-table" style="text-align: right;">±60.0%</td>
+                  <td><span class="chip chip-warn" style="font-size: 0.65rem;">WARN (Approaching)</span></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div style="display: flex; justify-content: space-between; align-items: center; background-color: var(--primary-soft); border: 1px solid var(--border); border-radius: 6px; padding: 12px 16px;">
+            <div class="body-ui" style="font-size: 0.8125rem;">
+              <strong>Adversarial Test Catalog:</strong> <code>YOY-TEST-01-UNIT-SCALE-1000X</code> & <code>YOY-TEST-02-SIGN-REVERSAL</code> — Triggers human review escalation at Step 5 YoY Comparing Agent.
+            </div>
+            <button class="btn btn-primary btn-sm" onclick="selectPreset(3); startAuditWorkflow();">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+              Run YOY_apple audit
             </button>
           </div>
         </div>
@@ -1067,25 +1299,74 @@
       if (val.length === 10) {
         fb.innerText = `Valid 10-digit CIK: ${val}`;
         fb.style.color = "var(--pass)";
+        if (!appState.selectedPreset || appState.selectedPreset.cik !== val) {
+          const match = PRESETS.find(p => p.cik === val);
+          if (match) {
+            appState.selectedPreset = match;
+            appState.activeScenario = match.scenarioKey;
+          } else {
+            appState.selectedPreset = {
+              monogram: val.substring(val.length - 2).toUpperCase(),
+              company: `SEC Registrant (CIK ${val})`,
+              cik: val,
+              year: 2026,
+              scenarioKey: "clean_aapl",
+              tag: "Custom CIK submission"
+            };
+            appState.activeScenario = "clean_aapl";
+          }
+        }
+        updateCollapsedLaunchpad();
       } else {
         fb.innerText = "Must be a 10-digit SEC CIK.";
         fb.style.color = "var(--warn)";
       }
     }
 
+    function updateCollapsedLaunchpad() {
+      const p = appState.selectedPreset || PRESETS[0];
+      const clp = document.getElementById("collapsedLaunchpad");
+      if (!clp) return;
+      clp.style.display = "flex";
+      const monoEl = document.getElementById("clpMonogram");
+      const compEl = document.getElementById("clpCompany");
+      const cikEl = document.getElementById("clpCik");
+      const yearEl = document.getElementById("clpYear");
+      const scenEl = document.getElementById("clpScenario");
+      if (monoEl) monoEl.innerText = p.monogram;
+      if (compEl) compEl.innerText = p.company;
+      if (cikEl) cikEl.innerText = p.cik;
+      if (yearEl) yearEl.innerText = p.year;
+      if (scenEl) scenEl.innerText = p.tag;
+
+      const chip = document.getElementById("clpStatusChip");
+      if (chip) {
+        if (appState.isPaused) {
+          chip.className = "chip chip-warn";
+          chip.innerText = "PAUSED";
+        } else if (appState.maxCompletedStep >= 6) {
+          chip.className = "chip chip-pass";
+          chip.innerText = "VERIFIED";
+        } else {
+          chip.className = "chip chip-pass";
+          chip.innerText = "ACTIVE";
+        }
+      }
+    }
+
     function selectPreset(idx) {
       appState.selectedPreset = PRESETS[idx];
       appState.activeScenario = PRESETS[idx].scenarioKey;
-      document.getElementById("cikInput").value = PRESETS[idx].cik;
-      document.getElementById("anomalySelect").value = (PRESETS[idx].scenarioKey === "scale_nvda") ? "scale_1000x" : (PRESETS[idx].scenarioKey === "balance_msft" ? "sign_flip" : (PRESETS[idx].scenarioKey === "tampered_wmt" ? "wrong_column" : "none"));
+      const cikInput = document.getElementById("cikInput");
+      if (cikInput) cikInput.value = PRESETS[idx].cik;
+      updateCollapsedLaunchpad();
       renderStepWorkspace(1);
     }
 
     function handleAnomalyChange(val) {
       appState.anomalySelection = val;
-      if (val === "scale_1000x") appState.activeScenario = "scale_nvda";
+      if (val === "wrong_column") appState.activeScenario = "tampered_wmt";
       else if (val === "sign_flip") appState.activeScenario = "balance_msft";
-      else if (val === "wrong_column") appState.activeScenario = "tampered_wmt";
       else appState.activeScenario = "clean_aapl";
     }
 
@@ -1279,21 +1560,22 @@
         enteredCik = enteredCik.padStart(10, "0");
       }
       if (enteredCik.length === 10) {
-        const match = PRESETS.find(p => p.cik === enteredCik);
-        if (match) {
-          appState.selectedPreset = match;
-          if (appState.anomalySelection === "none") {
+        if (!appState.selectedPreset || appState.selectedPreset.cik !== enteredCik) {
+          const match = PRESETS.find(p => p.cik === enteredCik);
+          if (match) {
+            appState.selectedPreset = match;
             appState.activeScenario = match.scenarioKey;
+          } else {
+            appState.selectedPreset = {
+              monogram: enteredCik.substring(enteredCik.length - 2).toUpperCase(),
+              company: `SEC Registrant (CIK ${enteredCik})`,
+              cik: enteredCik,
+              year: 2026,
+              scenarioKey: "clean_aapl",
+              tag: "Custom CIK submission"
+            };
+            appState.activeScenario = "clean_aapl";
           }
-        } else {
-          appState.selectedPreset = {
-            monogram: enteredCik.substring(enteredCik.length - 2).toUpperCase(),
-            company: `SEC Registrant (CIK ${enteredCik})`,
-            cik: enteredCik,
-            year: 2026,
-            scenarioKey: "clean_aapl",
-            tag: "Custom CIK submission"
-          };
         }
       }
 
@@ -1343,8 +1625,8 @@
       appState.maxCompletedStep = 0;
       appState.currentEventIndex = 0;
       appState.eventLog = [];
-      document.getElementById("collapsedLaunchpad").style.display = "none";
       updateCheckpointBar(null);
+      updateCollapsedLaunchpad();
       await initLedgerStandby();
       navigateToStep(1);
     }
@@ -1376,6 +1658,15 @@
       appState.maxCompletedStep = 0;
       appState.currentEventIndex = 0;
       appState.eventLog = [];
+      appState.milestonesLogged = {
+        docRetrieved: false,
+        metricsExtracted: false,
+        assetAuditing: false,
+        segmentValidation: false,
+        yoyComparing: false,
+        finalVerified: false,
+        runSealed: false
+      };
 
       // Start Agent 1: SEC EDGAR Ingestion & Retrieval
       await executeAgentStep1(scenarioData);
@@ -1460,12 +1751,12 @@
     async function executeAgentStep3(scenarioData) {
       navigateToStep(3);
       const allEvents = scenarioData.events_pre_pause || scenarioData.events;
-      const step3Events = allEvents.filter(e => e.agent === "asset_auditing" || (e.seq >= 9 && e.seq <= 15));
+      const step3Events = allEvents.filter(e => e.agent === "asset_auditing");
 
       await streamEventsToTerminal(step3Events);
 
       // Perform Asset Auditing invariant check
-      const assets = getMetricVal("assets", 364980);
+      const assets = (scenarioData.checkpoint_id && scenarioData.checkpoint_id.startsWith("CP-03")) ? 404548 : getMetricVal("assets", 364980);
       const liab = getMetricVal("liabilities", 298187);
       const equity = getMetricVal("equity", 66793);
       const mezzanine = getMetricVal("redeemablenoncontrollinginterest", getMetricVal("temporaryequity", 0));
@@ -1497,7 +1788,7 @@
       await streamEventsToTerminal(step4Events);
 
       // Evaluate segments
-      const rev = getMetricVal("revenue", 391035);
+      const rev = (scenarioData.checkpoint_id && scenarioData.checkpoint_id.startsWith("CP-03")) ? 478834 : getMetricVal("revenue", 391035);
       const segments = getSegmentData();
       const sumSeg = segments.reduce((sum, s) => sum + s.value, 0);
       const segDelta = rev - sumSeg;
@@ -1841,11 +2132,29 @@
 
       // If metric corrected, update in memory
       if (dec === "correct" && correctedVal) {
-        const m = appState.metrics.find(x => x.name.toLowerCase().includes(metricName.replace("_", "")));
+        const cleanTarget = metricName.toLowerCase().replace("segment:", "").replace(/[^a-z0-9]/g, "");
+        const m = appState.metrics.find(x => {
+          const xName = x.name.toLowerCase().replace(/[^a-z0-9]/g, "");
+          return xName.includes(cleanTarget) || cleanTarget.includes(xName);
+        });
         if (m) {
           m.value = correctedVal;
           m.status = "CORRECTED";
           m.confidence = 1.0;
+        }
+
+        // Also update segment validation checks in memory
+        if (appState.checks && appState.checks.segment_validation && appState.checks.segment_validation.segments) {
+          const seg = appState.checks.segment_validation.segments.find(s => {
+            const sName = s.name.toLowerCase().replace(/[^a-z0-9]/g, "");
+            return sName.includes(cleanTarget) || cleanTarget.includes(sName);
+          });
+          if (seg) {
+            seg.value = correctedVal;
+            seg.tampered = false;
+          }
+          appState.checks.segment_validation.passed = true;
+          appState.checks.segment_validation.delta = 0;
         }
       }
 
@@ -2034,95 +2343,39 @@
         return appState.checks.segment_validation.segments;
       }
       const mono = appState.selectedPreset ? appState.selectedPreset.monogram : "AA";
+      if (mono === "AY" || appState.activeScenario === "yoy_apple") {
+        return [
+          { name: "Americas", type: "Geographic Segment", value: 198083 },
+          { name: "Europe", type: "Geographic Segment", value: 127604 },
+          { name: "Greater China", type: "Geographic Segment", value: 82378 },
+          { name: "Japan", type: "Geographic Segment", value: 30908 },
+          { name: "Rest of Asia Pacific", type: "Geographic Segment", value: 39861 },
+          { name: "Corporate non-segment", type: "Corporate / Other", value: 0 }
+        ];
+      }
+      if (mono === "AS" || appState.activeScenario === "apple_segmentation") {
+        const rapVal = getMetricVal("restofasiapacific", 28000);
+        return [
+          { name: "Americas", type: "Geographic Segment", value: 198083 },
+          { name: "Europe", type: "Geographic Segment", value: 127604 },
+          { name: "Greater China", type: "Geographic Segment", value: 82378 },
+          { name: "Japan", type: "Geographic Segment", value: 30908 },
+          { name: "Rest of Asia Pacific", type: "Geographic Segment", value: rapVal, tampered: (rapVal !== 39861), clean_value: 39861 },
+          { name: "Corporate non-segment", type: "Corporate / Other", value: 0 }
+        ];
+      }
       if (mono === "WM") {
         return [
           { name: "Walmart U.S.", type: "Operating Segment", value: 485300 },
           { name: "Walmart International", type: "Operating Segment", value: 127863 },
           { name: "Sam's Club", type: "Operating Segment", value: 100000 }
-        ];
-      }
-      if (mono === "NV") {
-        if (mono === "WM") {
-        return [
-          { name: "Revenue", tag: "us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax", prior: 680985, current: getMetricVal("revenue", 713163), threshold: 15.0 },
-          { name: "Net Income", tag: "us-gaap:NetIncomeLoss", prior: 19436, current: getMetricVal("netincome", 21893), threshold: 25.0 },
-          { name: "Total Assets", tag: "us-gaap:Assets", prior: 260823, current: getMetricVal("assets", 284668), threshold: 20.0 },
-          { name: "Total Liabilities", tag: "us-gaap:Liabilities", prior: 163131, current: getMetricVal("liabilities", 163131), threshold: 20.0 },
-          { name: "Shareholders' Equity", tag: "us-gaap:StockholdersEquity", prior: 91013, current: getMetricVal("equity", 99617), threshold: 20.0 },
-          { name: "Operating Cash Flow", tag: "us-gaap:NetCashProvidedByUsedInOperatingActivities", prior: 36443, current: getMetricVal("operatingcashflow", 41565), threshold: 25.0 },
-          { name: "Gross Profit", tag: "us-gaap:GrossProfit", prior: 165039, current: getMetricVal("grossprofit", 174213), threshold: 20.0 }
-        ];
-      }
-      return [
-          { name: "Compute & Networking", type: "Business Segment", value: 47405 },
-          { name: "Graphics", type: "Business Segment", value: 13517 }
         ];
       }
       if (mono === "MS") {
-        if (mono === "WM") {
         return [
-          { name: "Revenue", tag: "us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax", prior: 680985, current: getMetricVal("revenue", 713163), threshold: 15.0 },
-          { name: "Net Income", tag: "us-gaap:NetIncomeLoss", prior: 19436, current: getMetricVal("netincome", 21893), threshold: 25.0 },
-          { name: "Total Assets", tag: "us-gaap:Assets", prior: 260823, current: getMetricVal("assets", 284668), threshold: 20.0 },
-          { name: "Total Liabilities", tag: "us-gaap:Liabilities", prior: 163131, current: getMetricVal("liabilities", 163131), threshold: 20.0 },
-          { name: "Shareholders' Equity", tag: "us-gaap:StockholdersEquity", prior: 91013, current: getMetricVal("equity", 99617), threshold: 20.0 },
-          { name: "Operating Cash Flow", tag: "us-gaap:NetCashProvidedByUsedInOperatingActivities", prior: 36443, current: getMetricVal("operatingcashflow", 41565), threshold: 25.0 },
-          { name: "Gross Profit", tag: "us-gaap:GrossProfit", prior: 165039, current: getMetricVal("grossprofit", 174213), threshold: 20.0 }
-        ];
-      }
-      return [
           { name: "Intelligent Cloud", type: "Business Segment", value: 105362 },
           { name: "Productivity & Business Processes", type: "Business Segment", value: 77740 },
           { name: "More Personal Computing", type: "Business Segment", value: 62020 }
-        ];
-      }
-      if (mono === "WM") {
-        if (mono === "WM") {
-        return [
-          { name: "Revenue", tag: "us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax", prior: 680985, current: getMetricVal("revenue", 713163), threshold: 15.0 },
-          { name: "Net Income", tag: "us-gaap:NetIncomeLoss", prior: 19436, current: getMetricVal("netincome", 21893), threshold: 25.0 },
-          { name: "Total Assets", tag: "us-gaap:Assets", prior: 260823, current: getMetricVal("assets", 284668), threshold: 20.0 },
-          { name: "Total Liabilities", tag: "us-gaap:Liabilities", prior: 163131, current: getMetricVal("liabilities", 163131), threshold: 20.0 },
-          { name: "Shareholders' Equity", tag: "us-gaap:StockholdersEquity", prior: 91013, current: getMetricVal("equity", 99617), threshold: 20.0 },
-          { name: "Operating Cash Flow", tag: "us-gaap:NetCashProvidedByUsedInOperatingActivities", prior: 36443, current: getMetricVal("operatingcashflow", 41565), threshold: 25.0 },
-          { name: "Gross Profit", tag: "us-gaap:GrossProfit", prior: 165039, current: getMetricVal("grossprofit", 174213), threshold: 20.0 }
-        ];
-      }
-      return [
-          { name: "Walmart U.S.", type: "Operating Segment", value: 485300 },
-          { name: "Walmart International", type: "Operating Segment", value: 127863 },
-          { name: "Sam's Club", type: "Operating Segment", value: 100000 }
-        ];
-      }
-      if (mono === "KO") {
-        if (mono === "WM") {
-        return [
-          { name: "Revenue", tag: "us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax", prior: 680985, current: getMetricVal("revenue", 713163), threshold: 15.0 },
-          { name: "Net Income", tag: "us-gaap:NetIncomeLoss", prior: 19436, current: getMetricVal("netincome", 21893), threshold: 25.0 },
-          { name: "Total Assets", tag: "us-gaap:Assets", prior: 260823, current: getMetricVal("assets", 284668), threshold: 20.0 },
-          { name: "Total Liabilities", tag: "us-gaap:Liabilities", prior: 163131, current: getMetricVal("liabilities", 163131), threshold: 20.0 },
-          { name: "Shareholders' Equity", tag: "us-gaap:StockholdersEquity", prior: 91013, current: getMetricVal("equity", 99617), threshold: 20.0 },
-          { name: "Operating Cash Flow", tag: "us-gaap:NetCashProvidedByUsedInOperatingActivities", prior: 36443, current: getMetricVal("operatingcashflow", 41565), threshold: 25.0 },
-          { name: "Gross Profit", tag: "us-gaap:GrossProfit", prior: 165039, current: getMetricVal("grossprofit", 174213), threshold: 20.0 }
-        ];
-      }
-      return [
-          { name: "North America", type: "Geographic Segment", value: 16428 },
-          { name: "Europe, Middle East & Africa", type: "Geographic Segment", value: 8254 },
-          { name: "Latin America", type: "Geographic Segment", value: 5972 },
-          { name: "Asia Pacific", type: "Geographic Segment", value: 5630 },
-          { name: "Global Ventures & Bottling", type: "Operating Segment", value: 9470 }
-        ];
-      }
-      if (mono === "WM") {
-        return [
-          { name: "Revenue", tag: "us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax", prior: 680985, current: getMetricVal("revenue", 713163), threshold: 15.0 },
-          { name: "Net Income", tag: "us-gaap:NetIncomeLoss", prior: 19436, current: getMetricVal("netincome", 21893), threshold: 25.0 },
-          { name: "Total Assets", tag: "us-gaap:Assets", prior: 260823, current: getMetricVal("assets", 284668), threshold: 20.0 },
-          { name: "Total Liabilities", tag: "us-gaap:Liabilities", prior: 163131, current: getMetricVal("liabilities", 163131), threshold: 20.0 },
-          { name: "Shareholders' Equity", tag: "us-gaap:StockholdersEquity", prior: 91013, current: getMetricVal("equity", 99617), threshold: 20.0 },
-          { name: "Operating Cash Flow", tag: "us-gaap:NetCashProvidedByUsedInOperatingActivities", prior: 36443, current: getMetricVal("operatingcashflow", 41565), threshold: 25.0 },
-          { name: "Gross Profit", tag: "us-gaap:GrossProfit", prior: 165039, current: getMetricVal("grossprofit", 174213), threshold: 20.0 }
         ];
       }
       return [
@@ -2136,6 +2389,25 @@
 
     function getYoYComparisonData() {
       const mono = appState.selectedPreset ? appState.selectedPreset.monogram : "AA";
+      if (mono === "AY" || appState.activeScenario === "yoy_apple") {
+        return [
+          { name: "Revenue", tag: "us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax", prior: 391035, current: getMetricVal("revenue", 478834000), threshold: 50.0 },
+          { name: "Net Income", tag: "us-gaap:NetIncomeLoss", prior: 93736, current: getMetricVal("netincome", -115000), threshold: 150.0 },
+          { name: "Total Assets", tag: "us-gaap:Assets", prior: 359241, current: getMetricVal("assets", 590000), threshold: 30.0 },
+          { name: "Total Liabilities", tag: "us-gaap:Liabilities", prior: 285508, current: getMetricVal("liabilities", 292455), threshold: 40.0 },
+          { name: "Operating Cash Flow", tag: "us-gaap:NetCashProvidedByUsedInOperatingActivities", prior: 118259, current: getMetricVal("operatingcashflow", 175000), threshold: 60.0 }
+        ];
+      }
+      if (mono === "AS" || appState.activeScenario === "apple_segmentation") {
+        return [
+          { name: "Revenue", tag: "us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax", prior: 416161, current: getMetricVal("revenue", 478834), threshold: 25.0 },
+          { name: "Net Income", tag: "us-gaap:NetIncomeLoss", prior: 96995, current: getMetricVal("netincome", 112010), threshold: 25.0 },
+          { name: "Total Assets", tag: "us-gaap:Assets", prior: 359241, current: getMetricVal("assets", 404548), threshold: 20.0 },
+          { name: "Total Liabilities", tag: "us-gaap:Liabilities", prior: 285508, current: getMetricVal("liabilities", 292455), threshold: 20.0 },
+          { name: "Shareholders' Equity", tag: "us-gaap:StockholdersEquity", prior: 73733, current: getMetricVal("equity", 112093), threshold: 60.0 },
+          { name: "Operating Cash Flow", tag: "us-gaap:NetCashProvidedByUsedInOperatingActivities", prior: 110543, current: getMetricVal("operatingcashflow", 118254), threshold: 25.0 }
+        ];
+      }
       if (mono === "WM") {
         return [
           { name: "Revenue", tag: "us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax", prior: 680985, current: getMetricVal("revenue", 713163), threshold: 15.0 },
@@ -2147,42 +2419,8 @@
           { name: "Gross Profit", tag: "us-gaap:GrossProfit", prior: 165039, current: getMetricVal("grossprofit", 174213), threshold: 20.0 }
         ];
       }
-      if (mono === "NV") {
-        const niVal = getMetricVal("netincome", 29760000);
-        if (mono === "WM") {
-        return [
-          { name: "Revenue", tag: "us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax", prior: 680985, current: getMetricVal("revenue", 713163), threshold: 15.0 },
-          { name: "Net Income", tag: "us-gaap:NetIncomeLoss", prior: 19436, current: getMetricVal("netincome", 21893), threshold: 25.0 },
-          { name: "Total Assets", tag: "us-gaap:Assets", prior: 260823, current: getMetricVal("assets", 284668), threshold: 20.0 },
-          { name: "Total Liabilities", tag: "us-gaap:Liabilities", prior: 163131, current: getMetricVal("liabilities", 163131), threshold: 20.0 },
-          { name: "Shareholders' Equity", tag: "us-gaap:StockholdersEquity", prior: 91013, current: getMetricVal("equity", 99617), threshold: 20.0 },
-          { name: "Operating Cash Flow", tag: "us-gaap:NetCashProvidedByUsedInOperatingActivities", prior: 36443, current: getMetricVal("operatingcashflow", 41565), threshold: 25.0 },
-          { name: "Gross Profit", tag: "us-gaap:GrossProfit", prior: 165039, current: getMetricVal("grossprofit", 174213), threshold: 20.0 }
-        ];
-      }
-      return [
-          { name: "Revenue", tag: "us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax", prior: 26974, current: getMetricVal("revenue", 60922), threshold: 50.0 },
-          { name: "Net Income", tag: "us-gaap:NetIncomeLoss", prior: 4368, current: niVal, threshold: 30.0 },
-          { name: "Total Assets", tag: "us-gaap:Assets", prior: 41182, current: getMetricVal("assets", 65728), threshold: 30.0 },
-          { name: "Total Liabilities", tag: "us-gaap:Liabilities", prior: 19073, current: getMetricVal("liabilities", 22750), threshold: 30.0 },
-          { name: "Shareholders' Equity", tag: "us-gaap:StockholdersEquity", prior: 22109, current: getMetricVal("equity", 42978), threshold: 40.0 },
-          { name: "Operating Cash Flow", tag: "us-gaap:NetCashProvidedByUsedInOperatingActivities", prior: 5641, current: getMetricVal("operatingcashflow", 28090), threshold: 40.0 },
-          { name: "Gross Profit", tag: "us-gaap:GrossProfit", prior: 15356, current: getMetricVal("grossprofit", 44301), threshold: 40.0 }
-        ];
-      }
       if (mono === "MS") {
-        if (mono === "WM") {
         return [
-          { name: "Revenue", tag: "us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax", prior: 680985, current: getMetricVal("revenue", 713163), threshold: 15.0 },
-          { name: "Net Income", tag: "us-gaap:NetIncomeLoss", prior: 19436, current: getMetricVal("netincome", 21893), threshold: 25.0 },
-          { name: "Total Assets", tag: "us-gaap:Assets", prior: 260823, current: getMetricVal("assets", 284668), threshold: 20.0 },
-          { name: "Total Liabilities", tag: "us-gaap:Liabilities", prior: 163131, current: getMetricVal("liabilities", 163131), threshold: 20.0 },
-          { name: "Shareholders' Equity", tag: "us-gaap:StockholdersEquity", prior: 91013, current: getMetricVal("equity", 99617), threshold: 20.0 },
-          { name: "Operating Cash Flow", tag: "us-gaap:NetCashProvidedByUsedInOperatingActivities", prior: 36443, current: getMetricVal("operatingcashflow", 41565), threshold: 25.0 },
-          { name: "Gross Profit", tag: "us-gaap:GrossProfit", prior: 165039, current: getMetricVal("grossprofit", 174213), threshold: 20.0 }
-        ];
-      }
-      return [
           { name: "Revenue", tag: "us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax", prior: 211915, current: getMetricVal("revenue", 245122), threshold: 30.0 },
           { name: "Net Income", tag: "us-gaap:NetIncomeLoss", prior: 72361, current: getMetricVal("netincome", 88136), threshold: 30.0 },
           { name: "Total Assets", tag: "us-gaap:Assets", prior: 411976, current: getMetricVal("assets", 512163), threshold: 30.0 },
@@ -2190,17 +2428,6 @@
           { name: "Shareholders' Equity", tag: "us-gaap:StockholdersEquity", prior: 206223, current: getMetricVal("equity", 268477), threshold: 30.0 },
           { name: "Operating Cash Flow", tag: "us-gaap:NetCashProvidedByUsedInOperatingActivities", prior: 87582, current: getMetricVal("operatingcashflow", 118548), threshold: 30.0 },
           { name: "Gross Profit", tag: "us-gaap:GrossProfit", prior: 146052, current: getMetricVal("grossprofit", 171015), threshold: 30.0 }
-        ];
-      }
-      if (mono === "WM") {
-        return [
-          { name: "Revenue", tag: "us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax", prior: 680985, current: getMetricVal("revenue", 713163), threshold: 15.0 },
-          { name: "Net Income", tag: "us-gaap:NetIncomeLoss", prior: 19436, current: getMetricVal("netincome", 21893), threshold: 25.0 },
-          { name: "Total Assets", tag: "us-gaap:Assets", prior: 260823, current: getMetricVal("assets", 284668), threshold: 20.0 },
-          { name: "Total Liabilities", tag: "us-gaap:Liabilities", prior: 163131, current: getMetricVal("liabilities", 163131), threshold: 20.0 },
-          { name: "Shareholders' Equity", tag: "us-gaap:StockholdersEquity", prior: 91013, current: getMetricVal("equity", 99617), threshold: 20.0 },
-          { name: "Operating Cash Flow", tag: "us-gaap:NetCashProvidedByUsedInOperatingActivities", prior: 36443, current: getMetricVal("operatingcashflow", 41565), threshold: 25.0 },
-          { name: "Gross Profit", tag: "us-gaap:GrossProfit", prior: 165039, current: getMetricVal("grossprofit", 174213), threshold: 20.0 }
         ];
       }
       return [
@@ -3339,6 +3566,172 @@
           ...extra
         };
       };
+
+      if (key === "yoy_apple") {
+        return {
+          company: "Apple Inc. (YOY_apple)",
+          cik: "0000320193",
+          fiscal_year: 2026,
+          scenario: "YoY multi-period volatility anomaly (Scale factor 1000x + sign-flip loss)",
+          pause_at_seq: 18,
+          checkpoint_id: "CP-03_PAUSED",
+          flagged_item: {
+            metric_name: "revenue",
+            display_name: "Total Net Sales (Revenue)",
+            extracted_value: 478834000,
+            unit: "USD millions",
+            expected_value: 478834,
+            agent: "YoY Comparing Agent",
+            reason: "revenue changed by +122352.98% (~1225x, 391,035M -> 478,834,000M), far exceeding the 50.0% threshold. Scale misread (1000x mismatch). Also detected: net_income sign flip (-$115,000M loss vs prior $93,736M profit, -222.69% YoY) and total_assets spike (+64.24% vs 30.0% limit).",
+            snippet: "Total net sales | $ 478,834,000 | $ 391,035 (Note 1 - Summary of Significant Accounting Policies)",
+            source_url: "https://www.sec.gov/Archives/edgar/data/320193/000032019326000026/aapl-20260926.htm"
+          },
+          events_pre_pause: [
+            makeEvt(1, 0, "INFO", "Initializing V.A.U.L.T pipeline for CIK 0000320193 (Apple Inc. - YOY_apple)", { agent: "edgar_retrieval" }),
+            makeEvt(2, 1, "STEP", "Resolving submissions index at data.sec.gov/submissions/CIK0000320193.json", { agent: "edgar_retrieval" }),
+            makeEvt(3, 2, "OK", "Filing verified against SEC index. Accession: 0000320193-26-000026. Hash: 9d1f4a... OK", { agent: "edgar_retrieval" }),
+            makeEvt(4, 3, "WARN", "Extracted: revenue = $478,834,000M (SCALE 1000x ANOMALY detected: source indicates $478,834M, conf: 0.57)", { agent: "extraction", data: { metric: "revenue" } }),
+            makeEvt(5, 4, "WARN", "Extracted: net_income = -$115,000M (SIGN-FLIP ANOMALY detected: profit to loss reversal, conf: 0.56)", { agent: "extraction", data: { metric: "net_income" } }),
+            makeEvt(6, 5, "WARN", "Extracted: total_assets = $590,000M (SPIKE ANOMALY detected: +64.24% YoY spike, conf: 0.57)", { agent: "extraction", data: { metric: "total_assets" } }),
+            makeEvt(7, 6, "INPUT", "Extracted: total_liabilities = $292,455M (tag: us-gaap:Liabilities, conf: 0.95)", { agent: "extraction", data: { metric: "total_liabilities" } }),
+            makeEvt(8, 7, "INPUT", "Extracted: shareholders_equity = $112,093M (tag: us-gaap:StockholdersEquity, conf: 0.95)", { agent: "extraction", data: { metric: "shareholders_equity" } }),
+            makeEvt(9, 8, "INPUT", "Extracted: operating_cash_flow = $175,000M (tag: us-gaap:NetCashProvidedByUsedInOperatingActivities, conf: 0.79)", { agent: "extraction", data: { metric: "operating_cash_flow" } }),
+            makeEvt(10, 9, "STEP", "Evaluating balance sheet equation: Total Assets = Total Liabilities + Equity", { agent: "asset_auditing" }),
+            makeEvt(11, 10, "PASS", "Balance sheet equality verified against baseline ($404,548M = $292,455M + $112,093M, Δ $0M). Checkpoint CP-01 passed.", { agent: "asset_auditing", checkpoint: "CP-01" }),
+            makeEvt(12, 11, "STEP", "Evaluating ASC 280 segment roll-up against reported net sales", { agent: "segment_validation" }),
+            makeEvt(13, 12, "PASS", "ASC 280 operating segments roll up exactly (Δ $0M). Checkpoint CP-02 passed.", { agent: "segment_validation", checkpoint: "CP-02" }),
+            makeEvt(14, 13, "STEP", "Evaluating multi-period variances and cash earnings quality", { agent: "yoy_comparing" }),
+            makeEvt(15, 14, "FAIL", "Revenue YoY: 391,035M -> 478,834,000M (+122,352.98% > 50.0% threshold) CRITICAL SCALE ANOMALY", { agent: "yoy_comparing" }),
+            makeEvt(16, 15, "FAIL", "Net income YoY: 93,736M -> -115,000M (-222.69% YoY) CRITICAL SIGN REVERSAL (Profit to Loss)", { agent: "yoy_comparing" }),
+            makeEvt(17, 16, "CHECKPOINT", "Trigger B & C activated: Unit scale anomaly (1000x) & sign flip flagged. Checkpoint saved: CP-03_PAUSED.", { agent: "yoy_comparing", checkpoint: "CP-03_PAUSED" }),
+            makeEvt(18, 17, "HUMAN", "HALTING WORKFLOW. Escalating metric revenue to Human Review drawer.", { agent: "yoy_comparing" }),
+            makeEvt(19, 17, "PAUSE", "Workflow paused at LangGraph checkpoint CP-03_PAUSED. Awaiting human decision.", { agent: "yoy_comparing", checkpoint: "CP-03_PAUSED" })
+          ],
+          events_post_resume: [
+            makeEvt(20, 18, "RESUME", "Human decision recorded: CORRECTED revenue = 478,834 USD millions by Senior Auditor.", { agent: "yoy_comparing" }),
+            makeEvt(21, 19, "CALC", "Re-evaluating YoY growth with corrected revenue: 391,035M -> 478,834M (+22.45%) confirmed PASS within 50.0% threshold.", { agent: "yoy_comparing" }),
+            makeEvt(22, 20, "PASS", "Checkpoint CP-03 cleared following human correction. Workflow unlocked.", { agent: "yoy_comparing", checkpoint: "CP-03" }),
+            makeEvt(23, 21, "OK", "10/10 metrics exact match to SEC Company Facts API post-correction (100.00% accuracy)", { agent: "final_verification", checkpoint: "CP-04" }),
+            makeEvt(24, 22, "AUDIT", "Audit run run_2026_0000320193_yoy committed with human correction entry. SHA-256 seal verified.", { agent: "audit_history" }),
+            makeEvt(25, 23, "DONE", "V.A.U.L.T audit completed. Escalation precision: 100.00%, Missed errors: 0.", { agent: "audit_history" })
+          ],
+          metrics: [
+            { name: "Revenue", raw_label: "Total net sales", value: 478834000, unit: "USD millions", period: "FY 2026", xbrl_tag: "us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax", confidence: 0.57, status: "FLAGGED", source_snippet: "Total net sales | $ 478,834,000 | $ 391,035" },
+            { name: "Net Income", raw_label: "Net income (loss)", value: -115000, unit: "USD millions", period: "FY 2026", xbrl_tag: "us-gaap:NetIncomeLoss", confidence: 0.56, status: "FLAGGED", source_snippet: "Net income (loss) | $ (115,000) | $ 93,736" },
+            { name: "Total Assets", raw_label: "Total assets", value: 590000, unit: "USD millions", period: "FY 2026", xbrl_tag: "us-gaap:Assets", confidence: 0.57, status: "FLAGGED", source_snippet: "Total assets | $ 590,000 | $ 359,241" },
+            { name: "Total Liabilities", raw_label: "Total liabilities", value: 292455, unit: "USD millions", period: "FY 2026", xbrl_tag: "us-gaap:Liabilities", confidence: 0.95, status: "AUTO_APPROVED", source_snippet: "Total liabilities | $ 292,455 | $ 285,508" },
+            { name: "Shareholders Equity", raw_label: "Total shareholders’ equity", value: 112093, unit: "USD millions", period: "FY 2026", xbrl_tag: "us-gaap:StockholdersEquity", confidence: 0.95, status: "AUTO_APPROVED", source_snippet: "Total shareholders’ equity | 112,093 | 73,733" },
+            { name: "Operating Cash Flow", raw_label: "Cash generated by operating activities", value: 175000, unit: "USD millions", period: "FY 2026", xbrl_tag: "us-gaap:NetCashProvidedByUsedInOperatingActivities", confidence: 0.79, status: "AUTO_APPROVED", source_snippet: "Cash generated by operating activities | $ 175,000 | $ 118,259" },
+            { name: "Gross Profit", raw_label: "Gross margin", value: 221295, unit: "USD millions", period: "FY 2026", xbrl_tag: "us-gaap:GrossProfit", confidence: 0.99, status: "AUTO_APPROVED", source_snippet: "Total gross margin was $221,295 million for fiscal 2026." },
+            { name: "Current Assets", raw_label: "Total current assets", value: 153000, unit: "USD millions", period: "FY 2026", xbrl_tag: "us-gaap:AssetsCurrent", confidence: 0.95, status: "AUTO_APPROVED", source_snippet: "Total current assets | $ 153,000" }
+          ],
+          checks: {
+            asset_auditing: { passed: true, delta: 0, lhs: 404548, rhs: 404548 },
+            segment_validation: { passed: true, delta: 0 },
+            yoy_comparing: { passed: false, max_yoy: 122352.98, earnings_quality: "Alert" }
+          },
+          verification: {
+            accuracy_pct: 100.0,
+            auto_approved: 8,
+            escalated: 1,
+            escalation_precision: 100.0,
+            missed_errors: 0
+          }
+        };
+      }
+
+      if (key === "apple_segmentation") {
+        return {
+          company: "Apple Inc. (Apple_Segmentation)",
+          cik: "0000320193",
+          fiscal_year: 2026,
+          scenario: "ASC 280 operating segment roll-up failure (Rest of Asia Pacific understatement -$11,861M Δ)",
+          pause_at_seq: 21,
+          checkpoint_id: "CP-02_PAUSED",
+          flagged_item: {
+            metric_name: "segment:Rest of Asia Pacific",
+            display_name: "Rest of Asia Pacific Segment Net Sales",
+            extracted_value: 28000,
+            unit: "USD millions",
+            expected_value: 39861,
+            agent: "Segment Validation Agent",
+            reason: "Segment Reconciliation Failed: sum(segments) + corporate - eliminations = 466,973.00M != Consolidated 478,834.00M (diff = -11,861.00M). Rest of Asia Pacific extracted as $28,000M but source snippet confirms $39,861M (Grounding confidence 0.60 < 0.85).",
+            snippet: "Segment Operating Performance | The following table shows net sales by reportable segment for 2026, 2025 and 2024 (dollars in millions): | Rest of Asia Pacific | $39,861 | $33,696 | $29,615",
+            source_url: "https://www.sec.gov/Archives/edgar/data/320193/000032019326000026/aapl-20260926.htm"
+          },
+          events_pre_pause: [
+            makeEvt(1, 0, "INFO", "Initializing V.A.U.L.T pipeline for CIK 0000320193 (Apple Inc.)", { agent: "edgar_retrieval" }),
+            makeEvt(2, 1, "STEP", "Resolving submissions index at data.sec.gov/submissions/CIK0000320193.json", { agent: "edgar_retrieval" }),
+            makeEvt(3, 2, "OK", "Filing verified against SEC index. Accession: 0000320193-26-000026. Hash: c8e2b7... OK", { agent: "edgar_retrieval" }),
+            makeEvt(4, 3, "INPUT", "Extracted: revenue = $478,834M (tag: us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax, conf: 1.00)", { agent: "extraction", data: { metric: "revenue" } }),
+            makeEvt(5, 4, "INPUT", "Extracted: net_income = $112,010M (tag: us-gaap:NetIncomeLoss, conf: 0.99)", { agent: "extraction", data: { metric: "net_income" } }),
+            makeEvt(6, 5, "INPUT", "Extracted: total_assets = $404,548M (tag: us-gaap:Assets, conf: 1.00)", { agent: "extraction", data: { metric: "total_assets" } }),
+            makeEvt(7, 6, "INPUT", "Extracted: total_liabilities = $292,455M (tag: us-gaap:Liabilities, conf: 1.00)", { agent: "extraction", data: { metric: "total_liabilities" } }),
+            makeEvt(8, 7, "INPUT", "Extracted: shareholders_equity = $112,093M (tag: us-gaap:StockholdersEquity, conf: 0.98)", { agent: "extraction", data: { metric: "shareholders_equity" } }),
+            makeEvt(9, 8, "INPUT", "Extracted: segment:Americas = $198,083M (tag: us-gaap:StatementBusinessSegmentsAxis, conf: 1.00)", { agent: "extraction" }),
+            makeEvt(10, 9, "INPUT", "Extracted: segment:Europe = $127,604M (tag: us-gaap:StatementBusinessSegmentsAxis, conf: 1.00)", { agent: "extraction" }),
+            makeEvt(11, 10, "INPUT", "Extracted: segment:Greater China = $82,378M (tag: us-gaap:StatementBusinessSegmentsAxis, conf: 0.95)", { agent: "extraction" }),
+            makeEvt(12, 11, "INPUT", "Extracted: segment:Japan = $30,908M (tag: us-gaap:StatementBusinessSegmentsAxis, conf: 1.00)", { agent: "extraction" }),
+            makeEvt(13, 12, "WARN", "Extracted: segment:Rest of Asia Pacific = $28,000M (GROUNDING FAILURE: text '28,000' missing from snippet, conf: 0.60)", { agent: "extraction" }),
+            makeEvt(14, 13, "INPUT", "Extracted: segment:Corporate non-segment = $0M (tag: us-gaap:CorporateNonSegmentMember, conf: 1.00)", { agent: "extraction" }),
+            makeEvt(15, 14, "STEP", "Evaluating balance sheet equation: Total Assets = Total Liabilities + Equity", { agent: "asset_auditing" }),
+            makeEvt(16, 15, "CALC", "F4: 292,455 (Liabilities) + 112,093 (Total Equity) = 404,548 == total assets 404,548 | Δ 0", { agent: "asset_auditing" }),
+            makeEvt(17, 16, "PASS", "Balance sheet equality holds exactly (Δ $0M). Checkpoint CP-01 passed.", { agent: "asset_auditing", checkpoint: "CP-01" }),
+            makeEvt(18, 17, "STEP", "Evaluating ASC 280 segment roll-up against reported revenue $478,834M", { agent: "segment_validation" }),
+            makeEvt(19, 18, "CALC", "Segments: 198,083 + 127,604 + 82,378 + 30,908 + 28,000 + 0 = 466,973 != 478,834 | Δ -11,861", { agent: "segment_validation" }),
+            makeEvt(20, 19, "FAIL", "ASC 280 Segment roll-up failed: sum(segments) = $466,973M != Consolidated $478,834M (diff = -$11,861M)", { agent: "segment_validation" }),
+            makeEvt(21, 20, "CHECKPOINT", "Trigger B + Trigger A activated: Segment roll-up mismatch & grounding hallucination on Rest of Asia Pacific ($28,000M vs expected $39,861M). Checkpoint saved: CP-02_PAUSED", { agent: "segment_validation", checkpoint: "CP-02_PAUSED" }),
+            makeEvt(22, 21, "HUMAN", "HALTING WORKFLOW. Escalating metric segment:Rest of Asia Pacific to Human Review drawer.", { agent: "segment_validation" }),
+            makeEvt(23, 22, "PAUSE", "Workflow paused at LangGraph checkpoint CP-02_PAUSED. Awaiting human decision.", { agent: "segment_validation", checkpoint: "CP-02_PAUSED" })
+          ],
+          events_post_resume: [
+            makeEvt(24, 23, "RESUME", "Human decision recorded: CORRECTED segment:Rest of Asia Pacific = 39,861 USD millions by Senior Auditor.", { agent: "segment_validation" }),
+            makeEvt(25, 24, "CALC", "Re-evaluating ASC 280 roll-up: Americas 198,083 + Europe 127,604 + Greater China 82,378 + Japan 30,908 + Rest of Asia Pacific 39,861 + Corporate 0 = 478,834 == Consolidated 478,834 | Δ 0", { agent: "segment_validation" }),
+            makeEvt(26, 25, "PASS", "ASC 280 operating segments roll up exactly (Δ $0M). Checkpoint CP-02 passed.", { agent: "segment_validation", checkpoint: "CP-02" }),
+            makeEvt(27, 26, "STEP", "Evaluating multi-period variances and cash earnings quality", { agent: "yoy_comparing" }),
+            makeEvt(28, 27, "PASS", "All YoY growth rates within tolerances. Operating cash flow $118,254M >= Net Income $112,010M (healthy accruals). Checkpoint CP-03 passed.", { agent: "yoy_comparing", checkpoint: "CP-03" }),
+            makeEvt(29, 28, "OK", "10/10 metrics exact match to SEC Company Facts API post-correction (100.00% accuracy)", { agent: "final_verification", checkpoint: "CP-04" }),
+            makeEvt(30, 29, "AUDIT", "Audit run run_2026_0000320193_aapl_seg committed with human correction entry. SHA-256 seal verified.", { agent: "audit_history" }),
+            makeEvt(31, 30, "DONE", "V.A.U.L.T audit completed. Escalation precision: 100.00%, Missed errors: 0.", { agent: "audit_history" })
+          ],
+          metrics: [
+            { name: "Revenue", raw_label: "Total net sales", value: 478834, unit: "USD millions", period: "FY 2026", xbrl_tag: "us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax", confidence: 1.00, status: "AUTO_APPROVED", source_snippet: "Total net sales | $ | 478,834 | $ | 416,161 | $ | 391,035" },
+            { name: "Net Income", raw_label: "Net income", value: 112010, unit: "USD millions", period: "FY 2026", xbrl_tag: "us-gaap:NetIncomeLoss", confidence: 0.99, status: "AUTO_APPROVED", source_snippet: "Net income: $112,010 million for fiscal 2026." },
+            { name: "Total Assets", raw_label: "Total assets", value: 404548, unit: "USD millions", period: "FY 2026", xbrl_tag: "us-gaap:Assets", confidence: 1.00, status: "AUTO_APPROVED", source_snippet: "Total assets | $ | 404,548 | $ | 359,241" },
+            { name: "Total Liabilities", raw_label: "Total liabilities", value: 292455, unit: "USD millions", period: "FY 2026", xbrl_tag: "us-gaap:Liabilities", confidence: 1.00, status: "AUTO_APPROVED", source_snippet: "Total liabilities | 292,455 | 285,508" },
+            { name: "Shareholders Equity", raw_label: "Total shareholders’ equity", value: 112093, unit: "USD millions", period: "FY 2026", xbrl_tag: "us-gaap:StockholdersEquity", confidence: 0.98, status: "AUTO_APPROVED", source_snippet: "Total shareholders’ equity | 112,093 | 73,733" },
+            { name: "Operating Cash Flow", raw_label: "Cash generated by operating activities", value: 118254, unit: "USD millions", period: "FY 2026", xbrl_tag: "us-gaap:NetCashProvidedByUsedInOperatingActivities", confidence: 0.98, status: "AUTO_APPROVED", source_snippet: "Cash generated by operating activities: $118,254 million." },
+            { name: "Gross Profit", raw_label: "Gross margin", value: 221295, unit: "USD millions", period: "FY 2026", xbrl_tag: "us-gaap:GrossProfit", confidence: 0.99, status: "AUTO_APPROVED", source_snippet: "Total gross margin was $221,295 million for fiscal 2026." },
+            { name: "Rest of Asia Pacific Segment", raw_label: "Rest of Asia Pacific segment net sales", value: 28000, unit: "USD millions", period: "FY 2026", xbrl_tag: "aapl:RestOfAsiaPacificSegmentMember", confidence: 0.60, status: "FLAGGED", source_snippet: "Rest of Asia Pacific net sales were $39,861 million." },
+            { name: "Americas Segment", raw_label: "Americas segment net sales", value: 198083, unit: "USD millions", period: "FY 2026", xbrl_tag: "aapl:AmericasSegmentMember", confidence: 1.00, status: "AUTO_APPROVED", source_snippet: "Americas | $ | 198,083" },
+            { name: "Europe Segment", raw_label: "Europe segment net sales", value: 127604, unit: "USD millions", period: "FY 2026", xbrl_tag: "aapl:EuropeSegmentMember", confidence: 1.00, status: "AUTO_APPROVED", source_snippet: "Europe | 127,604" }
+          ],
+          checks: {
+            asset_auditing: { passed: true, delta: 0, lhs: 404548, rhs: 404548 },
+            segment_validation: {
+              passed: false,
+              delta: -11861,
+              tolerance: 2,
+              segments: [
+                { name: "Americas", type: "Geographic Segment", value: 198083 },
+                { name: "Europe", type: "Geographic Segment", value: 127604 },
+                { name: "Greater China", type: "Geographic Segment", value: 82378 },
+                { name: "Japan", type: "Geographic Segment", value: 30908 },
+                { name: "Rest of Asia Pacific", type: "Geographic Segment", value: 28000, tampered: true, clean_value: 39861 },
+                { name: "Corporate non-segment", type: "Corporate / Other", value: 0 }
+              ]
+            },
+            yoy_comparing: { passed: true, max_yoy: 15.06, earnings_quality: "Healthy" }
+          },
+          verification: {
+            accuracy_pct: 100.0,
+            auto_approved: 9,
+            escalated: 1,
+            escalation_precision: 100.0,
+            missed_errors: 0
+          }
+        };
+      }
 
       if (key === "tampered_wmt") {
         return {
