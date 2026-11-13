@@ -12,6 +12,7 @@ from app.api.runs_routes import router as runs_router
 from app.api.yoy_routes import router as yoy_router
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
+DASHBOARD_DIR = Path(__file__).resolve().parent.parent / "dashboard"
 
 app = FastAPI(
     title="V.A.U.L.T: Human-in-the-Loop Financial Filing Auditor Agent",
@@ -39,6 +40,13 @@ app.include_router(yoy_router)
 def health_check() -> dict[str, str]:
     """Basic service health probe."""
     return {"status": "ok", "component": "vault-auditor-agent"}
+
+
+@app.get("/static/demo_timeline.json", include_in_schema=False)
+@app.get("/demo_timeline.json", include_in_schema=False)
+def get_demo_timeline() -> FileResponse:
+    """Serve the scripted demo timeline for Pitch Demo mode."""
+    return FileResponse(DASHBOARD_DIR / "demo_timeline.json")
 
 
 @app.get("/", include_in_schema=False)

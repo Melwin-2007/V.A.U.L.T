@@ -194,6 +194,92 @@ def resume_run_endpoint(run_id: str) -> Dict[str, Any]:
     }
 
 
+@router.get("/runs/{run_id}/events")
+def get_run_events(run_id: str, after: int = Query(0, description="Return events strictly after this sequence number")) -> List[Dict[str, Any]]:
+    """Return chronological event stream for a run formatted per design.md section 11."""
+    state = get_workflow_state(run_id)
+    if not state:
+        raise HTTPException(status_code=404, detail=f"Run {run_id!r} not found.")
+
+    events: List[Dict[str, Any]] = []
+    seq = 1
+    ts_base = state.get("created_at", "2026-11-13T14:00:00Z")
+
+    # Step 1: Retrieval
+    events.append({
+        "seq": seq,
+        "ts": ts_base,
+        "run_id": run_id,
+        "agent": "edgar_retrieval",
+        "level": "INFO",
+        "message": f"Initializing V.A.U.L.T pipeline for CIK {state.get('cik')} ({state.get('company')})",
+        "data": {"cik": state.get("cik"), "company": state.get("company")},
+        "checkpoint": None,
+    })
+    seq += 1
+
+    events.append({
+        "seq": seq,
+        "ts": ts_base,
+        "run_id": run_id,
+        "agent": "edgar_retrieval",
+        "level": "OK",
+        "message": f"SEC EDGAR 10-K filing retrieved and verified for FY {state.get('fiscal_year', 2024)}.",
+        "data": {"filing_verified": True},
+        "checkpoint": None,
+    })
+    seq += 1
+
+    # Step 2: Extraction
+    for m in state.get("metrics", []):
+        lvl = "WARN" if m.get("status") == "NEEDS_REVIEW" or (m.get("confidence") or 1.0) < 0.85 else "INPUT"
+        events.append({
+            "seq": seq,
+            "ts": ts_base,
+            "run_id": run_id,
+            "agent": "extraction",
+            "level": lvl,
+            "message": f"Extracted: {m.get('metric_name')} = {m.get('value')} {m.get('unit', 'USD')} (conf: {m.get('confidence', 1.0):.2f})",
+            "data": m,
+            "checkpoint": None,
+        })
+        seq += 1
+
+    # Step 3, 4, 5 Checks
+    for chk in state.get("checks", []):
+        chk_name = chk.get("check_name", "")
+        agent_name = "asset_auditing" if "accounting" in chk_name or "balance" in chk_name else ("segment_validation" if "segment" in chk_name else "yoy_comparing")
+        passed = chk.get("passed", True)
+        events.append({
+            "seq": seq,
+            "ts": ts_base,
+            "run_id": run_id,
+            "agent": agent_name,
+            "level": "PASS" if passed else "FAIL",
+            "message": chk.get("message", f"Check {chk_name}: {'PASS' if passed else 'FAIL'}"),
+            "data": chk,
+            "checkpoint": None if passed else "CP_PAUSED",
+        })
+        seq += 1
+
+    # Checkpoint event if paused
+    if state.get("status") in ("WAITING_FOR_REVIEW", "PAUSED"):
+        events.append({
+            "seq": seq,
+            "ts": ts_base,
+            "run_id": run_id,
+            "agent": "yoy_comparing",
+            "level": "CHECKPOINT",
+            "message": "Workflow paused at LangGraph checkpoint. Human review required.",
+            "data": {"status": "PAUSED"},
+            "checkpoint": "CP_PAUSED",
+        })
+        seq += 1
+
+    # Filter after sequence
+    return [e for e in events if e["seq"] > after]
+
+
 @router.get("/runs/{run_id}/accuracy-report")
 def get_accuracy_report(run_id: str) -> Dict[str, Any]:
     """Return extraction accuracy & escalation precision report compared to SEC Company Facts."""
