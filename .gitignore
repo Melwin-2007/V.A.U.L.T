@@ -31,6 +31,8 @@ ratelimiter.sqlite*
 output/
 test_output/
 audit_logs/
+data/cache/
+*.sqlite*
 *_generated.html
 *.log
 tmp/
