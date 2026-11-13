@@ -138,7 +138,7 @@ def extract_metrics(filing: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Extract standard 10 financial metrics from XBRL and correlate verbatim HTML snippets."""
     cik = filing.get("cik", "0000000000")
     company = filing.get("company", "Unknown")
-    fiscal_year = filing.get("fiscal_year", 2023)
+    fiscal_year = filing.get("fiscal_year", 2024)
     run_id = filing.get("run_id", "run_pending")
     source_url = filing.get("sec_url", f"https://www.sec.gov/edgar/data/{int(cik)}")
     xbrl_dir = filing.get("xbrl_dir")

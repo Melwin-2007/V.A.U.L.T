@@ -20,7 +20,7 @@ router = APIRouter(prefix="/api/v1", tags=["runs"])
 
 class StartRunRequest(BaseModel):
     cik: str = Field(..., description="SEC Central Index Key (e.g. 0000320193)")
-    fiscal_year: int = Field(2023, description="Fiscal year (e.g. 2023)")
+    fiscal_year: Optional[int] = Field(None, description="Fiscal year (defaults to latest available)")
     inject_error: Optional[str] = Field(
         None,
         description="Optional error injection: scale_1000x, sign_flip, wrong_column, missing_digit",
@@ -168,6 +168,29 @@ def submit_review(run_id: str, req: ReviewSubmissionRequest) -> Dict[str, Any]:
         "decision": norm_decision,
         "run_status": updated_state.get("status"),
         "remaining_reviews": remaining_pending,
+    }
+
+
+@router.post("/runs/{run_id}/resume")
+def resume_run_endpoint(run_id: str) -> Dict[str, Any]:
+    """Resume a paused workflow run after all pending checkpoints are satisfied."""
+    state = get_workflow_state(run_id)
+    if not state:
+        raise HTTPException(status_code=404, detail=f"Run {run_id!r} not found.")
+
+    pending = [m for m in state.get("metrics", []) if m.get("status") == "NEEDS_REVIEW"]
+    if pending:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot resume: {len(pending)} metrics still require human review.",
+        )
+
+    updated_state = resume_workflow(run_id, {})
+    return {
+        "status": "ok",
+        "run_id": run_id,
+        "run_status": updated_state.get("status"),
+        "accuracy_report": updated_state.get("accuracy_report"),
     }
 
 

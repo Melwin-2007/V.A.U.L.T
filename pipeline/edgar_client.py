@@ -114,7 +114,7 @@ def fetch_filing(cik: str, fiscal_year: Optional[int] = None) -> Dict[str, Any]:
     meta = COMPANY_MAP.get(norm_cik)
 
     company_name = meta["name"] if meta else f"Company CIK {norm_cik}"
-    year = fiscal_year or (meta["fiscal_year"] if meta else 2023)
+    year = fiscal_year or (meta["fiscal_year"] if meta else 2024)
     fixture_dir = meta["fixture_dir"] if meta else None
 
     # Check disk cache first

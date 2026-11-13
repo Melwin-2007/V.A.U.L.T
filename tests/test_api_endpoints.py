@@ -24,8 +24,8 @@ from app.api.runs_routes import (
 
 class TestRunsApiDirect(unittest.TestCase):
     def test_end_to_end_run_pause_and_review(self) -> None:
-        # 1. Start run for Apple (stub contains equity anomaly)
-        req = StartRunRequest(cik="0000320193", fiscal_year=2023)
+        # 1. Start run for Apple with injected error
+        req = StartRunRequest(cik="0000320193", fiscal_year=2023, inject_error="scale_1000x")
         res = create_run(req)
         run_id = res["run_id"]
         self.assertEqual(res["status"], "WAITING_FOR_REVIEW")

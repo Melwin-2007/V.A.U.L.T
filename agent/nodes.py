@@ -31,11 +31,12 @@ def fetch_filing_node(state: AgentWorkflowState) -> AgentWorkflowState:
         return state
 
     cik = state.get("cik", "0000320193")
-    year = state.get("fiscal_year", 2023)
+    year = state.get("fiscal_year")
     pipe = _get_pipeline_module()
     filing = pipe.fetch_filing(cik=cik, fiscal_year=year)
 
     state["filing"] = filing
+    state["fiscal_year"] = filing.get("fiscal_year", year or 2024)
     state["company"] = filing.get("company", state.get("company", "Unknown"))
     if "fetch_filing" not in completed:
         completed.append("fetch_filing")
@@ -218,7 +219,7 @@ def ground_truth_verify_node(state: AgentWorkflowState) -> AgentWorkflowState:
         return state
 
     cik = state.get("cik", "0000320193")
-    year = state.get("fiscal_year", 2023)
+    year = state.get("fiscal_year")
     metrics = state.get("metrics") or []
 
     pipe = _get_pipeline_module()

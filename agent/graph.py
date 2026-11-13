@@ -63,7 +63,7 @@ class SqliteCheckpointStore:
         run_id = state["run_id"]
         cik = state.get("cik", "")
         company = state.get("company", "")
-        year = state.get("fiscal_year", 2023)
+        year = state.get("fiscal_year") or 2024
         status = state.get("status", "RUNNING")
         now = datetime.now(timezone.utc).isoformat()
         state["updated_at"] = now
@@ -152,7 +152,7 @@ class AuditorWorkflowGraph:
     def start_run(
         self,
         cik: str,
-        fiscal_year: int = 2023,
+        fiscal_year: Optional[int] = None,
         inject_error: Optional[str] = None,
     ) -> AgentWorkflowState:
         """Start a new workflow run.
@@ -161,7 +161,8 @@ class AuditorWorkflowGraph:
         with status="WAITING_FOR_REVIEW". Otherwise, continues to completion.
         """
         norm_cik = str(cik).strip().zfill(10)
-        run_id = f"run_{fiscal_year}_{norm_cik[-6:]}_{uuid.uuid4().hex[:6]}"
+        year_tag = str(fiscal_year) if fiscal_year else "latest"
+        run_id = f"run_{year_tag}_{norm_cik[-6:]}_{uuid.uuid4().hex[:6]}"
         now = datetime.now(timezone.utc).isoformat()
 
         state: AgentWorkflowState = {
@@ -245,7 +246,7 @@ _GLOBAL_WORKFLOW_GRAPH = AuditorWorkflowGraph()
 
 def start_workflow(
     cik: str,
-    fiscal_year: int = 2023,
+    fiscal_year: Optional[int] = None,
     inject_error: Optional[str] = None,
 ) -> AgentWorkflowState:
     return _GLOBAL_WORKFLOW_GRAPH.start_run(cik, fiscal_year, inject_error=inject_error)
